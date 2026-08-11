@@ -36,6 +36,14 @@ mkdir -p "$STAGE/DEBIAN" \
 cp -r "$BUNDLE/." "$STAGE/usr/lib/$PAQUETE/"
 cp "$RAIZ/config/providers.toml" "$STAGE/usr/share/$PAQUETE/providers.toml"
 
+# La CLI va también en el paquete: es lo que permite procesar por lotes por la
+# noche, o recuperar una sesión sin abrir la interfaz.
+if [[ -x "$RAIZ/target/release/dictar" ]]; then
+  cp "$RAIZ/target/release/dictar" "$STAGE/usr/bin/dictar"
+  chmod 755 "$STAGE/usr/bin/dictar"
+  echo "  incluida la CLI \`dictar\`"
+fi
+
 # El binario real vive en /usr/lib porque necesita su carpeta lib/ y data/ al
 # lado; en /usr/bin va solo un lanzador.
 cat > "$STAGE/usr/bin/$PAQUETE" <<'LANZADOR'

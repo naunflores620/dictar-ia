@@ -1,0 +1,15 @@
+[package]
+name = "dictar-screen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dictar-domain = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
+xcap = "0.0.14"
+
+[dev-dependencies]
+tempfile = "3"

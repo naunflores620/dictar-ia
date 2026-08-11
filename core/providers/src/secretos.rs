@@ -281,6 +281,91 @@ pub fn resolver_por_defecto() -> CadenaResolvers {
 }
 
 // ---------------------------------------------------------------------------
+// Escritura
+// ---------------------------------------------------------------------------
+
+/// Guarda —o borra, con `None`— una clave en la configuración del usuario.
+///
+/// Escribe en `~/.config/dictar_ia/.env` con permisos 0600. No se usa el
+/// llavero del sistema, y conviene decir por qué: exige un demonio de
+/// secretos corriendo (gnome-keyring o similar), y cuando no está —una sesión
+/// remota, un entorno mínimo— falla de formas difíciles de diagnosticar. Un
+/// archivo del propio usuario, ilegible para los demás, es honesto y funciona
+/// siempre. El usuario además puede editarlo a mano si le apetece.
+///
+/// Se conserva el resto del archivo: si tenía comentarios o claves de otros
+/// proveedores, siguen ahí.
+pub fn guardar_clave(referencia: &str, valor: Option<&str>) -> std::io::Result<PathBuf> {
+    let dir = dir_configuracion().ok_or_else(|| {
+        std::io::Error::other("no se pudo determinar la carpeta de configuración")
+    })?;
+    guardar_clave_en(&dir, referencia, valor)
+}
+
+/// Igual que [`guardar_clave`], pero con el directorio explícito.
+///
+/// Existe para poder probarlo sin tocar variables de entorno globales: los
+/// tests corren en paralelo, y mutar `XDG_CONFIG_HOME` desde varios a la vez
+/// hace que se pisen entre ellos y fallen de forma intermitente.
+pub fn guardar_clave_en(
+    dir: &Path,
+    referencia: &str,
+    valor: Option<&str>,
+) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+
+    let ruta = dir.join(".env");
+    let nombre = nombres_candidatos(referencia)
+        .into_iter()
+        .last()
+        .unwrap_or_else(|| referencia.to_uppercase());
+
+    let previo = std::fs::read_to_string(&ruta).unwrap_or_default();
+    let mut lineas: Vec<String> = Vec::new();
+    let mut sustituida = false;
+
+    for linea in previo.lines() {
+        let clave_linea = linea
+            .trim()
+            .strip_prefix("export ")
+            .unwrap_or(linea.trim())
+            .split_once('=')
+            .map(|(k, _)| k.trim());
+
+        if clave_linea == Some(nombre.as_str()) {
+            if let Some(v) = valor {
+                lineas.push(format!("{nombre}={v}"));
+            }
+            // Con `None` simplemente no se reescribe: eso la borra.
+            sustituida = true;
+        } else {
+            lineas.push(linea.to_owned());
+        }
+    }
+
+    if !sustituida {
+        if let Some(v) = valor {
+            if lineas.is_empty() {
+                lineas.push("# Claves de API de dictar_ia. Permisos 0600.".to_owned());
+            }
+            lineas.push(format!("{nombre}={v}"));
+        }
+    }
+
+    let contenido = format!("{}\n", lineas.join("\n"));
+    std::fs::write(&ruta, contenido)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // 0600 antes de que nadie pueda leerlo: son credenciales.
+        std::fs::set_permissions(&ruta, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(ruta)
+}
+
+// ---------------------------------------------------------------------------
 // En memoria, para tests
 // ---------------------------------------------------------------------------
 
@@ -402,6 +487,69 @@ mod tests {
         let (valor, origen) = cadena.resolver_con_origen("keyring:deepseek").unwrap();
         assert_eq!(valor, "del-archivo");
         assert!(matches!(origen, Origen::Archivo(_)));
+    }
+
+    #[test]
+    fn guardar_una_clave_la_deja_legible_para_el_resolutor() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let ruta = guardar_clave_en(dir.path(), "keyring:deepseek", Some("sk-prueba-123")).unwrap();
+        assert!(ruta.is_file());
+
+        let r = DotEnvResolver::desde_archivo(&ruta).unwrap();
+        assert_eq!(
+            r.resolver("keyring:deepseek").as_deref(),
+            Some("sk-prueba-123")
+        );
+    }
+
+    #[test]
+    fn guardar_no_pisa_las_claves_de_otros_proveedores() {
+        let dir = tempfile::tempdir().unwrap();
+
+        guardar_clave_en(dir.path(), "keyring:deepseek", Some("aaa")).unwrap();
+        let ruta = guardar_clave_en(dir.path(), "keyring:gemini", Some("bbb")).unwrap();
+
+        let r = DotEnvResolver::desde_archivo(&ruta).unwrap();
+        assert_eq!(r.resolver("keyring:deepseek").as_deref(), Some("aaa"));
+        assert_eq!(r.resolver("keyring:gemini").as_deref(), Some("bbb"));
+    }
+
+    #[test]
+    fn guardar_dos_veces_sustituye_en_vez_de_acumular() {
+        let dir = tempfile::tempdir().unwrap();
+
+        guardar_clave_en(dir.path(), "keyring:deepseek", Some("vieja")).unwrap();
+        let ruta = guardar_clave_en(dir.path(), "keyring:deepseek", Some("nueva")).unwrap();
+
+        let texto = std::fs::read_to_string(&ruta).unwrap();
+        assert_eq!(texto.matches("DEEPSEEK_API_KEY").count(), 1);
+
+        let r = DotEnvResolver::desde_archivo(&ruta).unwrap();
+        assert_eq!(r.resolver("keyring:deepseek").as_deref(), Some("nueva"));
+    }
+
+    #[test]
+    fn borrar_una_clave_la_quita_del_archivo() {
+        let dir = tempfile::tempdir().unwrap();
+
+        guardar_clave_en(dir.path(), "keyring:deepseek", Some("aaa")).unwrap();
+        let ruta = guardar_clave_en(dir.path(), "keyring:deepseek", None).unwrap();
+
+        let r = DotEnvResolver::desde_archivo(&ruta).unwrap();
+        assert!(r.resolver("keyring:deepseek").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn el_archivo_de_claves_queda_ilegible_para_los_demas() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        let ruta = guardar_clave_en(dir.path(), "keyring:openai", Some("sk-secreta")).unwrap();
+        let modo = std::fs::metadata(&ruta).unwrap().permissions().mode() & 0o777;
+        assert_eq!(modo, 0o600, "permisos {modo:o}: son credenciales");
     }
 
     #[test]

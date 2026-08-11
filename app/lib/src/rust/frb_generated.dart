@@ -64,7 +64,7 @@ class Nucleo extends BaseEntrypoint<NucleoApi, NucleoApiImpl, NucleoWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -1504507160;
+  int get rustContentHash => 184433240;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -92,6 +92,11 @@ abstract class NucleoApi extends BaseApi {
 
   Future<String?> cratePuenteGrabando();
 
+  Future<String> cratePuenteGuardarClave({
+    required String proveedor,
+    String? clave,
+  });
+
   Future<String> cratePuenteInicializar({String? dirDatos});
 
   Future<String> cratePuenteIniciarGrabacion({
@@ -99,6 +104,7 @@ abstract class NucleoApi extends BaseApi {
     String? topicId,
     String? titulo,
     required bool capturarSistema,
+    required bool capturarDiapositivas,
     required bool soloLocal,
     required PlatformInt64 ahoraMs,
   });
@@ -116,6 +122,8 @@ abstract class NucleoApi extends BaseApi {
   Future<List<FraseDto>> cratePuenteObtenerTranscripcion({
     required String sessionId,
   });
+
+  Future<String> cratePuenteProbarProveedor({required String id});
 
   Future<ProcesadaDto> cratePuenteProcesarSesion({
     required String sessionId,
@@ -313,6 +321,40 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
       const TaskConstMeta(debugName: "grabando", argNames: []);
 
   @override
+  Future<String> cratePuenteGuardarClave({
+    required String proveedor,
+    String? clave,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(proveedor, serializer);
+          sse_encode_opt_String(clave, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 7,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCratePuenteGuardarClaveConstMeta,
+        argValues: [proveedor, clave],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCratePuenteGuardarClaveConstMeta => const TaskConstMeta(
+    debugName: "guardar_clave",
+    argNames: ["proveedor", "clave"],
+  );
+
+  @override
   Future<String> cratePuenteInicializar({String? dirDatos}) {
     return handler.executeNormal(
       NormalTask(
@@ -322,7 +364,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 8,
             port: port_,
           );
         },
@@ -346,6 +388,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
     String? topicId,
     String? titulo,
     required bool capturarSistema,
+    required bool capturarDiapositivas,
     required bool soloLocal,
     required PlatformInt64 ahoraMs,
   }) {
@@ -357,12 +400,13 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           sse_encode_opt_String(topicId, serializer);
           sse_encode_opt_String(titulo, serializer);
           sse_encode_bool(capturarSistema, serializer);
+          sse_encode_bool(capturarDiapositivas, serializer);
           sse_encode_bool(soloLocal, serializer);
           sse_encode_i_64(ahoraMs, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 9,
             port: port_,
           );
         },
@@ -371,7 +415,15 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCratePuenteIniciarGrabacionConstMeta,
-        argValues: [tipo, topicId, titulo, capturarSistema, soloLocal, ahoraMs],
+        argValues: [
+          tipo,
+          topicId,
+          titulo,
+          capturarSistema,
+          capturarDiapositivas,
+          soloLocal,
+          ahoraMs,
+        ],
         apiImpl: this,
       ),
     );
@@ -385,6 +437,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           "topicId",
           "titulo",
           "capturarSistema",
+          "capturarDiapositivas",
           "soloLocal",
           "ahoraMs",
         ],
@@ -399,7 +452,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 10,
             port: port_,
           );
         },
@@ -426,7 +479,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 11,
             port: port_,
           );
         },
@@ -454,7 +507,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 12,
             port: port_,
           );
         },
@@ -481,7 +534,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 13,
             port: port_,
           );
         },
@@ -509,7 +562,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 14,
             port: port_,
           );
         },
@@ -539,7 +592,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 15,
             port: port_,
           );
         },
@@ -561,6 +614,34 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
       );
 
   @override
+  Future<String> cratePuenteProbarProveedor({required String id}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(id, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 16,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCratePuenteProbarProveedorConstMeta,
+        argValues: [id],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCratePuenteProbarProveedorConstMeta =>
+      const TaskConstMeta(debugName: "probar_proveedor", argNames: ["id"]);
+
+  @override
   Future<ProcesadaDto> cratePuenteProcesarSesion({
     required String sessionId,
     required PlatformInt64 ahoraMs,
@@ -574,7 +655,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 17,
             port: port_,
           );
         },
@@ -603,7 +684,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 18,
             port: port_,
           );
         },
@@ -631,7 +712,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 19,
             port: port_,
           );
         },

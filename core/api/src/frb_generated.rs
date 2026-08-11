@@ -38,7 +38,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1504507160;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 184433240;
 
 // Section: executor
 
@@ -245,6 +245,40 @@ fn wire__crate__puente__grabando_impl(
         },
     )
 }
+fn wire__crate__puente__guardar_clave_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "guardar_clave",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_proveedor = <String>::sse_decode(&mut deserializer);
+            let api_clave = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::puente::guardar_clave(api_proveedor, api_clave)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__puente__inicializar_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -304,6 +338,7 @@ fn wire__crate__puente__iniciar_grabacion_impl(
             let api_topic_id = <Option<String>>::sse_decode(&mut deserializer);
             let api_titulo = <Option<String>>::sse_decode(&mut deserializer);
             let api_capturar_sistema = <bool>::sse_decode(&mut deserializer);
+            let api_capturar_diapositivas = <bool>::sse_decode(&mut deserializer);
             let api_solo_local = <bool>::sse_decode(&mut deserializer);
             let api_ahora_ms = <i64>::sse_decode(&mut deserializer);
             deserializer.end();
@@ -314,6 +349,7 @@ fn wire__crate__puente__iniciar_grabacion_impl(
                         api_topic_id,
                         api_titulo,
                         api_capturar_sistema,
+                        api_capturar_diapositivas,
                         api_solo_local,
                         api_ahora_ms,
                     )?;
@@ -512,6 +548,39 @@ fn wire__crate__puente__obtener_transcripcion_impl(
             move |context| {
                 transform_result_sse::<_, String>((move || {
                     let output_ok = crate::puente::obtener_transcripcion(api_session_id)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__puente__probar_proveedor_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "probar_proveedor",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::puente::probar_proveedor(api_id)?;
                     Ok(output_ok)
                 })())
             }
@@ -964,17 +1033,19 @@ fn pde_ffi_dispatcher_primary_impl(
         4 => wire__crate__puente__detener_grabacion_impl(port, ptr, rust_vec_len, data_len),
         5 => wire__crate__puente__evento_dto_default_impl(port, ptr, rust_vec_len, data_len),
         6 => wire__crate__puente__grabando_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__puente__inicializar_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__puente__iniciar_grabacion_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__puente__listar_pendientes_impl(port, ptr, rust_vec_len, data_len),
-        10 => wire__crate__puente__listar_proveedores_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__puente__listar_sesiones_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__puente__listar_topics_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__puente__obtener_notas_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__puente__obtener_transcripcion_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__puente__procesar_sesion_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__puente__sesiones_interrumpidas_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__puente__siguiente_evento_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__puente__guardar_clave_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__puente__inicializar_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__puente__iniciar_grabacion_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__puente__listar_pendientes_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__puente__listar_proveedores_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__puente__listar_sesiones_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__puente__listar_topics_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__puente__obtener_notas_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__puente__obtener_transcripcion_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__puente__probar_proveedor_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__puente__procesar_sesion_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__puente__sesiones_interrumpidas_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__puente__siguiente_evento_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }

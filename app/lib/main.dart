@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'datos/repositorio.dart';
 import 'datos/repositorio_rust.dart';
 import 'pantallas/grabacion.dart';
+import 'pantallas/ajustes.dart';
 import 'pantallas/inicio.dart';
 import 'pantallas/pendientes.dart';
 
@@ -72,6 +73,7 @@ class _ShellState extends State<Shell> {
   static const _destinos = [
     (icono: Icons.mic_none, activo: Icons.mic, etiqueta: 'Sesiones'),
     (icono: Icons.event_note_outlined, activo: Icons.event_note, etiqueta: 'Pendientes'),
+    (icono: Icons.settings_outlined, activo: Icons.settings, etiqueta: 'Ajustes'),
   ];
 
   @override
@@ -112,7 +114,8 @@ class _ShellState extends State<Shell> {
 
     final cuerpo = switch (_indice) {
       0 => PantallaInicio(repo: widget.repo),
-      _ => PantallaPendientes(repo: widget.repo),
+      1 => PantallaPendientes(repo: widget.repo),
+      _ => PantallaAjustes(repo: widget.repo),
     };
 
     if (esAncho) {

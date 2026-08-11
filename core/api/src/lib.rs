@@ -224,6 +224,44 @@ impl Nucleo {
             .collect()
     }
 
+    /// Hace una petición mínima a un proveedor para ver si responde.
+    ///
+    /// Devuelve lo que contestó, recortado: ver la respuesta real da más
+    /// confianza que un «correcto» genérico, y si el proveedor devuelve algo
+    /// raro, se ve.
+    pub fn probar_proveedor(&self, id: &str) -> Result<String> {
+        use dictar_providers::config::Task;
+        use dictar_providers::{CompletionRequest, Message};
+
+        let router = self.router()?;
+
+        // Una pregunta trivial y una respuesta corta: la prueba tiene que
+        // costar céntimas, no una llamada de verdad.
+        let mut req = CompletionRequest::nueva(vec![Message::usuario(
+            "Responde solo con la palabra: correcto",
+        )]);
+        req.max_tokens = Some(16);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| ApiError::Config(e.to_string()))?;
+
+        // Se prueba SOLO el proveedor pedido: con la cadena de respaldo
+        // normal, un fallo suyo quedaría tapado por el siguiente y el usuario
+        // creería que su clave funciona.
+        let solo_este = dictar_providers::router::Router::desde_config_filtrado(
+            &self.config,
+            &dictar_providers::router::resolver_por_defecto(),
+            id,
+        )?;
+        let _ = router;
+
+        let salida = rt.block_on(solo_este.texto(Task::Chat, req))?;
+
+        Ok(salida.chars().take(120).collect())
+    }
+
     pub(crate) fn con_db<T>(&self, f: impl FnOnce(&mut Db) -> T) -> T {
         let mut db = self.db.lock().unwrap();
         f(&mut db)

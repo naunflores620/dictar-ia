@@ -8,6 +8,23 @@ import '../src/rust/frb_generated.dart';
 import '../src/rust/puente.dart' as rust;
 import 'repositorio.dart';
 
+/// Estado de un proveedor de IA en la pantalla de ajustes.
+class ProveedorInfo {
+  const ProveedorInfo({
+    required this.id,
+    required this.modelo,
+    required this.esLocal,
+    this.origenClave,
+  });
+
+  final String id;
+  final String modelo;
+  /// De qué archivo salió la clave, o `null` si no hay ninguna.
+  final String? origenClave;
+  /// Ollama y compañía: funcionan sin clave y sin conexión.
+  final bool esLocal;
+}
+
 /// Repositorio respaldado por el núcleo Rust.
 ///
 /// Traduce entre los tipos planos que cruzan el FFI (`*Dto`) y los del dominio
@@ -143,6 +160,7 @@ class RepositorioRust implements Repositorio {
       topicId: topicId,
       titulo: null,
       capturarSistema: true,
+      capturarDiapositivas: capturarPantalla,
       soloLocal: false,
       ahoraMs: DateTime.now().millisecondsSinceEpoch,
     );
@@ -187,7 +205,31 @@ class RepositorioRust implements Repositorio {
     }
   }
 
-  Future<List<rust.ProveedorDto>> proveedores() => rust.listarProveedores();
+  /// Estado de cada proveedor de IA, para la pantalla de ajustes.
+  Future<List<ProveedorInfo>> proveedoresInfo() async {
+    final l = await rust.listarProveedores();
+    return l
+        .map((p) => ProveedorInfo(
+              id: p.id,
+              modelo: p.modelo,
+              origenClave: p.origenClave,
+              esLocal: p.esLocal,
+            ))
+        .toList();
+  }
+
+  /// Guarda la clave de un proveedor; con cadena vacía, la borra.
+  ///
+  /// Devuelve el archivo donde quedó, para poder decírselo al usuario: si
+  /// algún día algo no cuadra, saber dónde está la clave ahorra la búsqueda.
+  Future<String> guardarClave(String proveedor, String clave) =>
+      rust.guardarClave(
+        proveedor: proveedor,
+        clave: clave.trim().isEmpty ? null : clave.trim(),
+      );
+
+  /// Hace una petición real al proveedor y devuelve lo que contestó.
+  Future<String> probarProveedor(String id) => rust.probarProveedor(id: id);
 
   /// Vacía la cola de eventos del núcleo hacia los flujos de la interfaz.
   ///

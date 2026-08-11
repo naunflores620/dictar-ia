@@ -79,6 +79,68 @@ impl Router {
         })
     }
 
+    /// Router con un único proveedor, para probarlo aislado.
+    ///
+    /// Sin esto, comprobar una clave usaría la cadena de respaldo normal y un
+    /// fallo del proveedor quedaría tapado por el siguiente: el usuario vería
+    /// «funciona» con una clave que no vale.
+    pub fn desde_config_filtrado(
+        cfg: &ProvidersFile,
+        claves: &dyn KeyResolver,
+        solo: &str,
+    ) -> Result<Self> {
+        let p = cfg
+            .proveedor(solo)
+            .ok_or_else(|| ProviderError::Config(format!("no existe el proveedor «{solo}»")))?;
+
+        let prov = construir(p, claves).ok_or_else(|| {
+            ProviderError::Config(format!(
+                "«{solo}» no tiene clave configurada, así que no hay nada que probar"
+            ))
+        })?;
+
+        let mut cadenas = HashMap::new();
+        for tarea in [
+            Task::RollingSummary,
+            Task::ClassNotes,
+            Task::ClientMinutes,
+            Task::TeamNotes,
+            Task::Chat,
+            Task::OcrSlides,
+        ] {
+            cadenas.insert(tarea, vec![solo.to_owned()]);
+        }
+
+        Ok(Self::con_proveedores(vec![prov], cadenas))
+    }
+
+    /// Completado de texto libre, sin esquema.
+    ///
+    /// Para el chat y para la comprobación de proveedores, donde no hace falta
+    /// una estructura y forzarla solo complicaría la prueba.
+    pub async fn texto(&self, tarea: Task, req: CompletionRequest) -> Result<String> {
+        let cadena = self.cadena(tarea);
+        let mut fallos = Vec::new();
+
+        for id in cadena {
+            let Some(prov) = self.proveedores.get(id) else {
+                continue;
+            };
+            match prov.completar(&req).await {
+                Ok(r) => return Ok(r.texto),
+                Err(e) => {
+                    let seguir = e.merece_respaldo();
+                    fallos.push(format!("{id}: {e}"));
+                    if !seguir {
+                        return Err(ProviderError::CadenaAgotada(fallos.join(" | ")));
+                    }
+                }
+            }
+        }
+
+        Err(ProviderError::CadenaAgotada(fallos.join(" | ")))
+    }
+
     /// Construye un router sobre proveedores ya instanciados. Para tests y para
     /// el modo "solo local" de una sesión confidencial.
     pub fn con_proveedores(

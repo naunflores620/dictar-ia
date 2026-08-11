@@ -28,6 +28,8 @@ pub struct OpcionesGrabacion {
     /// Marca la sesión como confidencial: nunca se enviará a un proveedor
     /// externo, aunque la configuración global lo permita.
     pub solo_local: bool,
+    /// Guardar una captura cada vez que cambia la diapositiva compartida.
+    pub capturar_diapositivas: bool,
 }
 
 impl Default for OpcionesGrabacion {
@@ -38,6 +40,7 @@ impl Default for OpcionesGrabacion {
             titulo: None,
             capturar_sistema: true,
             solo_local: false,
+            capturar_diapositivas: true,
         }
     }
 }
@@ -46,6 +49,10 @@ impl Default for OpcionesGrabacion {
 /// para procesar.
 pub struct Grabacion {
     pub session_id: SessionId,
+    /// Captura de diapositivas, si se pidió. Vive aparte del audio: si falla,
+    /// la grabación sigue. Nunca al revés.
+    pantalla: Option<dictar_screen::SesionCaptura>,
+    laminas: Option<std::sync::mpsc::Receiver<dictar_screen::SlideCapturada>>,
     // La ruta del audio no se guarda aquí: se deriva del id con
     // `Nucleo::dir_audio`, y tener dos fuentes de verdad para lo mismo es
     // justo como acaban desincronizándose.
@@ -122,9 +129,29 @@ impl Nucleo {
                 .map_err(|e| ApiError::Config(e.to_string()))?
         };
 
+        // La captura de pantalla es opcional y no puede tumbar la grabación:
+        // si falla —no hay servidor gráfico, el portal deniega el permiso— se
+        // avisa y se sigue grabando el audio, que es lo importante.
+        let (laminas, pantalla) = if opts.capturar_diapositivas {
+            match dictar_screen::iniciar(
+                dir_audio.join("diapositivas"),
+                dictar_screen::ConfigCaptura::default(),
+            ) {
+                Ok((rx, ses)) => (Some(rx), Some(ses)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "sin captura de diapositivas; se graba solo el audio");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
+
         let id = sesion.id.clone();
         *self.grabacion.lock().unwrap() = Some(Grabacion {
             session_id: id.clone(),
+            pantalla,
+            laminas,
             captura: Some(captura),
             parar,
             hilo: Some(hilo),
@@ -147,6 +174,30 @@ impl Nucleo {
         // los últimos segundos se perderían.
         if let Some(c) = grab.captura.take() {
             let _ = c.detener();
+        }
+        if let Some(p) = grab.pantalla.take() {
+            p.detener();
+        }
+
+        // Las diapositivas se vuelcan a la base al cerrar, no según llegan:
+        // durante la clase el hilo de escritura no debe tocar SQLite, que es
+        // donde la interfaz está leyendo.
+        let mut laminas = 0;
+        if let Some(rx) = grab.laminas.take() {
+            while let Ok(s) = rx.try_recv() {
+                let ruta = s.ruta.to_string_lossy().into_owned();
+                if self
+                    .con_db(|db| {
+                        db.insertar_diapositiva(&grab.session_id, &ruta, s.ts_ms, &s.phash)
+                    })
+                    .is_ok()
+                {
+                    laminas += 1;
+                }
+            }
+        }
+        if laminas > 0 {
+            tracing::info!(laminas, "diapositivas guardadas");
         }
         grab.parar.store(true, Ordering::SeqCst);
         if let Some(h) = grab.hilo.take() {

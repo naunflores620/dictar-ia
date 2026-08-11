@@ -9,6 +9,7 @@ members = [
     "core/stt",
     "core/vad",
     "core/api",
+    "core/screen-capture",
     "cli",
 ]
 

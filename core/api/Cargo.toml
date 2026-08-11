@@ -16,6 +16,7 @@ dictar-providers = { workspace = true }
 dictar-notes = { workspace = true }
 dictar-audio = { path = "../audio-capture" }
 dictar-vad = { path = "../vad" }
+dictar-screen = { path = "../screen-capture" }
 dictar-stt = { path = "../stt" }
 
 tokio = { workspace = true }

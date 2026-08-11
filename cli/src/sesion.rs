@@ -80,6 +80,7 @@ pub async fn ejecutar(opts: &HashMap<String, String>) -> Result<()> {
             topic_id: topic_id.clone(),
             titulo: opts.get("titulo").cloned(),
             capturar_sistema: !solo_mic,
+            capturar_diapositivas: !opts.contains_key("sin-diapositivas"),
             solo_local: opts.contains_key("solo-local"),
         },
         ahora_ms(),

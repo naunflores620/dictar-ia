@@ -390,13 +390,39 @@ pub fn listar_proveedores() -> Result<Vec<ProveedorDto>, String> {
         .collect())
 }
 
+/// Guarda la clave de API de un proveedor, o la borra con `None`.
+///
+/// Escribe en `~/.config/dictar_ia/.env` con permisos 0600. Surte efecto en la
+/// siguiente petición, sin reiniciar: el router se construye en cada uso.
+pub fn guardar_clave(proveedor: String, clave: Option<String>) -> Result<String, String> {
+    let referencia = format!("keyring:{proveedor}");
+    let limpia = clave.map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
+
+    dictar_providers::secretos::guardar_clave(&referencia, limpia.as_deref())
+        .map(|r| r.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
+}
+
+/// Comprueba que un proveedor responde de verdad.
+///
+/// Hace una petición mínima real en lugar de validar el formato de la clave:
+/// una clave con la forma correcta pero revocada, o un identificador de modelo
+/// que ya no existe, solo se detectan preguntando. Descubrirlo aquí y no a
+/// mitad de una clase es toda la diferencia.
+pub fn probar_proveedor(id: String) -> Result<String, String> {
+    let n = nucleo()?;
+    n.probar_proveedor(&id).map_err(|e| e.to_string())
+}
+
 // -- Grabación ---------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub fn iniciar_grabacion(
     tipo: String,
     topic_id: Option<String>,
     titulo: Option<String>,
     capturar_sistema: bool,
+    capturar_diapositivas: bool,
     solo_local: bool,
     ahora_ms: i64,
 ) -> Result<String, String> {
@@ -416,6 +442,7 @@ pub fn iniciar_grabacion(
                 topic_id: topic_id.map(TopicId::from),
                 titulo,
                 capturar_sistema,
+                capturar_diapositivas,
                 solo_local,
             },
             ahora_ms,

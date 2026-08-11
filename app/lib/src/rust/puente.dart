@@ -55,11 +55,31 @@ Future<List<SesionDto>> sesionesInterrumpidas() =>
 Future<List<ProveedorDto>> listarProveedores() =>
     Nucleo.instance.api.cratePuenteListarProveedores();
 
+/// Guarda la clave de API de un proveedor, o la borra con `None`.
+///
+/// Escribe en `~/.config/dictar_ia/.env` con permisos 0600. Surte efecto en la
+/// siguiente petición, sin reiniciar: el router se construye en cada uso.
+Future<String> guardarClave({required String proveedor, String? clave}) =>
+    Nucleo.instance.api.cratePuenteGuardarClave(
+      proveedor: proveedor,
+      clave: clave,
+    );
+
+/// Comprueba que un proveedor responde de verdad.
+///
+/// Hace una petición mínima real en lugar de validar el formato de la clave:
+/// una clave con la forma correcta pero revocada, o un identificador de modelo
+/// que ya no existe, solo se detectan preguntando. Descubrirlo aquí y no a
+/// mitad de una clase es toda la diferencia.
+Future<String> probarProveedor({required String id}) =>
+    Nucleo.instance.api.cratePuenteProbarProveedor(id: id);
+
 Future<String> iniciarGrabacion({
   required String tipo,
   String? topicId,
   String? titulo,
   required bool capturarSistema,
+  required bool capturarDiapositivas,
   required bool soloLocal,
   required PlatformInt64 ahoraMs,
 }) => Nucleo.instance.api.cratePuenteIniciarGrabacion(
@@ -67,6 +87,7 @@ Future<String> iniciarGrabacion({
   topicId: topicId,
   titulo: titulo,
   capturarSistema: capturarSistema,
+  capturarDiapositivas: capturarDiapositivas,
   soloLocal: soloLocal,
   ahoraMs: ahoraMs,
 );
