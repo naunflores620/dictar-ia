@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../datos/repositorio.dart';
 import '../modelos/dominio.dart';
+import 'proceso.dart';
 
 /// Pantalla de grabación en curso.
 ///
@@ -32,6 +33,9 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
   bool _capturarPantalla = true;
   bool _iniciando = false;
 
+  /// Sesión creada al empezar a grabar; hace falta para procesarla después.
+  String? _sesionId;
+
   @override
   void dispose() {
     _subFrases?.cancel();
@@ -59,7 +63,7 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
       if (mounted) setState(() => _estado = e);
     });
 
-    await widget.repo.iniciarGrabacion(
+    _sesionId = await widget.repo.iniciarGrabacion(
       tipo: _tipo,
       topicId: _topicId,
       capturarPantalla: _capturarPantalla,
@@ -94,11 +98,31 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
     return ok ?? false;
   }
 
+  /// Detiene la grabación y encadena el procesado.
+  ///
+  /// Encadenarlo en vez de volver al listado es deliberado: si el usuario
+  /// tuviera que acordarse de pulsar «procesar» después, acabaría con clases
+  /// grabadas y sin apuntes, que es tener el trabajo hecho a medias.
   Future<void> _detener() async {
     await widget.repo.detenerGrabacion();
     await _subFrases?.cancel();
     await _subEstado?.cancel();
-    if (mounted) Navigator.of(context).pop();
+    if (!mounted) return;
+
+    final id = _sesionId;
+    if (id == null) {
+      Navigator.of(context).pop();
+      return;
+    }
+
+    // Se encadena el procesado en vez de volver al listado: si el usuario
+    // tuviera que acordarse de pulsar «procesar» después, acabaría con clases
+    // grabadas y sin apuntes, que es tener el trabajo hecho a medias.
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => PantallaProceso(repo: widget.repo, sesionId: id),
+      ),
+    );
   }
 
   void _bajarAlFinal() {
@@ -126,6 +150,8 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
       body: _estado.grabando ? _enCurso() : _configuracion(),
     );
   }
+
+
 
   // -- Antes de empezar -------------------------------------------------------
 

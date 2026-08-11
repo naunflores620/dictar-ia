@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../datos/repositorio.dart';
 import '../modelos/dominio.dart';
+import 'proceso.dart';
 import 'sesion.dart';
 
 /// Listado de sesiones agrupadas por asignatura o cliente.
@@ -145,8 +146,11 @@ class _FilaSesion extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = Theme.of(context);
-    final enProceso = sesion.estado.enProceso;
+    // `transcribiendo` significa aquí «grabada y a la espera»: el procesado se
+    // lanza a mano, no arranca solo. Se ofrece como acción en vez de dejar la
+    // fila muerta con un indicador giratorio que no gira.
+    final pendiente = sesion.estado == EstadoSesion.transcribiendo ||
+        sesion.estado == EstadoSesion.resumiendo;
 
     return ListTile(
       leading: _IconoApp(app: sesion.appCapturada, tipo: sesion.tipo),
@@ -165,27 +169,28 @@ class _FilaSesion extends StatelessWidget {
           ],
         ],
       ),
-      trailing: enProceso
-          ? Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                const SizedBox(width: 8),
-                Text(sesion.estado.etiqueta, style: t.textTheme.labelSmall),
-              ],
+      trailing: pendiente
+          ? FilledButton.tonalIcon(
+              onPressed: () => _procesar(context),
+              icon: const Icon(Icons.auto_awesome, size: 16),
+              label: const Text('Generar apuntes'),
             )
           : const Icon(Icons.chevron_right),
-      onTap: enProceso
-          ? null
+      onTap: pendiente
+          ? () => _procesar(context)
           : () => Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (_) => PantallaSesion(repo: repo, sesionId: sesion.id),
                 ),
               ),
+    );
+  }
+
+  void _procesar(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PantallaProceso(repo: repo, sesionId: sesion.id),
+      ),
     );
   }
 

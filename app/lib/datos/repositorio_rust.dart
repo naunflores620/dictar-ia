@@ -37,6 +37,7 @@ class RepositorioRust implements Repositorio {
 
   final _frases = StreamController<Frase>.broadcast();
   final _estado = StreamController<EstadoGrabacion>.broadcast();
+  final _progreso = StreamController<Progreso>.broadcast();
   Timer? _sondeo;
 
   // -- Consulta -------------------------------------------------------------
@@ -158,14 +159,33 @@ class RepositorioRust implements Repositorio {
     _estado.add(EstadoGrabacion.parado);
   }
 
+  @override
+  Stream<Progreso> get progreso => _progreso.stream;
+
   /// Procesa una sesión ya grabada: transcribe y genera las notas.
   ///
-  /// Tarda minutos. El puente ya la ejecuta fuera del hilo de la interfaz, así
-  /// que no la bloquea.
-  Future<rust.ProcesadaDto> procesar(String sesionId) => rust.procesarSesion(
+  /// El generador ejecuta las funciones de Rust en su propio hilo, así que
+  /// esta llamada no bloquea la interfaz aunque tarde minutos. El sondeo
+  /// sigue corriendo en paralelo para alimentar la barra de progreso.
+  @override
+  Future<ResultadoProceso> procesar(String sesionId) async {
+    _arrancarSondeo();
+    try {
+      final r = await rust.procesarSesion(
         sessionId: sesionId,
         ahoraMs: DateTime.now().millisecondsSinceEpoch,
       );
+      return ResultadoProceso(
+        frases: r.frases.toInt(),
+        avisos: r.avisos.toInt(),
+        costeUsd: r.costeUsd,
+        proveedor: r.proveedor,
+      );
+    } finally {
+      _sondeo?.cancel();
+      _sondeo = null;
+    }
+  }
 
   Future<List<rust.ProveedorDto>> proveedores() => rust.listarProveedores();
 
@@ -208,6 +228,7 @@ class RepositorioRust implements Repositorio {
     _sondeo?.cancel();
     _frases.close();
     _estado.close();
+    _progreso.close();
   }
 
   // -- Traducción -----------------------------------------------------------

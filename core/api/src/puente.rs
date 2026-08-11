@@ -454,8 +454,10 @@ pub fn siguiente_evento(espera_ms: u32) -> Result<Option<EventoDto>, String> {
 
     match rx.recv_timeout(std::time::Duration::from_millis(espera_ms as u64)) {
         Ok(e) => Ok(Some(e.into())),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Ok(None),
+        // Ni el tiempo agotado ni el canal cerrado son errores: el primero
+        // significa «todavía nada» y el segundo «ya terminó». La interfaz
+        // trata ambos igual y sigue consultando.
+        Err(_) => Ok(None),
     }
 }
 
@@ -467,13 +469,19 @@ pub fn procesar_sesion(session_id: String, ahora_ms: i64) -> Result<ProcesadaDto
     let n = nucleo()?;
     let id = SessionId::from(session_id);
 
+    // El progreso viaja por el mismo canal que los eventos de grabación, así
+    // que la interfaz no necesita un segundo mecanismo para enseñar la barra:
+    // sigue llamando a `siguiente_evento` igual que durante la grabación.
+    let (tx, rx) = std::sync::mpsc::channel();
+    *EVENTOS.lock().unwrap() = Some(rx);
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
 
     let r = rt
-        .block_on(n.procesar_sesion(&id, Modelo::LargeV3Turbo, ahora_ms, None))
+        .block_on(n.procesar_sesion(&id, Modelo::LargeV3Turbo, ahora_ms, Some(tx)))
         .map_err(|e| e.to_string())?;
 
     Ok(ProcesadaDto {

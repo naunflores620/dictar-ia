@@ -39,6 +39,43 @@ abstract class Repositorio {
   });
 
   Future<void> detenerGrabacion();
+
+  /// Transcribe la sesión y genera las notas.
+  ///
+  /// Tarda minutos: con 4,6x tiempo real medido, una clase de dos horas son
+  /// unos 26 minutos. La interfaz enseña [progreso] mientras tanto.
+  Future<ResultadoProceso> procesar(String sesionId);
+
+  /// Avance del procesado, para la barra.
+  Stream<Progreso> get progreso;
+}
+
+/// Instantánea del procesado en curso.
+class Progreso {
+  const Progreso({
+    required this.fase,
+    required this.fraccion,
+    this.detalle = '',
+  });
+
+  final String fase;
+  /// De 0 a 1.
+  final double fraccion;
+  final String detalle;
+}
+
+class ResultadoProceso {
+  const ResultadoProceso({
+    required this.frases,
+    required this.avisos,
+    required this.costeUsd,
+    required this.proveedor,
+  });
+
+  final int frases;
+  final int avisos;
+  final double costeUsd;
+  final String proveedor;
 }
 
 /// Instantánea de la sesión en curso.
@@ -397,10 +434,37 @@ Definición de la transformada. _Diapositiva #7_ · _[00:01:40]_
     _estado.add(EstadoGrabacion.parado);
   }
 
+  final _progreso = StreamController<Progreso>.broadcast();
+
+  @override
+  Stream<Progreso> get progreso => _progreso.stream;
+
+  @override
+  Future<ResultadoProceso> procesar(String sesionId) async {
+    const fases = [
+      'Preparando el audio',
+      'Cargando el modelo',
+      'Transcribiendo',
+      'Generando notas',
+      'Guardando',
+    ];
+    for (var i = 0; i < fases.length; i++) {
+      _progreso.add(Progreso(fase: fases[i], fraccion: (i + 1) / fases.length));
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+    }
+    return const ResultadoProceso(
+      frases: 42,
+      avisos: 2,
+      costeUsd: 0.0024,
+      proveedor: 'demostración',
+    );
+  }
+
   void dispose() {
     _reloj?.cancel();
     _frases.close();
     _estado.close();
+    _progreso.close();
   }
 
   static String _iso(DateTime d) =>

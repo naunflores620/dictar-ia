@@ -124,8 +124,21 @@ else()
 endif()
 set(RUST_LIB "${RUST_ROOT}/target/${RUST_PERFIL}/libdictar_api.so")
 
+# rustup instala cargo en ~/.cargo/bin, que no siempre está en el PATH que
+# hereda CMake —no lo está, por ejemplo, al lanzar la app desde el escritorio—.
+# Buscarlo explícitamente evita un «cargo: not found» a mitad de compilación.
+find_program(CARGO_BIN cargo
+  HINTS "$ENV{HOME}/.cargo/bin" "$ENV{CARGO_HOME}/bin"
+  PATHS /usr/local/bin /usr/bin)
+
+if(NOT CARGO_BIN)
+  message(FATAL_ERROR
+    "No se encontró cargo. Instálalo con:\n"
+    "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh")
+endif()
+
 add_custom_target(dictar_nucleo ALL
-  COMMAND cargo build ${RUST_FLAG} -p dictar-api
+  COMMAND "${CARGO_BIN}" build ${RUST_FLAG} -p dictar-api
   WORKING_DIRECTORY "${RUST_ROOT}"
   COMMENT "Compilando el núcleo Rust (${RUST_PERFIL})"
   USES_TERMINAL)
