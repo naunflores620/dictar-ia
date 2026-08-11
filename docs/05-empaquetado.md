@@ -192,7 +192,22 @@ Construir:
 dpkg-deb --build --root-owner-group dictar-ia_0.1.0_amd64
 ```
 
-### 4.2 Las dependencias son el fallo número uno
+### 4.2 Requisito mínimo: Ubuntu 24.04
+
+El loopback usa la propiedad `stream.capture.sink` de PipeWire, que **apareció en la versión
+0.3.53**. Ubuntu 22.04 trae 0.3.48: sus cabeceras no la tienen y `core/audio-capture` no llega
+ni a compilar. Se descubrió en la primera ejecución de CI, que estaba fijada a 22.04 justamente
+para maximizar la compatibilidad de glibc.
+
+La consecuencia es que el binario se compila en 24.04 y exige **glibc 2.39 o superior**. Se
+acepta a conciencia: la alternativa sería localizar el nodo `.monitor` a mano —que se rompe en
+cuanto el usuario cambia de altavoces a auriculares a mitad de clase— o renunciar a capturar la
+salida del sistema, que es la función principal de la aplicación.
+
+Para distribuciones más antiguas, el **AppImage** es la salida: empaqueta sus propias
+dependencias y no depende del glibc del sistema de la misma forma.
+
+### 4.3 Las dependencias son el fallo número uno
 
 Un `.deb` que arranca en tu equipo y falla en otro casi siempre es una dependencia no declarada.
 Tu máquina de desarrollo tiene instalado medio sistema por otras vías.
@@ -216,7 +231,7 @@ docker run --rm -it -v "$PWD/dist:/dist" debian:12 bash
 
 Esta prueba de dos minutos evita el fallo más común de todo el empaquetado en Linux.
 
-### 4.3 Complementa con AppImage
+### 4.4 Complementa con AppImage
 
 Ubuntu y derivadas son solo una parte del mundo. Un **AppImage** funciona en cualquier distro
 sin instalar nada y sin permisos de root, y te sirve además para probar rápido en Fedora o Arch.
