@@ -103,10 +103,10 @@ los apuntes. Verificado de extremo a extremo con audio real.
 | [core/stt](core/stt/) — whisper.cpp, filtros de alucinación | ✅ | 39 |
 | [core/api](core/api/) — fachada del núcleo | ✅ | 17 |
 | [cli/](cli/) — `dictar` | ✅ | 15 |
-| [app/](app/) — interfaz Flutter | ⏳ con datos de demostración | 24 |
-| Puente `flutter_rust_bridge` | ⏳ pendiente | — |
+| [app/](app/) — interfaz Flutter | ✅ conectada al núcleo real | 24 |
+| Puente `flutter_rust_bridge` | ✅ 16 funciones | — |
 
-**272 tests en verde.** `cargo clippy -D warnings` y `flutter analyze` limpios.
+**276 tests en verde.** `cargo clippy -D warnings` y `flutter analyze` limpios.
 
 ### Medido en un Core Ultra (Lunar Lake), 8 núcleos
 
@@ -152,10 +152,28 @@ Otras órdenes:
 
 Sin ninguna clave usa Ollama en local, así que funciona sin conexión y sin coste.
 
+## Interfaz gráfica
+
+```bash
+cd app && flutter run -d linux
+```
+
+CMake compila el núcleo Rust y copia `libdictar_api.so` al bundle en cada build, así que la
+interfaz nunca se queda mirando una versión vieja de la librería.
+
+Para probar contra otro almacén sin tocar los datos de uso diario:
+
+```bash
+DICTAR_DATOS=/tmp/pruebas flutter run -d linux
+```
+
+Si el núcleo no carga por lo que sea, la aplicación arranca igualmente con datos de
+demostración en lugar de quedarse en blanco.
+
 ## Siguiente paso
 
-Conectar la interfaz Flutter al núcleo real con `flutter_rust_bridge`. Hoy la app funciona con
-datos de demostración y toda la lógica ya existe detrás de [core/api](core/api/).
+Captura de diapositivas por detección de cambio de pantalla, y transcripción en vivo durante la
+clase. Ambas ya tienen su sitio en el núcleo.
 
 **Y lo más importante: empieza a grabar tus clases de verdad.** El riesgo que queda no es
 técnico sino de calidad —que los apuntes sean realmente buenos y no genéricos—, y eso solo se

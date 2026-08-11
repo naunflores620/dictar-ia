@@ -1,0 +1,10 @@
+# Configuración del puente entre el núcleo Rust y la interfaz Flutter.
+#
+# `rust_input` apunta solo a `puente`: es la superficie que se traduce a Dart,
+# y mantenerla estrecha es deliberado. Si apuntara al crate entero, cualquier
+# cambio interno de la fachada rompería el código generado.
+rust_input: crate::puente
+rust_root: core/api/
+rust_output: core/api/src/frb_generated.rs
+dart_output: app/lib/src/rust
+dart_entrypoint_class_name: Nucleo

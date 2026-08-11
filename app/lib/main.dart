@@ -1,12 +1,27 @@
 import 'package:flutter/material.dart';
 
 import 'datos/repositorio.dart';
+import 'datos/repositorio_rust.dart';
 import 'pantallas/grabacion.dart';
 import 'pantallas/inicio.dart';
 import 'pantallas/pendientes.dart';
 
-void main() {
-  runApp(DictarApp(repo: RepositorioDemo()));
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Si el núcleo no carga —falta la librería nativa, o el almacén no se puede
+  // abrir— la aplicación arranca igualmente con datos de demostración en vez
+  // de quedarse en una pantalla en blanco. Un fallo de infraestructura no
+  // debería impedir ver la interfaz.
+  Repositorio repo;
+  try {
+    repo = await RepositorioRust.abrir();
+  } catch (e) {
+    debugPrint('no se pudo abrir el núcleo ($e); se usan datos de demostración');
+    repo = RepositorioDemo();
+  }
+
+  runApp(DictarApp(repo: repo));
 }
 
 class DictarApp extends StatelessWidget {

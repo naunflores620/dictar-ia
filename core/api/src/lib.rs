@@ -9,9 +9,15 @@
 //! El puente `flutter_rust_bridge` se genera a partir de este módulo, así que
 //! su superficie se mantiene deliberadamente pequeña.
 
+// Generado por flutter_rust_bridge. No se edita a mano; se regenera con
+// `flutter_rust_bridge_codegen generate`.
+#[allow(clippy::all, dead_code, unused_imports)]
+mod frb_generated;
+
 pub mod eventos;
 pub mod grabacion;
 pub mod proceso;
+pub mod puente;
 
 use dictar_domain::{Alert, NoteTemplate, Session, SessionId, Topic, TopicId, Utterance};
 use dictar_notes::markdown;
@@ -189,6 +195,33 @@ impl Nucleo {
         // prompt, y pasarse desplazaría los términos importantes fuera de la
         // ventana de contexto.
         Ok(self.db.lock().unwrap().prompt_glosario(topic, 800)?)
+    }
+
+    /// Diapositivas capturadas de una sesión.
+    pub fn num_diapositivas(&self, id: &SessionId) -> Result<i64> {
+        Ok(self.db.lock().unwrap().diapositivas(id)?.len() as i64)
+    }
+
+    /// Estado de cada proveedor: `(id, modelo, origen de la clave, es local)`.
+    ///
+    /// El origen se devuelve porque la pérdida de tiempo más habitual al
+    /// configurar esto es tener la clave en un archivo que la aplicación no
+    /// mira; decirle al usuario de dónde la ha sacado se lo ahorra.
+    pub fn estado_proveedores(&self) -> Vec<(String, String, Option<String>, bool)> {
+        let resolver = resolver_por_defecto();
+
+        self.config
+            .providers
+            .iter()
+            .map(|p| {
+                let origen = p
+                    .api_key_ref
+                    .as_deref()
+                    .and_then(|r| resolver.resolver_con_origen(r))
+                    .map(|(_, o)| o.to_string());
+                (p.id.clone(), p.model.clone(), origen, p.es_local())
+            })
+            .collect()
     }
 
     pub(crate) fn con_db<T>(&self, f: impl FnOnce(&mut Db) -> T) -> T {

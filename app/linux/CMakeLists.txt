@@ -106,6 +106,38 @@ foreach(bundled_library ${PLUGIN_BUNDLED_LIBRARIES})
     COMPONENT Runtime)
 endforeach(bundled_library)
 
+# --- Núcleo Rust -----------------------------------------------------------
+# Compila `core/api` como librería compartida y la copia a `lib/` del bundle,
+# donde el binario de Flutter ya la busca gracias a su RPATH=$ORIGIN/lib.
+#
+# Se invoca a cargo desde aquí y no a mano para que `flutter build` y
+# `flutter run` produzcan siempre una librería al día: copiarla con un script
+# aparte es la vía rápida a depurar durante media hora un cambio de Rust que
+# la interfaz no estaba viendo.
+set(RUST_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(RUST_PERFIL "debug")
+  set(RUST_FLAG "")
+else()
+  set(RUST_PERFIL "release")
+  set(RUST_FLAG "--release")
+endif()
+set(RUST_LIB "${RUST_ROOT}/target/${RUST_PERFIL}/libdictar_api.so")
+
+add_custom_target(dictar_nucleo ALL
+  COMMAND cargo build ${RUST_FLAG} -p dictar-api
+  WORKING_DIRECTORY "${RUST_ROOT}"
+  COMMENT "Compilando el núcleo Rust (${RUST_PERFIL})"
+  USES_TERMINAL)
+
+add_dependencies(${BINARY_NAME} dictar_nucleo)
+
+install(FILES "${RUST_LIB}"
+  DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
+# ---------------------------------------------------------------------------
+
+
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/linux/")
 install(DIRECTORY "${NATIVE_ASSETS_DIR}"
