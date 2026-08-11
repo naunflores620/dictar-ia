@@ -1,0 +1,83 @@
+# ---------------------------------------------------------------------------
+# Secretos. Lo primero, y con patrón inverso para que no dependa de acordarse
+# de añadir cada variante nueva: se ignora todo `.env*` y se rescata solo la
+# plantilla.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.keystore
+*.jks
+
+# ---------------------------------------------------------------------------
+# Rust
+# ---------------------------------------------------------------------------
+/target/
+**/*.rs.bk
+
+# ---------------------------------------------------------------------------
+# Flutter / Dart
+# ---------------------------------------------------------------------------
+app/.dart_tool/
+app/build/
+app/.flutter-plugins*
+app/linux/flutter/ephemeral/
+app/windows/flutter/ephemeral/
+app/macos/Flutter/ephemeral/
+*.iml
+
+# ---------------------------------------------------------------------------
+# Android. `.cxx` es la caché del NDK y pesa cientos de megas; `local.properties`
+# lleva rutas absolutas de esta máquina y rompería la compilación de cualquier
+# otra.
+# ---------------------------------------------------------------------------
+**/.gradle/
+**/.cxx/
+**/local.properties
+**/GeneratedPluginRegistrant.*
+
+# ---------------------------------------------------------------------------
+# Artefactos de compilación y empaquetado
+# ---------------------------------------------------------------------------
+/dist/
+*.apk
+*.aab
+*.deb
+*.rpm
+*.AppImage
+*.msi
+!packaging/**
+
+# ---------------------------------------------------------------------------
+# Modelos de Whisper y embeddings: ~850 MB que se descargan bajo demanda.
+# ---------------------------------------------------------------------------
+/models/
+*.bin
+*.onnx
+*.gguf
+
+# ---------------------------------------------------------------------------
+# Datos del usuario. Las grabaciones son clases y reuniones con clientes: no
+# tienen nada que hacer en un repositorio, y menos en uno público.
+# ---------------------------------------------------------------------------
+*.db
+*.db-wal
+*.db-shm
+/grabaciones/
+/datos/
+*.wav
+*.opus
+*.mp3
+*.m4a
+
+# ---------------------------------------------------------------------------
+# Entorno de desarrollo
+# ---------------------------------------------------------------------------
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/*
+!.vscode/extensions.json

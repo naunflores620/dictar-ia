@@ -1,0 +1,90 @@
+# Catálogo de proveedores de IA.
+#
+# Los identificadores de modelo cambian con frecuencia y cada proveedor usa su
+# propia nomenclatura: CONFIRMA el ID exacto en la documentación vigente del
+# proveedor antes de usarlo. La aplicación valida el modelo con una petición de
+# prueba al guardar la configuración, para que un ID equivocado se detecte
+# entonces y no a mitad de una clase.
+#
+# Las claves NO van aquí: `api_key_ref` apunta al llavero del sistema
+# operativo (Secret Service en Linux, Credential Manager en Windows).
+
+# --------------------------------------------------------------------------
+# Gemini — contexto muy largo, salida estructurada nativa, entrada de imagen
+# --------------------------------------------------------------------------
+[[provider]]
+id             = "gemini-flash"
+kind           = "gemini"
+model          = "gemini-2.5-flash"
+api_key_ref    = "keyring:gemini"
+context        = 1000000
+max_output     = 8192
+structured     = "native"
+accepts_audio  = true
+accepts_images = true
+price_in       = 0.30
+price_out      = 2.50
+
+# --------------------------------------------------------------------------
+# DeepSeek — muy barato, compatible con la API de OpenAI
+# --------------------------------------------------------------------------
+[[provider]]
+id          = "deepseek"
+kind        = "openai_compat"
+base_url    = "https://api.deepseek.com/v1"
+model       = "deepseek-chat"
+api_key_ref = "keyring:deepseek"
+context     = 128000
+max_output  = 8192
+structured  = "json_mode"
+price_in    = 0.27
+price_out   = 1.10
+
+# --------------------------------------------------------------------------
+# OpenAI — salida estructurada estricta
+# --------------------------------------------------------------------------
+[[provider]]
+id             = "openai"
+kind           = "openai_compat"
+base_url       = "https://api.openai.com/v1"
+model          = "gpt-5"
+api_key_ref    = "keyring:openai"
+context        = 400000
+max_output     = 16384
+structured     = "native"
+accepts_images = true
+price_in       = 1.25
+price_out      = 10.00
+
+# --------------------------------------------------------------------------
+# Ollama en local — sin claves, sin coste, sin conexión.
+# Es el respaldo final de todas las cadenas: si el usuario no ha configurado
+# ninguna clave, la aplicación sigue funcionando.
+# --------------------------------------------------------------------------
+[[provider]]
+id         = "local"
+kind       = "openai_compat"
+base_url   = "http://localhost:11434/v1"
+model      = "qwen3:14b"
+context    = 32768
+max_output = 8192
+structured = "json_mode"
+price_in   = 0.0
+price_out  = 0.0
+
+# --------------------------------------------------------------------------
+# Enrutado por tarea. Cada lista es una cadena de respaldo ordenada: si el
+# primero devuelve 429, 5xx o agota el tiempo, se pasa automáticamente al
+# siguiente. Una clase de dos horas no se pierde porque un proveedor tuviera
+# un mal minuto.
+# --------------------------------------------------------------------------
+[routing]
+# Se ejecuta cada 10 minutos durante la sesión: conviene lo barato.
+rolling_summary = ["gemini-flash", "deepseek", "local"]
+class_notes     = ["gemini-flash", "deepseek", "local"]
+# El acta que puedes enviar a un cliente: conviene el mejor modelo disponible.
+client_minutes  = ["gemini-flash", "openai", "deepseek"]
+team_notes      = ["gemini-flash", "deepseek", "local"]
+chat            = ["deepseek", "gemini-flash", "local"]
+# Requiere visión: los modelos sin ella se descartan automáticamente.
+ocr_slides      = ["gemini-flash", "openai"]

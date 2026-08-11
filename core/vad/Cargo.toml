@@ -1,0 +1,10 @@
+[package]
+name = "dictar-vad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dictar-domain = { workspace = true }
+dictar-audio = { path = "../audio-capture" }
+tracing = { workspace = true }

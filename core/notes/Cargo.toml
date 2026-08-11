@@ -1,0 +1,20 @@
+[package]
+name = "dictar-notes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dictar-domain = { workspace = true }
+dictar-providers = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+async-trait = { workspace = true }

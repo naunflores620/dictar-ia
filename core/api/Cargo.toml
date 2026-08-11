@@ -1,0 +1,33 @@
+[package]
+name = "dictar-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# cdylib para el puente con Flutter; rlib para que la CLI y los tests lo usen
+# como una biblioteca normal.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+dictar-domain = { workspace = true }
+dictar-storage = { workspace = true }
+dictar-providers = { workspace = true }
+dictar-notes = { workspace = true }
+dictar-audio = { path = "../audio-capture" }
+dictar-vad = { path = "../vad" }
+dictar-stt = { path = "../stt" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+default = []
+vulkan = ["dictar-stt/vulkan"]
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "macros"] }

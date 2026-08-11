@@ -1,0 +1,23 @@
+[package]
+name = "dictar-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dictar-domain = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+default = []
+# Cifrado en reposo. Se activa cuando el flujo básico esté validado:
+# SQLCipher vendoriza OpenSSL y multiplica el tiempo de compilación, lo que
+# estorba mientras se itera sobre el esquema.
+cifrado = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
+
+[dev-dependencies]
+tempfile = "3"

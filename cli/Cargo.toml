@@ -1,0 +1,27 @@
+[package]
+name = "dictar-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dictar"
+path = "src/main.rs"
+
+[dependencies]
+dictar-domain = { workspace = true }
+dictar-storage = { workspace = true }
+dictar-providers = { workspace = true }
+dictar-notes = { workspace = true }
+dictar-audio = { path = "../core/audio-capture" }
+dictar-vad = { path = "../core/vad" }
+dictar-stt = { path = "../core/stt" }
+dictar-api = { path = "../core/api" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

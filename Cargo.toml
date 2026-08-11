@@ -1,0 +1,65 @@
+[workspace]
+resolver = "2"
+members = [
+    "core/domain",
+    "core/storage",
+    "core/providers",
+    "core/notes",
+    "core/audio-capture",
+    "core/stt",
+    "core/vad",
+    "core/api",
+    "cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Internos
+dictar-domain = { path = "core/domain" }
+dictar-storage = { path = "core/storage" }
+dictar-providers = { path = "core/providers" }
+dictar-notes = { path = "core/notes" }
+
+# Serialización. schemars genera el JSON Schema desde los propios tipos,
+# de modo que el esquema que pide la IA y el tipo que lo deserializa
+# no pueden desincronizarse.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+
+# Async y red. rustls en vez de OpenSSL: un problema menos al empaquetar.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json", "stream", "rustls-tls", "charset", "http2",
+] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Almacenamiento
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+
+# Errores y trazas
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilidades
+uuid = { version = "1", features = ["v4", "serde"] }
+toml = "0.8"
+backoff = { version = "0.4", features = ["tokio"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# El pipeline de audio necesita rendimiento incluso en depuración:
+# sin esto, el VAD y el resample no van en tiempo real en un build de debug.
+[profile.dev.package."*"]
+opt-level = 2

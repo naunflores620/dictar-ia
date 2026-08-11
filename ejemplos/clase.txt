@@ -1,0 +1,7 @@
+[00:00:12] Profesor: Buenos días. Hoy vamos a ver la transformada de Laplace.
+[00:01:40] Profesor: La definimos como la integral de cero a infinito de f de t por e elevado a menos ese te, de te.
+[00:04:15] Profesor: Esto es importante, la región de convergencia siempre cae en el examen.
+[00:09:30] Yo: ¿Profesor, la región de convergencia depende del signo de sigma?
+[00:09:55] Profesor: Exacto. En resumen: depende de la parte real de s.
+[00:22:00] Profesor: Recordad que el parcial del tema 3 es el 15 de septiembre.
+[00:31:10] Profesor: Para la semana que viene leed el capítulo 4 de Oppenheim.

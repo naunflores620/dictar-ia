@@ -1,0 +1,24 @@
+[package]
+name = "dictar-stt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dictar-domain = { workspace = true }
+dictar-audio = { path = "../audio-capture" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+whisper-rs = "0.14"
+
+[features]
+default = []
+# Aceleración por GPU. Vulkan es el equilibrio correcto para distribuir:
+# funciona con NVIDIA, AMD e Intel —incluida la Arc 140V de Lunar Lake— y solo
+# añade una dependencia trivial, a diferencia de CUDA, que multiplicaría por
+# diez el tamaño del instalador para beneficiar a una parte de los usuarios.
+vulkan = ["whisper-rs/vulkan"]
+cuda = ["whisper-rs/cuda"]
+
+[dev-dependencies]
+tempfile = "3"
