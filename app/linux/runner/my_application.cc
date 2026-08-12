@@ -54,6 +54,11 @@ static void my_application_activate(GApplication* application) {
 
   gtk_window_set_default_size(window, 1280, 720);
 
+  // Icono de la ventana: es el que sale en la barra de tareas y en Alt+Tab.
+  // Se pide por nombre al tema de iconos, donde el paquete instala
+  // dictar-ia.png en todos los tamaños.
+  gtk_window_set_icon_name(window, "dictar-ia");
+
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(
       project, self->dart_entrypoint_arguments);

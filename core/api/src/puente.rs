@@ -414,6 +414,66 @@ pub fn probar_proveedor(id: String) -> Result<String, String> {
     n.probar_proveedor(&id).map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Clone)]
+pub struct AjustesDto {
+    pub carpeta_apuntes: Option<String>,
+    pub modelo: Option<String>,
+    pub capturar_diapositivas: bool,
+}
+
+pub fn obtener_ajustes() -> Result<AjustesDto, String> {
+    let a = nucleo()?.ajustes();
+    Ok(AjustesDto {
+        carpeta_apuntes: a.carpeta_apuntes,
+        modelo: a.modelo,
+        capturar_diapositivas: a.capturar_diapositivas,
+    })
+}
+
+pub fn guardar_ajustes(
+    carpeta_apuntes: Option<String>,
+    modelo: Option<String>,
+    capturar_diapositivas: bool,
+) -> Result<(), String> {
+    let n = nucleo()?;
+    let carpeta = carpeta_apuntes
+        .map(|c| c.trim().to_owned())
+        .filter(|c| !c.is_empty());
+
+    // Se comprueba que la carpeta existe y se puede escribir ANTES de
+    // guardarla. Descubrir que la ruta estaba mal al terminar una clase, con
+    // los apuntes sin exportar, sería el peor momento.
+    if let Some(c) = &carpeta {
+        let ruta = std::path::Path::new(c);
+        if !ruta.is_dir() {
+            return Err(format!("«{c}» no existe o no es una carpeta"));
+        }
+        let prueba = ruta.join(".dictar_ia_prueba");
+        std::fs::write(&prueba, b"").map_err(|e| format!("no se puede escribir en «{c}»: {e}"))?;
+        let _ = std::fs::remove_file(&prueba);
+    }
+
+    n.guardar_ajustes(&crate::ajustes::Ajustes {
+        carpeta_apuntes: carpeta,
+        modelo,
+        capturar_diapositivas,
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Carpetas de sincronización detectadas en el equipo, para sugerirlas.
+pub fn carpetas_sugeridas() -> Vec<String> {
+    crate::ajustes::carpetas_sincronizadas()
+}
+
+/// Exporta los apuntes de una sesión a la carpeta configurada.
+pub fn exportar_apuntes(session_id: String) -> Result<Option<String>, String> {
+    nucleo()?
+        .exportar_apuntes(&SessionId::from(session_id))
+        .map(|o| o.map(|p| p.to_string_lossy().into_owned()))
+        .map_err(|e| e.to_string())
+}
+
 // -- Grabación ---------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]

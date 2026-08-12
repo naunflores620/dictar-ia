@@ -61,7 +61,12 @@ exec /usr/lib/dictar-ia/dictar_ia "$@"
 LANZADOR
 chmod 755 "$STAGE/usr/bin/$PAQUETE"
 
-cat > "$STAGE/usr/share/applications/$PAQUETE.desktop" <<DESKTOP
+# El archivo se llama como el APPLICATION_ID de la aplicación, no como el
+# paquete. GNOME empareja la ventana con su lanzador por ese nombre: si no
+# coinciden, la barra de tareas muestra el icono genérico aunque el .desktop
+# tenga el correcto. Era justo lo que pasaba.
+APP_ID="com.dictaria.dictar_ia"
+cat > "$STAGE/usr/share/applications/$APP_ID.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=dictar_ia
@@ -70,7 +75,7 @@ Exec=/usr/bin/$PAQUETE
 Icon=$PAQUETE
 Categories=Education;AudioVideo;Office;
 Terminal=false
-StartupWMClass=dictar_ia
+StartupWMClass=$APP_ID
 DESKTOP
 
 # -- Dependencias: se deducen del binario, no se escriben a mano --------------

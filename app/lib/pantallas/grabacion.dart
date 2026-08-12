@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../datos/repositorio.dart';
+import '../datos/repositorio_rust.dart';
 import '../modelos/dominio.dart';
 import 'proceso.dart';
 
@@ -35,6 +36,11 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
 
   /// Sesión creada al empezar a grabar; hace falta para procesarla después.
   String? _sesionId;
+
+  /// Se incrementa al crear una asignatura, para releer el desplegable.
+  int _recargaTopics = 0;
+
+  static const _valorCrear = '__crear__';
 
   @override
   void dispose() {
@@ -70,6 +76,74 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
     );
 
     if (mounted) setState(() => _iniciando = false);
+  }
+
+  /// Crea una asignatura o cliente sin salir de la pantalla.
+  ///
+  /// Se pide también la persona porque va al contexto que recibe el modelo, y
+  /// unos apuntes que dicen «la Dra. Pérez anunció» se leen mucho mejor que
+  /// unos que dicen «el interlocutor anunció».
+  Future<void> _crearTopic(bool esCliente) async {
+    final nombre = TextEditingController();
+    final persona = TextEditingController();
+
+    final creado = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(esCliente ? 'Nuevo cliente' : 'Nueva asignatura'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nombre,
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: esCliente ? 'Empresa' : 'Asignatura',
+                hintText: esCliente ? 'Acme S.A.' : 'Cálculo II',
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: persona,
+              decoration: InputDecoration(
+                labelText: esCliente ? 'Contacto (opcional)' : 'Profesor (opcional)',
+                hintText: esCliente ? 'Juan Ruiz' : 'Dra. Pérez',
+                border: const OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => Navigator.pop(ctx, true),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Crear'),
+          ),
+        ],
+      ),
+    );
+
+    if (creado != true || nombre.text.trim().isEmpty) return;
+
+    final r = widget.repo;
+    if (r is! RepositorioRust) return;
+
+    final id = await r.crearTopic(
+      nombre: nombre.text.trim(),
+      persona: persona.text.trim().isEmpty ? null : persona.text.trim(),
+      esCliente: esCliente,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _topicId = id;
+      _recargaTopics++;
+    });
   }
 
   Future<bool> _confirmarConsentimiento() async {
@@ -184,6 +258,7 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
         ),
         const SizedBox(height: 24),
         FutureBuilder<List<Topic>>(
+          key: ValueKey(_recargaTopics),
           future: widget.repo.topics(),
           builder: (context, snap) {
             final topics = snap.data ?? const <Topic>[];
@@ -191,19 +266,40 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
                 ? TipoTopic.cliente
                 : TipoTopic.asignatura;
             final opciones = topics.where((t) => t.tipo == esperado).toList();
+            final esCliente = _tipo == TipoSesion.cliente;
 
             return DropdownButtonFormField<String>(
-              initialValue: opciones.any((o) => o.id == _topicId) ? _topicId : null,
+              initialValue:
+                  opciones.any((o) => o.id == _topicId) ? _topicId : null,
               decoration: InputDecoration(
-                labelText: _tipo == TipoSesion.cliente ? 'Cliente' : 'Asignatura',
+                labelText: esCliente ? 'Cliente' : 'Asignatura',
                 helperText: 'Su glosario mejora la transcripción de esta sesión',
                 border: const OutlineInputBorder(),
               ),
               items: [
                 for (final o in opciones)
                   DropdownMenuItem(value: o.id, child: Text(o.titulo)),
+                // La opción de crear va dentro del propio desplegable: es
+                // donde el usuario está mirando cuando descubre que su
+                // asignatura no está en la lista.
+                DropdownMenuItem(
+                  value: _valorCrear,
+                  child: Row(
+                    children: [
+                      const Icon(Icons.add, size: 18),
+                      const SizedBox(width: 8),
+                      Text(esCliente ? 'Nuevo cliente…' : 'Nueva asignatura…'),
+                    ],
+                  ),
+                ),
               ],
-              onChanged: (v) => setState(() => _topicId = v),
+              onChanged: (v) {
+                if (v == _valorCrear) {
+                  _crearTopic(esCliente);
+                } else {
+                  setState(() => _topicId = v);
+                }
+              },
             );
           },
         ),

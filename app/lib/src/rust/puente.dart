@@ -7,7 +7,7 @@ import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `nucleo`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
 
 /// Abre el almacén del usuario. Debe llamarse una vez al arrancar.
 ///
@@ -74,6 +74,27 @@ Future<String> guardarClave({required String proveedor, String? clave}) =>
 Future<String> probarProveedor({required String id}) =>
     Nucleo.instance.api.cratePuenteProbarProveedor(id: id);
 
+Future<AjustesDto> obtenerAjustes() =>
+    Nucleo.instance.api.cratePuenteObtenerAjustes();
+
+Future<void> guardarAjustes({
+  String? carpetaApuntes,
+  String? modelo,
+  required bool capturarDiapositivas,
+}) => Nucleo.instance.api.cratePuenteGuardarAjustes(
+  carpetaApuntes: carpetaApuntes,
+  modelo: modelo,
+  capturarDiapositivas: capturarDiapositivas,
+);
+
+/// Carpetas de sincronización detectadas en el equipo, para sugerirlas.
+Future<List<String>> carpetasSugeridas() =>
+    Nucleo.instance.api.cratePuenteCarpetasSugeridas();
+
+/// Exporta los apuntes de una sesión a la carpeta configurada.
+Future<String?> exportarApuntes({required String sessionId}) =>
+    Nucleo.instance.api.cratePuenteExportarApuntes(sessionId: sessionId);
+
 Future<String> iniciarGrabacion({
   required String tipo,
   String? topicId,
@@ -117,6 +138,31 @@ Future<ProcesadaDto> procesarSesion({
   sessionId: sessionId,
   ahoraMs: ahoraMs,
 );
+
+class AjustesDto {
+  final String? carpetaApuntes;
+  final String? modelo;
+  final bool capturarDiapositivas;
+
+  const AjustesDto({
+    this.carpetaApuntes,
+    this.modelo,
+    required this.capturarDiapositivas,
+  });
+
+  @override
+  int get hashCode =>
+      carpetaApuntes.hashCode ^ modelo.hashCode ^ capturarDiapositivas.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AjustesDto &&
+          runtimeType == other.runtimeType &&
+          carpetaApuntes == other.carpetaApuntes &&
+          modelo == other.modelo &&
+          capturarDiapositivas == other.capturarDiapositivas;
+}
 
 class AvisoDto {
   final PlatformInt64 id;

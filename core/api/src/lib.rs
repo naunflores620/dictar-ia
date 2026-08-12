@@ -14,6 +14,7 @@
 #[allow(clippy::all, dead_code, unused_imports)]
 mod frb_generated;
 
+pub mod ajustes;
 pub mod eventos;
 pub mod grabacion;
 pub mod proceso;
@@ -260,6 +261,62 @@ impl Nucleo {
         let salida = rt.block_on(solo_este.texto(Task::Chat, req))?;
 
         Ok(salida.chars().take(120).collect())
+    }
+
+    /// Carpeta de configuración del usuario.
+    fn dir_config(&self) -> PathBuf {
+        dictar_providers::secretos::dir_configuracion().unwrap_or_else(|| self.dir_datos.clone())
+    }
+
+    pub fn ajustes(&self) -> ajustes::Ajustes {
+        ajustes::Ajustes::cargar(&self.dir_config())
+    }
+
+    pub fn guardar_ajustes(&self, a: &ajustes::Ajustes) -> Result<()> {
+        a.guardar(&self.dir_config())
+    }
+
+    /// Escribe los apuntes de una sesión en la carpeta configurada.
+    ///
+    /// Apuntando a OneDrive, Drive o Nextcloud, los apuntes acaban en el móvil
+    /// solos. Se prefiere eso a hablar con la API de cada nube: menos código,
+    /// ningún token que caduque, y funciona con el servicio que ya uses.
+    ///
+    /// Devuelve la ruta escrita, o `None` si no hay carpeta configurada.
+    pub fn exportar_apuntes(&self, id: &SessionId) -> Result<Option<PathBuf>> {
+        let Some(carpeta) = self.ajustes().carpeta_apuntes else {
+            return Ok(None);
+        };
+        let Some(md) = self.notas_markdown(id)? else {
+            return Ok(None);
+        };
+
+        let sesion = self.con_db(|db| db.sesion(id))?;
+
+        // Una subcarpeta por asignatura o cliente: al final del semestre son
+        // cien archivos, y todos juntos no hay quien los encuentre.
+        let asignatura = sesion
+            .topic_id
+            .as_ref()
+            .and_then(|t| self.con_db(|db| db.topic(t)).ok())
+            .map(|t| t.name)
+            .unwrap_or_else(|| "Sin clasificar".to_owned());
+
+        let destino = PathBuf::from(&carpeta).join(ajustes::nombre_seguro(&asignatura));
+        std::fs::create_dir_all(&destino)?;
+
+        // La fecha va delante para que el orden alfabético sea el cronológico.
+        let fecha = dictar_notes::fecha::iso(sesion.started_at);
+        let titulo = sesion
+            .title
+            .clone()
+            .unwrap_or_else(|| sesion.kind.plantilla().nombre_humano().to_owned());
+
+        let archivo = destino.join(format!("{fecha} - {}.md", ajustes::nombre_seguro(&titulo)));
+
+        std::fs::write(&archivo, md)?;
+        tracing::info!(archivo = %archivo.display(), "apuntes exportados");
+        Ok(Some(archivo))
     }
 
     pub(crate) fn con_db<T>(&self, f: impl FnOnce(&mut Db) -> T) -> T {

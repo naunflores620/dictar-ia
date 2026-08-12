@@ -237,7 +237,6 @@ pub fn pantallas() -> Result<Vec<String>> {
         .collect())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

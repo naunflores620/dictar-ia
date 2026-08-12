@@ -269,6 +269,15 @@ impl Nucleo {
 
         self.con_db(|db| db.cambiar_estado(id, SessionStatus::Ready))?;
 
+        // Exportar es lo último y no puede tumbar el procesado: si la carpeta
+        // configurada ya no existe —un disco externo desconectado, la nube sin
+        // montar— se avisa, pero los apuntes ya están guardados en la base.
+        match self.exportar_apuntes(id) {
+            Ok(Some(ruta)) => tracing::info!(ruta = %ruta.display(), "apuntes exportados"),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(error = %e, "no se pudieron exportar los apuntes"),
+        }
+
         emitir(Evento::Terminada {
             session_id: id.0.clone(),
             coste_usd: generadas.usage.cost_usd,

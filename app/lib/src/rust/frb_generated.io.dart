@@ -22,6 +22,9 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  AjustesDto dco_decode_ajustes_dto(dynamic raw);
+
+  @protected
   AvisoDto dco_decode_aviso_dto(dynamic raw);
 
   @protected
@@ -47,6 +50,9 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
 
   @protected
   PlatformInt64 dco_decode_i_64(dynamic raw);
+
+  @protected
+  List<String> dco_decode_list_String(dynamic raw);
 
   @protected
   List<AvisoDto> dco_decode_list_aviso_dto(dynamic raw);
@@ -100,6 +106,9 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
+  AjustesDto sse_decode_ajustes_dto(SseDeserializer deserializer);
+
+  @protected
   AvisoDto sse_decode_aviso_dto(SseDeserializer deserializer);
 
   @protected
@@ -125,6 +134,9 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
 
   @protected
   PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
+
+  @protected
+  List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
   List<AvisoDto> sse_decode_list_aviso_dto(SseDeserializer deserializer);
@@ -185,6 +197,9 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
+  void sse_encode_ajustes_dto(AjustesDto self, SseSerializer serializer);
+
+  @protected
   void sse_encode_aviso_dto(AvisoDto self, SseSerializer serializer);
 
   @protected
@@ -216,6 +231,9 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
 
   @protected
   void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_aviso_dto(List<AvisoDto> self, SseSerializer serializer);

@@ -8,6 +8,36 @@ import '../src/rust/frb_generated.dart';
 import '../src/rust/puente.dart' as rust;
 import 'repositorio.dart';
 
+/// Preferencias del usuario.
+class AjustesApp {
+  const AjustesApp({
+    this.carpetaApuntes,
+    this.modelo,
+    this.capturarDiapositivas = true,
+  });
+
+  /// Carpeta donde se exportan los apuntes al terminar cada sesión.
+  ///
+  /// Apuntando a OneDrive, Drive o Nextcloud, los apuntes acaban en el móvil
+  /// solos, sin que la aplicación hable con ninguna API de nube.
+  final String? carpetaApuntes;
+  final String? modelo;
+  final bool capturarDiapositivas;
+
+  AjustesApp copiaCon({
+    String? carpetaApuntes,
+    String? modelo,
+    bool? capturarDiapositivas,
+    bool limpiarCarpeta = false,
+  }) =>
+      AjustesApp(
+        carpetaApuntes:
+            limpiarCarpeta ? null : (carpetaApuntes ?? this.carpetaApuntes),
+        modelo: modelo ?? this.modelo,
+        capturarDiapositivas: capturarDiapositivas ?? this.capturarDiapositivas,
+      );
+}
+
 /// Estado de un proveedor de IA en la pantalla de ajustes.
 class ProveedorInfo {
   const ProveedorInfo({
@@ -230,6 +260,35 @@ class RepositorioRust implements Repositorio {
 
   /// Hace una petición real al proveedor y devuelve lo que contestó.
   Future<String> probarProveedor(String id) => rust.probarProveedor(id: id);
+
+  // -- Ajustes --------------------------------------------------------------
+
+  Future<AjustesApp> ajustes() async {
+    final a = await rust.obtenerAjustes();
+    return AjustesApp(
+      carpetaApuntes: a.carpetaApuntes,
+      modelo: a.modelo,
+      capturarDiapositivas: a.capturarDiapositivas,
+    );
+  }
+
+  /// Guarda los ajustes. Falla si la carpeta no existe o no se puede escribir.
+  Future<void> guardarAjustes(AjustesApp a) => rust.guardarAjustes(
+        carpetaApuntes: a.carpetaApuntes,
+        modelo: a.modelo,
+        capturarDiapositivas: a.capturarDiapositivas,
+      );
+
+  /// Carpetas de sincronización detectadas, para sugerirlas.
+  Future<List<String>> carpetasSugeridas() => rust.carpetasSugeridas();
+
+  /// Crea una asignatura o cliente y devuelve su identificador.
+  Future<String> crearTopic({
+    required String nombre,
+    String? persona,
+    bool esCliente = false,
+  }) =>
+      rust.crearTopic(nombre: nombre, persona: persona, esCliente: esCliente);
 
   /// Vacía la cola de eventos del núcleo hacia los flujos de la interfaz.
   ///

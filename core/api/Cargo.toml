@@ -22,6 +22,7 @@ dictar-stt = { path = "../stt" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 flutter_rust_bridge = "=2.12.0"

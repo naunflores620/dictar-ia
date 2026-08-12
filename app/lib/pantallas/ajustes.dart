@@ -54,6 +54,18 @@ class _PantallaAjustesState extends State<PantallaAjustes> {
           return ListView(
             padding: const EdgeInsets.only(bottom: 32),
             children: [
+              _CarpetaApuntes(repo: widget.repo),
+              const Divider(height: 32),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: Text(
+                  'Proveedores de IA',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
               const _Explicacion(),
               for (final p in l)
                 _FilaProveedor(
@@ -360,6 +372,170 @@ class _SinNucleo extends StatelessWidget {
           textAlign: TextAlign.center,
           style: Theme.of(context).textTheme.bodyMedium,
         ),
+      ),
+    );
+  }
+}
+
+/// Carpeta donde se guardan los apuntes exportados.
+///
+/// Se ofrecen las carpetas de sincronización detectadas en vez de un selector
+/// de archivos: apuntando a OneDrive, Drive o Nextcloud, los apuntes acaban en
+/// el móvil solos, sin que la aplicación tenga que hablar con la API de ninguna
+/// nube —menos código, ningún token que caduque, y funciona con el servicio que
+/// ya uses—.
+class _CarpetaApuntes extends StatefulWidget {
+  const _CarpetaApuntes({required this.repo});
+
+  final Repositorio repo;
+
+  @override
+  State<_CarpetaApuntes> createState() => _CarpetaApuntesState();
+}
+
+class _CarpetaApuntesState extends State<_CarpetaApuntes> {
+  final _campo = TextEditingController();
+  List<String> _sugeridas = const [];
+  String? _error;
+  bool _guardado = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _cargar();
+  }
+
+  @override
+  void dispose() {
+    _campo.dispose();
+    super.dispose();
+  }
+
+  Future<void> _cargar() async {
+    final r = widget.repo;
+    if (r is! RepositorioRust) return;
+
+    final a = await r.ajustes();
+    final s = await r.carpetasSugeridas();
+    if (!mounted) return;
+
+    setState(() {
+      _campo.text = a.carpetaApuntes ?? '';
+      _sugeridas = s;
+    });
+  }
+
+  Future<void> _guardar(String ruta) async {
+    final r = widget.repo;
+    if (r is! RepositorioRust) return;
+
+    setState(() {
+      _error = null;
+      _guardado = false;
+    });
+
+    try {
+      final a = await r.ajustes();
+      await r.guardarAjustes(AjustesApp(
+        carpetaApuntes: ruta,
+        modelo: a.modelo,
+        capturarDiapositivas: a.capturarDiapositivas,
+      ));
+      if (mounted) {
+        setState(() {
+          _campo.text = ruta;
+          _guardado = true;
+        });
+      }
+    } catch (e) {
+      // El núcleo comprueba que existe y que se puede escribir antes de
+      // guardar: descubrir que la ruta estaba mal al acabar una clase, con los
+      // apuntes sin exportar, sería el peor momento.
+      if (mounted) setState(() => _error = '$e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Carpeta de apuntes',
+            style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Al terminar cada sesión se guarda ahí el Markdown, en una '
+            'subcarpeta por asignatura. Si eliges una carpeta de OneDrive o '
+            'Drive, los apuntes te llegan al móvil solos.',
+            style: t.textTheme.bodySmall
+                ?.copyWith(color: t.colorScheme.outline, height: 1.45),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _campo,
+            decoration: InputDecoration(
+              labelText: 'Ruta',
+              hintText: '/home/tu-usuario/OneDrive/Apuntes',
+              border: const OutlineInputBorder(),
+              isDense: true,
+              errorText: _error,
+              suffixIcon: _guardado
+                  ? Icon(Icons.check, color: t.colorScheme.primary)
+                  : null,
+            ),
+            onSubmitted: _guardar,
+            onChanged: (_) => setState(() => _guardado = false),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              FilledButton(
+                onPressed: () => _guardar(_campo.text),
+                child: const Text('Guardar'),
+              ),
+              const SizedBox(width: 8),
+              if (_campo.text.isNotEmpty)
+                TextButton(
+                  onPressed: () async {
+                    final r = widget.repo;
+                    if (r is! RepositorioRust) return;
+                    final a = await r.ajustes();
+                    await r.guardarAjustes(AjustesApp(
+                      carpetaApuntes: null,
+                      modelo: a.modelo,
+                      capturarDiapositivas: a.capturarDiapositivas,
+                    ));
+                    if (mounted) setState(() => _campo.clear());
+                  },
+                  child: const Text('Quitar'),
+                ),
+            ],
+          ),
+          if (_sugeridas.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text('Detectadas en tu equipo:', style: t.textTheme.labelMedium),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final c in _sugeridas)
+                  ActionChip(
+                    avatar: const Icon(Icons.folder_outlined, size: 16),
+                    label: Text(c.split('/').last),
+                    tooltip: c,
+                    onPressed: () => _guardar('$c/Apuntes'),
+                  ),
+              ],
+            ),
+          ],
+        ],
       ),
     );
   }
