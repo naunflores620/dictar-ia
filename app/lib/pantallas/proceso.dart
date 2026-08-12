@@ -122,10 +122,12 @@ class _PantallaProcesoState extends State<PantallaProceso> {
         ),
         const SizedBox(height: 32),
         Text(
-          'La transcripción va a unas 4,6 veces el tiempo real: una clase de '
-          'dos horas tarda alrededor de media hora.\n\n'
-          'El audio ya está guardado, así que puedes cerrar la aplicación y '
-          'retomarlo después desde el listado.',
+          'La clase se transcribe mientras se graba, así que aquí solo queda '
+          'el resumen: unos segundos.\n\n'
+          'Si estás procesando una grabación importada, la transcripción va a '
+          'unas 4,6 veces el tiempo real.\n\n'
+          'El audio ya está guardado: puedes cerrar la aplicación y retomarlo '
+          'después desde el listado.',
           style: t.textTheme.bodySmall
               ?.copyWith(color: t.colorScheme.outline, height: 1.5),
           textAlign: TextAlign.center,

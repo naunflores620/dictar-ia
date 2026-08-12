@@ -49,6 +49,20 @@ impl Nucleo {
         };
 
         let sesion = self.con_db(|db| db.sesion(id))?;
+
+        // Si la transcripción ya se hizo en vivo durante la clase, aquí solo
+        // queda el resumen. Es la diferencia entre esperar media hora al
+        // pulsar detener y esperar unos segundos.
+        let ya_transcrita = self
+            .con_db(|db| db.transcripcion(id))
+            .map(|t| t.iter().filter(|u| u.is_final).count())
+            .unwrap_or(0);
+
+        if ya_transcrita > 0 {
+            tracing::info!(frases = ya_transcrita, "transcripción ya hecha en vivo");
+            return self.solo_notas(id, &sesion, ahora, progreso).await;
+        }
+
         self.con_db(|db| db.cambiar_estado(id, SessionStatus::Transcribing))?;
 
         // -- Glosario de la asignatura --------------------------------------
@@ -200,9 +214,33 @@ impl Nucleo {
             );
         }
 
-        let n_frases = frases.len();
-
         self.con_db(|db| db.reemplazar_por_definitiva(id, &frases))?;
+
+        self.solo_notas(id, &sesion, ahora, progreso).await
+    }
+
+    /// Genera las notas de una sesión cuya transcripción ya existe.
+    ///
+    /// Es el camino corto: cuando la clase se ha transcrito en vivo, detener
+    /// solo cuesta el resumen. Y también lo usa el camino largo, para no tener
+    /// dos versiones de lo mismo.
+    async fn solo_notas(
+        &self,
+        id: &SessionId,
+        sesion: &dictar_domain::Session,
+        ahora: EpochMs,
+        progreso: Option<Sender<Evento>>,
+    ) -> Result<Procesada> {
+        let emitir = |e: Evento| {
+            if let Some(tx) = &progreso {
+                let _ = tx.send(e);
+            }
+        };
+
+        let glosario = match &sesion.topic_id {
+            Some(t) => self.glosario(t).unwrap_or_default(),
+            None => String::new(),
+        };
 
         // -- Notas -----------------------------------------------------------
         self.con_db(|db| db.cambiar_estado(id, SessionStatus::Summarizing))?;
@@ -214,10 +252,11 @@ impl Nucleo {
 
         let utterances = self.con_db(|db| db.transcripcion(id))?;
         let diapositivas = self.con_db(|db| db.diapositivas(id))?;
+        let n_frases = utterances.len();
 
         let ctx = SessionContext {
             kind: sesion.kind.into(),
-            contexto: self.contexto_de(&sesion),
+            contexto: self.contexto_de(sesion),
             duracion_ms: sesion
                 .duracion_ms()
                 .unwrap_or_else(|| utterances.last().map(|u| u.end_ms).unwrap_or(0)),
@@ -240,7 +279,7 @@ impl Nucleo {
             db.guardar_notas(
                 id,
                 &NewNotes {
-                    template: self.plantilla_de(&sesion),
+                    template: self.plantilla_de(sesion),
                     kind: "final".to_owned(),
                     seq: None,
                     provider: generadas.proveedor.clone(),
@@ -302,7 +341,7 @@ impl Nucleo {
     }
 
     /// Cómo llamar a la otra parte en la transcripción.
-    fn nombre_interlocutor(&self, sesion: &dictar_domain::Session) -> String {
+    pub(crate) fn nombre_interlocutor(&self, sesion: &dictar_domain::Session) -> String {
         use dictar_domain::SessionKind;
 
         if let Some(t) = &sesion.topic_id {

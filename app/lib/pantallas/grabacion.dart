@@ -406,7 +406,9 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
         const SizedBox(height: 12),
         Text(
           'Se graban dos pistas por separado: tu micrófono y el audio del '
-          'sistema. Así se sabe quién dijo cada cosa sin ningún modelo extra.',
+          'sistema. Así se sabe quién dijo cada cosa sin ningún modelo extra.\n\n'
+          'La clase se transcribe mientras se graba, así que al detener los '
+          'apuntes salen en segundos.',
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: Theme.of(context).colorScheme.outline,
               ),

@@ -19,6 +19,7 @@ pub mod eventos;
 pub mod grabacion;
 pub mod proceso;
 pub mod puente;
+pub mod transcriptor;
 
 use dictar_domain::{Alert, NoteTemplate, Session, SessionId, Topic, TopicId, Utterance};
 use dictar_notes::markdown;
@@ -286,6 +287,16 @@ impl Nucleo {
         let destino = std::env::temp_dir().join("dictar_ia_seleccion.png");
         let (ruta, w, h) = dictar_screen::captura_para_seleccion(destino)?;
         Ok((ruta.to_string_lossy().into_owned(), w, h))
+    }
+
+    /// Modelo de Whisper configurado.
+    pub fn modelo_configurado(&self) -> dictar_stt::modelos::Modelo {
+        use dictar_stt::modelos::Modelo;
+        match self.ajustes().modelo.as_deref() {
+            Some("small") => Modelo::Small,
+            Some("medium") => Modelo::Medium,
+            _ => Modelo::LargeV3Turbo,
+        }
     }
 
     pub fn ajustes(&self) -> ajustes::Ajustes {

@@ -87,17 +87,21 @@ impl Default for SttOpciones {
 }
 
 impl SttOpciones {
-    /// Ajustes para la pasada en vivo: rápida y sin lujos.
+    /// Ajustes para la transcripción durante la clase.
+    ///
+    /// Se dejan tres núcleos libres, no la mitad. Con la mitad la cola no
+    /// llegaba a seguir el ritmo: hay **dos pistas**, así que hay que
+    /// transcribir el doble de audio que dura la clase, y al detener quedaba
+    /// un minuto y medio de trabajo pendiente. Con tres libres, el equipo
+    /// sigue holgado para la videollamada y la cola no se acumula.
     pub fn en_vivo() -> Self {
+        let nucleos = std::thread::available_parallelism()
+            .map(|n| n.get() as i32)
+            .unwrap_or(4);
+
         Self {
             tiempos_por_palabra: false,
-            // La mitad de los núcleos: el usuario está usando el equipo para
-            // seguir la clase, no solo para transcribirla.
-            hilos: (std::thread::available_parallelism()
-                .map(|n| n.get() as i32)
-                .unwrap_or(4)
-                / 2)
-            .max(1),
+            hilos: (nucleos - 3).max(1),
             ..Default::default()
         }
     }
@@ -137,10 +141,21 @@ mod tests {
     }
 
     #[test]
-    fn en_vivo_usa_menos_hilos_que_la_pasada_final() {
-        // Durante la clase el equipo también reproduce vídeo.
-        assert!(SttOpciones::en_vivo().hilos <= SttOpciones::definitiva().hilos);
-        assert!(SttOpciones::en_vivo().hilos >= 1);
+    fn en_vivo_deja_nucleos_libres_pero_no_se_queda_corta() {
+        // Durante la clase el equipo también reproduce la videollamada, así
+        // que no puede usarlos todos. Pero con la mitad la cola no seguía el
+        // ritmo de las dos pistas.
+        let vivo = SttOpciones::en_vivo().hilos;
+        let final_ = SttOpciones::definitiva().hilos;
+
+        assert!(vivo < final_, "debe dejar núcleos libres");
+        assert!(vivo >= 1);
+
+        // Con ocho núcleos, cinco: suficiente para ir por delante de dos
+        // pistas en tiempo real.
+        if std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0) == 8 {
+            assert_eq!(vivo, 5);
+        }
     }
 
     #[test]

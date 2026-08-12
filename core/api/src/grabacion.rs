@@ -7,6 +7,7 @@
 //! consecuencias.
 
 use crate::eventos::Evento;
+use crate::transcriptor::TranscriptorVivo;
 use crate::{ApiError, Nucleo, Result};
 use dictar_audio::wav::EscritorPistas;
 use dictar_audio::{CaptureConfig, CaptureSession};
@@ -49,6 +50,11 @@ impl Default for OpcionesGrabacion {
 /// para procesar.
 pub struct Grabacion {
     pub session_id: SessionId,
+    /// Canal de eventos, para poder avisar también al detener.
+    eventos: Sender<Evento>,
+    /// Transcripción en vivo. Al terminar la clase la transcripción ya está
+    /// hecha, así que detener solo cuesta el resumen.
+    transcriptor: Option<Arc<TranscriptorVivo>>,
     /// Captura de diapositivas, si se pidió. Vive aparte del audio: si falla,
     /// la grabación sigue. Nunca al revés.
     pantalla: Option<dictar_screen::SesionCaptura>,
@@ -107,18 +113,49 @@ impl Nucleo {
         let (rx_audio, captura) = dictar_audio::iniciar(cfg)?;
         let (tx_ev, rx_ev) = mpsc::channel::<Evento>();
 
+        // Transcripción en vivo. Si el modelo no está descargado se avisa y se
+        // sigue grabando: al detener se transcribirá por lotes, que es como
+        // funcionaba antes. Perder la clase por eso sería absurdo.
+        let glosario = opts
+            .topic_id
+            .as_ref()
+            .and_then(|t| self.glosario(t).ok())
+            .unwrap_or_default();
+
+        let transcriptor = match TranscriptorVivo::iniciar(
+            sesion.id.clone(),
+            self.dir_datos().join("dictar.db"),
+            self.modelo_configurado(),
+            glosario,
+            sesion.language.clone(),
+            self.nombre_interlocutor(&sesion),
+            tx_ev.clone(),
+        ) {
+            Ok(t) => Some(Arc::new(t)),
+            Err(e) => {
+                tracing::warn!(error = %e, "sin transcripción en vivo; se hará al terminar");
+                let _ = tx_ev.send(Evento::Error {
+                    mensaje: format!("Sin transcripción en vivo: {e}"),
+                    recuperable: true,
+                });
+                None
+            }
+        };
+
         let parar = Arc::new(AtomicBool::new(false));
         let inicio = Instant::now();
 
         let hilo = {
             let dir = dir_audio.clone();
             let parar = parar.clone();
+            let trans = transcriptor.clone();
+            let tx_hilo = tx_ev.clone();
             std::thread::Builder::new()
                 .name("dictar-escritura".into())
                 .spawn(move || {
-                    if let Err(e) = bucle_escritura(dir, rx_audio, tx_ev.clone(), parar) {
+                    if let Err(e) = bucle_escritura(dir, rx_audio, tx_hilo.clone(), parar, trans) {
                         tracing::error!(error = %e, "el hilo de escritura falló");
-                        let _ = tx_ev.send(Evento::Error {
+                        let _ = tx_hilo.send(Evento::Error {
                             mensaje: e.to_string(),
                             // El audio ya escrito sigue en disco: la sesión se
                             // puede procesar igualmente.
@@ -153,6 +190,8 @@ impl Nucleo {
         let id = sesion.id.clone();
         *self.grabacion.lock().unwrap() = Some(Grabacion {
             session_id: id.clone(),
+            eventos: tx_ev.clone(),
+            transcriptor,
             pantalla,
             laminas,
             captura: Some(captura),
@@ -171,6 +210,7 @@ impl Nucleo {
         let Some(mut grab) = g.take() else {
             return Err(ApiError::NoGrabando);
         };
+        let tx_eventos = grab.eventos.clone();
 
         // El orden importa: primero se corta la captura, para que no lleguen
         // más bloques, y solo después se cierra el hilo de escritura. Al revés,
@@ -205,6 +245,29 @@ impl Nucleo {
         grab.parar.store(true, Ordering::SeqCst);
         if let Some(h) = grab.hilo.take() {
             let _ = h.join();
+        }
+
+        // Vaciar la cola de transcripción. Es corta por construcción: yendo a
+        // 4,6x tiempo real, nunca se acumula durante la clase, así que lo que
+        // queda son los últimos segundos de audio.
+        if let Some(t) = grab.transcriptor.take() {
+            let pendientes = t.pendientes();
+            if pendientes > 0 {
+                // Se avisa por el canal de eventos: sin esto la espera parece
+                // un cuelgue, aunque sean unos segundos.
+                tracing::info!(pendientes, "terminando de transcribir");
+                let _ = tx_eventos.send(Evento::progreso(
+                    crate::eventos::FaseProceso::Transcribiendo,
+                    0.0,
+                    format!("terminando {pendientes} tramo(s) de audio"),
+                ));
+            }
+            match Arc::try_unwrap(t) {
+                Ok(t) => t.terminar(),
+                // Si el hilo de escritura aún tuviera una referencia, soltarla
+                // dispara el mismo cierre por Drop.
+                Err(compartido) => drop(compartido),
+            }
         }
 
         let id = grab.session_id.clone();
@@ -270,8 +333,16 @@ fn bucle_escritura(
     rx: Receiver<dictar_audio::AudioFrame>,
     tx: Sender<Evento>,
     parar: Arc<AtomicBool>,
+    transcriptor: Option<Arc<TranscriptorVivo>>,
 ) -> Result<()> {
+    use dictar_vad::segmentador::Segmentador;
+    use std::collections::HashMap;
+
     let mut escritor = EscritorPistas::nuevo(&dir)?;
+
+    // Un segmentador por pista: cada una lleva su propio detector de voz y sus
+    // propias fronteras de frase.
+    let mut segmentadores: HashMap<Track, Segmentador> = HashMap::new();
 
     let mut nivel_mic = 0.0f32;
     let mut nivel_sis = 0.0f32;
@@ -283,8 +354,21 @@ fn bucle_escritura(
         // deje de entregar bloques, en vez de quedarse colgado.
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(frame) => {
-                // Lo primero, siempre: a disco.
+                // Lo primero, siempre: a disco. La transcripción va después y
+                // puede fallar; el audio no.
                 escritor.escribir(&frame)?;
+
+                if let Some(t) = &transcriptor {
+                    let seg = segmentadores
+                        .entry(frame.track)
+                        .or_insert_with(|| Segmentador::nuevo(frame.track));
+
+                    for cerrado in seg.empujar(&frame.pcm, frame.timestamp_ms) {
+                        if cerrado.merece_transcribirse() {
+                            t.encolar(cerrado);
+                        }
+                    }
+                }
 
                 // Suavizado exponencial de los niveles, para que el indicador
                 // no parpadee con cada bloque.
@@ -321,6 +405,18 @@ fn bucle_escritura(
             // segundos de la sesión, que suelen ser el resumen final.
             while let Ok(frame) = rx.try_recv() {
                 escritor.escribir(&frame)?;
+            }
+
+            // Y cerrar los segmentos a medias, o se perdería lo último que se
+            // dijo: justo el resumen del profesor o el acuerdo con el cliente.
+            if let Some(t) = &transcriptor {
+                for seg in segmentadores.values_mut() {
+                    if let Some(ultimo) = seg.finalizar() {
+                        if ultimo.merece_transcribirse() {
+                            t.encolar(ultimo);
+                        }
+                    }
+                }
             }
             break;
         }
