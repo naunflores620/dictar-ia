@@ -30,10 +30,19 @@ mkdir -p "$STAGE/DEBIAN" \
          "$STAGE/usr/bin" \
          "$STAGE/usr/lib/$PAQUETE" \
          "$STAGE/usr/share/applications" \
-         "$STAGE/usr/share/icons/hicolor/256x256/apps" \
+         "$STAGE/usr/share/icons/hicolor" \
          "$STAGE/usr/share/$PAQUETE"
 
 cp -r "$BUNDLE/." "$STAGE/usr/lib/$PAQUETE/"
+
+# Iconos en todos los tamaños del tema. Sin esto el menú de aplicaciones
+# muestra el engranaje genérico, que es lo que pasaba antes.
+if [[ -d "$RAIZ/packaging/iconos/hicolor" ]]; then
+  cp -r "$RAIZ/packaging/iconos/hicolor/." "$STAGE/usr/share/icons/hicolor/"
+  echo "  incluidos $(find "$RAIZ/packaging/iconos/hicolor" -name '*.png' | wc -l) iconos"
+else
+  echo "  aviso: no hay iconos; genéralos con python3 packaging/icono.py" >&2
+fi
 cp "$RAIZ/config/providers.toml" "$STAGE/usr/share/$PAQUETE/providers.toml"
 
 # La CLI va también en el paquete: es lo que permite procesar por lotes por la
@@ -89,6 +98,21 @@ fi
 echo "  $DEPS"
 
 INSTALADO=$(du -sk "$STAGE/usr" | cut -f1)
+
+# Refrescar el caché de iconos al instalar: sin esto, GNOME sigue enseñando el
+# icono anterior hasta que se reinicia la sesión.
+cat > "$STAGE/DEBIAN/postinst" <<'POSTINST'
+#!/bin/sh
+set -e
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q -f -t /usr/share/icons/hicolor || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database -q /usr/share/applications || true
+fi
+exit 0
+POSTINST
+chmod 755 "$STAGE/DEBIAN/postinst"
 
 cat > "$STAGE/DEBIAN/control" <<CONTROL
 Package: $PAQUETE
