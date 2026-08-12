@@ -6,9 +6,11 @@ import 'pantallas/grabacion.dart';
 import 'pantallas/ajustes.dart';
 import 'pantallas/inicio.dart';
 import 'pantallas/pendientes.dart';
+import 'ventana.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Ventana.preparar();
 
   // Si el núcleo no carga —falta la librería nativa, o el almacén no se puede
   // abrir— la aplicación arranca igualmente con datos de demostración en vez

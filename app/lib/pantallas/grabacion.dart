@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../datos/repositorio.dart';
 import '../datos/repositorio_rust.dart';
 import '../modelos/dominio.dart';
+import '../ventana.dart';
 import 'proceso.dart';
 
 /// Pantalla de grabación en curso.
@@ -76,6 +77,11 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
       topicId: _topicId,
       capturarPantalla: _capturarPantalla,
     );
+
+    // La ventana se encoge sola y se pone encima: durante la clase esto vive
+    // en una esquina sobre Meet, y pedirle al usuario que la ajuste a mano
+    // cada vez sería pedirle que haga el trabajo de la aplicación.
+    await Ventana.modoGrabacion();
 
     if (mounted) setState(() => _iniciando = false);
   }
@@ -205,6 +211,7 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
   /// grabadas y sin apuntes, que es tener el trabajo hecho a medias.
   Future<void> _detener() async {
     await widget.repo.detenerGrabacion();
+    await Ventana.modoNormal();
     await _subFrases?.cancel();
     await _subEstado?.cancel();
     if (!mounted) return;
