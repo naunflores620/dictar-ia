@@ -153,7 +153,11 @@ mod tests {
 
         // Con ocho núcleos, cinco: suficiente para ir por delante de dos
         // pistas en tiempo real.
-        if std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0) == 8 {
+        if std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(0)
+            == 8
+        {
             assert_eq!(vivo, 5);
         }
     }

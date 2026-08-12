@@ -17,7 +17,7 @@ use dictar_stt::whisper::Transcriptor;
 use dictar_stt::SttOpciones;
 use dictar_vad::segmentador::Segmento;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -34,6 +34,9 @@ pub struct TranscriptorVivo {
     tx: Sender<Trabajo>,
     hilo: Option<JoinHandle<()>>,
     pendientes: Arc<AtomicUsize>,
+    /// El hilo la marca al salir, por cualquier camino. Es lo que permite a
+    /// `esperar_drenaje` saber que ya no queda nada sin bloquearse en un join.
+    terminado: Arc<AtomicBool>,
 }
 
 impl TranscriptorVivo {
@@ -54,9 +57,11 @@ impl TranscriptorVivo {
         let ruta_modelo = modelos::localizar(modelo)?;
         let (tx, rx) = std::sync::mpsc::channel::<Trabajo>();
         let pendientes = Arc::new(AtomicUsize::new(0));
+        let terminado = Arc::new(AtomicBool::new(false));
 
         let hilo = {
             let pendientes = pendientes.clone();
+            let terminado = terminado.clone();
             std::thread::Builder::new()
                 .name("dictar-transcripcion".into())
                 .spawn(move || {
@@ -71,6 +76,10 @@ impl TranscriptorVivo {
                         quien_sistema,
                         eventos,
                     );
+                    // Por cualquier camino de salida —normal, modelo que no
+                    // carga, base inaccesible—: quien espere el drenaje tiene
+                    // que enterarse de que ya no vendrá nada más.
+                    terminado.store(true, Ordering::SeqCst);
                 })
                 .map_err(|e| crate::ApiError::Config(e.to_string()))?
         };
@@ -79,7 +88,19 @@ impl TranscriptorVivo {
             tx,
             hilo: Some(hilo),
             pendientes,
+            terminado,
         })
+    }
+
+    /// Pide el cierre **sin esperar**: el hilo vaciará su cola y marcará el
+    /// fin por su cuenta.
+    pub fn pedir_fin(&self) {
+        let _ = self.tx.send(Trabajo::Terminar);
+    }
+
+    /// Si el hilo ya vació su cola y salió.
+    pub fn esta_terminado(&self) -> bool {
+        self.terminado.load(Ordering::SeqCst)
     }
 
     /// Encola un segmento cerrado.
@@ -94,12 +115,9 @@ impl TranscriptorVivo {
         self.pendientes.load(Ordering::SeqCst)
     }
 
-    /// Cierra el transcriptor esperando a que vacíe la cola.
-    ///
-    /// La espera es corta por construcción: yendo a 4,6× tiempo real, la cola
-    /// nunca se acumula durante la clase. Lo que queda son los últimos
-    /// segundos de audio.
-    pub fn terminar(mut self) {
+    /// Espera al hilo. Debe llamarse cuando [`Self::esta_terminado`] ya es
+    /// cierto; si no, bloquea hasta que la cola se vacíe.
+    pub fn esperar(mut self) {
         let _ = self.tx.send(Trabajo::Terminar);
         if let Some(h) = self.hilo.take() {
             let _ = h.join();
@@ -109,9 +127,14 @@ impl TranscriptorVivo {
 
 impl Drop for TranscriptorVivo {
     fn drop(&mut self) {
+        // Solo se pide el fin, **sin esperar**: Drop puede ejecutarse en la
+        // llamada de la interfaz, y un join aquí es exactamente el cuelgue que
+        // tuvo el botón de detener. El hilo termina su cola por su cuenta; el
+        // audio ya está en disco pase lo que pase, así que soltar el mango no
+        // pierde nada.
         let _ = self.tx.send(Trabajo::Terminar);
         if let Some(h) = self.hilo.take() {
-            let _ = h.join();
+            drop(h);
         }
     }
 }

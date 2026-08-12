@@ -19,6 +19,22 @@ use dictar_stt::whisper::Transcriptor;
 use dictar_stt::SttOpciones;
 use dictar_vad::segmentador::Segmentador;
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
+
+/// Cola sin transcribir que se tolera antes de rehacer el tramo final.
+///
+/// Un segmento dura como mucho 45 s, así que si la transcripción en vivo se
+/// quedó a más de un minuto del final es que algo se la comió: un cierre a
+/// medias, el modelo caído a mitad de clase. Menos que eso suele ser solo el
+/// silencio de la despedida, y no merece rehacerse.
+pub(crate) const COLA_SIN_CUBRIR_MS: i64 = 60_000;
+
+/// Si la transcripción en vivo dejó un tramo final sin cubrir.
+pub(crate) fn falta_cobertura(duracion_ms: Option<i64>, fin_transcrito_ms: i64) -> bool {
+    duracion_ms
+        .map(|d| d.saturating_sub(fin_transcrito_ms) > COLA_SIN_CUBRIR_MS)
+        .unwrap_or(false)
+}
 
 /// Resultado de procesar una sesión.
 #[derive(Debug, Clone)]
@@ -50,29 +66,119 @@ impl Nucleo {
 
         let sesion = self.con_db(|db| db.sesion(id))?;
 
-        // Si la transcripción ya se hizo en vivo durante la clase, aquí solo
-        // queda el resumen. Es la diferencia entre esperar media hora al
-        // pulsar detener y esperar unos segundos.
-        let ya_transcrita = self
-            .con_db(|db| db.transcripcion(id))
-            .map(|t| t.iter().filter(|u| u.is_final).count())
-            .unwrap_or(0);
+        // Lo primero: esperar a que el transcriptor en vivo vacíe lo que le
+        // quedara en cola al detener. Detener vuelve al instante; la espera
+        // ocurre aquí, que es donde hay una barra de progreso mirando.
+        self.esperar_drenaje(id, &emitir).await;
 
-        if ya_transcrita > 0 {
-            tracing::info!(frases = ya_transcrita, "transcripción ya hecha en vivo");
+        let vivas = self.con_db(|db| db.transcripcion(id))?;
+        let fin_transcrito = vivas.iter().map(|u| u.end_ms).max().unwrap_or(0);
+
+        if !vivas.is_empty() {
+            if falta_cobertura(sesion.duracion_ms(), fin_transcrito) {
+                // La transcripción en vivo no llegó al final: un cierre a
+                // medias, o el modelo se cayó a mitad de clase. Se transcribe
+                // solo el tramo que falta, sin tirar lo ya hecho — unas notas
+                // que cubrieran media clase en silencio serían peores que
+                // esperar un poco más.
+                tracing::info!(fin_transcrito, "completando el tramo final");
+                self.con_db(|db| db.cambiar_estado(id, SessionStatus::Transcribing))?;
+
+                let nuevas = self.transcribir_lote(id, &sesion, modelo, fin_transcrito, &emitir)?;
+                if !nuevas.is_empty() {
+                    self.con_db(|db| db.insertar_frases(id, &nuevas))?;
+                }
+            } else {
+                tracing::info!(frases = vivas.len(), "transcripción ya hecha en vivo");
+            }
             return self.solo_notas(id, &sesion, ahora, progreso).await;
         }
 
+        // Sin transcripción previa: la pasada por lotes completa. Es el camino
+        // de las grabaciones importadas, y el respaldo cuando el modelo no
+        // pudo cargarse durante la clase.
         self.con_db(|db| db.cambiar_estado(id, SessionStatus::Transcribing))?;
 
-        // -- Glosario de la asignatura --------------------------------------
-        // Es lo que hace que cada clase transcriba mejor que la anterior.
+        let frases = self.transcribir_lote(id, &sesion, modelo, 0, &emitir)?;
+        if frases.is_empty() {
+            self.con_db(|db| db.cambiar_estado(id, SessionStatus::Failed))?;
+            return Err(ApiError::Config(
+                "no hay audio con voz en esta sesión".into(),
+            ));
+        }
+
+        self.con_db(|db| db.reemplazar_por_definitiva(id, &frases))?;
+        self.solo_notas(id, &sesion, ahora, progreso).await
+    }
+
+    /// Espera a que el transcriptor en vivo termine lo que le quedó en cola.
+    async fn esperar_drenaje(&self, id: &SessionId, emitir: &dyn Fn(Evento)) {
+        let tomado = { self.drenaje.lock().unwrap().take() };
+        let Some((sid, t)) = tomado else { return };
+
+        if sid != *id {
+            // El drenaje pendiente es de otra sesión: se devuelve a su sitio y
+            // seguirá vaciándose en segundo plano.
+            *self.drenaje.lock().unwrap() = Some((sid, t));
+            return;
+        }
+
+        let mut ultimo = usize::MAX;
+        let mut sin_avance = 0u32;
+
+        while !t.esta_terminado() {
+            let pendientes = t.pendientes();
+            emitir(Evento::progreso(
+                FaseProceso::Transcribiendo,
+                0.0,
+                format!("terminando {pendientes} tramo(s) de la clase"),
+            ));
+
+            // Cortafuegos: si el hilo murió sin marcar el fin, no se espera
+            // eternamente. Dos minutos sin que baje la cola son señal de eso;
+            // un solo segmento nunca tarda tanto.
+            if pendientes == ultimo {
+                sin_avance += 1;
+                if sin_avance > 480 {
+                    tracing::warn!("el drenaje no avanza; se sigue con lo que hay");
+                    break;
+                }
+            } else {
+                sin_avance = 0;
+                ultimo = pendientes;
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+
+        match Arc::try_unwrap(t) {
+            Ok(t) => t.esperar(),
+            // Si alguien más aún lo referencia, con soltarlo basta: el hilo ya
+            // terminó su cola.
+            Err(a) => drop(a),
+        }
+    }
+
+    /// Transcribe por lotes el audio de la sesión, desde `desde_ms`.
+    ///
+    /// Con `desde_ms = 0` es la pasada completa. Con un valor mayor, solo el
+    /// tramo final que la pasada en vivo dejó sin cubrir; los segmentos que
+    /// cruzan la frontera pueden duplicar unas palabras, y es a propósito:
+    /// el generador de notas ya funde duplicados, y perder la frase de la
+    /// costura sería peor.
+    fn transcribir_lote(
+        &self,
+        id: &SessionId,
+        sesion: &dictar_domain::Session,
+        modelo: Modelo,
+        desde_ms: i64,
+        emitir: &dyn Fn(Evento),
+    ) -> Result<Vec<NewUtterance>> {
         let glosario = match &sesion.topic_id {
             Some(t) => self.glosario(t).unwrap_or_default(),
             None => String::new(),
         };
 
-        // -- Troceado --------------------------------------------------------
         emitir(Evento::progreso(
             FaseProceso::Segmentando,
             0.0,
@@ -101,17 +207,16 @@ impl Nucleo {
             trabajos.extend(segmentos);
         }
 
+        if desde_ms > 0 {
+            trabajos.retain(|s| s.fin_ms > desde_ms);
+        }
         if trabajos.is_empty() {
-            self.con_db(|db| db.cambiar_estado(id, SessionStatus::Failed))?;
-            return Err(ApiError::Config(
-                "no hay audio con voz en esta sesión".into(),
-            ));
+            return Ok(Vec::new());
         }
 
         // Orden cronológico entre pistas: es como se leerá la transcripción.
         trabajos.sort_by_key(|s| s.inicio_ms);
 
-        // -- Transcripción ---------------------------------------------------
         emitir(Evento::progreso(
             FaseProceso::CargandoModelo,
             0.0,
@@ -123,13 +228,13 @@ impl Nucleo {
 
         let mut opciones = SttOpciones::definitiva();
         if !glosario.is_empty() {
-            opciones.glosario = Some(glosario.clone());
+            opciones.glosario = Some(glosario);
         }
         if let Some(l) = &sesion.language {
             opciones.idioma = Some(l.clone());
         }
 
-        let quien_sistema = self.nombre_interlocutor(&sesion);
+        let quien_sistema = self.nombre_interlocutor(sesion);
         let total = trabajos.len();
         let mut frases = Vec::new();
 
@@ -142,51 +247,39 @@ impl Nucleo {
 
             // El contexto previo mejora la continuidad entre segmentos: Whisper
             // acierta más con los nombres propios si acaba de verlos.
-            opciones.contexto_previo =
-                frases
-                    .last()
-                    .map(|u: &NewUtterance| u.text.clone())
-                    .map(|t| {
-                        t.chars()
-                            .rev()
-                            .take(200)
-                            .collect::<String>()
-                            .chars()
-                            .rev()
-                            .collect()
-                    });
+            opciones.contexto_previo = frases.last().map(|u: &NewUtterance| {
+                u.text
+                    .chars()
+                    .rev()
+                    .take(200)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect()
+            });
 
             let fragmentos = trans.transcribir(&s.pcm, &opciones)?;
 
-            // El decodificador puede engancharse y devolver la misma frase una
-            // y otra vez. Se detecta aquí, sobre los fragmentos del segmento,
-            // porque es donde se ve la repetición consecutiva.
+            // El decodificador puede engancharse y repetir la misma frase.
             let textos: Vec<&str> = fragmentos.iter().map(|f| f.texto.as_str()).collect();
             let (indices, en_bucle) = dictar_stt::limpieza::colapsar_bucles(&textos);
             if en_bucle > 0 {
-                tracing::info!(
-                    descartados = en_bucle,
-                    "fragmentos descartados por bucle del decodificador"
-                );
+                tracing::info!(descartados = en_bucle, "bucle del decodificador");
             }
-            let fragmentos: Vec<_> = indices.into_iter().map(|i| fragmentos[i].clone()).collect();
 
-            for f in fragmentos {
-                // Última defensa contra las alucinaciones. La primera es el
-                // VAD, que evita mandarle silencio; esta caza lo que se cuela.
+            for idx in indices {
+                let f = &fragmentos[idx];
                 if dictar_stt::limpieza::es_alucinacion(&f.texto) {
-                    tracing::debug!(texto = %f.texto, "descartado por parecer inventado");
                     continue;
                 }
 
-                let inicio = s.inicio_ms + f.inicio_ms;
                 let u = NewUtterance {
                     track: s.track,
                     speaker: Some(match s.track {
                         Track::Mic => "Yo".to_owned(),
                         Track::System => quien_sistema.clone(),
                     }),
-                    start_ms: inicio,
+                    start_ms: s.inicio_ms + f.inicio_ms,
                     end_ms: s.inicio_ms + f.fin_ms,
                     text: f.texto.clone(),
                     confidence: Some(f.confianza),
@@ -203,20 +296,14 @@ impl Nucleo {
         frases.sort_by_key(|u| u.start_ms);
 
         // Sin auriculares, el micrófono capta también al profesor por los
-        // altavoces. Si no se filtra, los apuntes atribuyen a «Yo» lo que dijo
-        // el profesor, que es un error grave: convierte una duda del alumno en
-        // una afirmación del docente.
+        // altavoces; sin este filtro, los apuntes atribuirían a «Yo» lo que
+        // dijo el profesor.
         let descartadas = Self::suprimir_diafonia(&mut frases);
         if descartadas > 0 {
-            tracing::info!(
-                descartadas,
-                "frases del micrófono que eran eco de la otra pista"
-            );
+            tracing::info!(descartadas, "frases del micrófono que eran eco");
         }
 
-        self.con_db(|db| db.reemplazar_por_definitiva(id, &frases))?;
-
-        self.solo_notas(id, &sesion, ahora, progreso).await
+        Ok(frases)
     }
 
     /// Genera las notas de una sesión cuya transcripción ya existe.
@@ -251,6 +338,34 @@ impl Nucleo {
         ));
 
         let utterances = self.con_db(|db| db.transcripcion(id))?;
+
+        // La pasada en vivo transcribe cada pista por separado y no puede
+        // compararlas entre sí: si el usuario escucha por altavoces, el
+        // micrófono capta al profesor y cada frase aparece duplicada como
+        // «Yo». Se limpia aquí, una vez, reescribiendo la transcripción
+        // definitiva — unas notas que citan dos veces cada frase, con el
+        // hablante equivocado la mitad de ellas, no sirven.
+        let mut limpias: Vec<NewUtterance> = utterances
+            .iter()
+            .map(|u| NewUtterance {
+                track: u.track,
+                speaker: u.speaker.clone(),
+                start_ms: u.start_ms,
+                end_ms: u.end_ms,
+                text: u.text.clone(),
+                confidence: u.confidence,
+                is_final: true,
+            })
+            .collect();
+        let eco = Self::suprimir_diafonia(&mut limpias);
+        let utterances = if eco > 0 {
+            tracing::info!(eco, "eco del micrófono eliminado de la transcripción");
+            self.con_db(|db| db.reemplazar_por_definitiva(id, &limpias))?;
+            self.con_db(|db| db.transcripcion(id))?
+        } else {
+            utterances
+        };
+
         let diapositivas = self.con_db(|db| db.diapositivas(id))?;
         let n_frases = utterances.len();
 
@@ -542,5 +657,33 @@ mod tests {
         // Es el ciclo que hace que la clase siguiente transcriba mejor.
         let g = n.glosario(&t.id).unwrap();
         assert!(g.contains("región de convergencia"), "glosario: {g}");
+    }
+}
+
+#[cfg(test)]
+mod tests_cobertura {
+    use super::*;
+
+    #[test]
+    fn el_silencio_de_la_despedida_no_obliga_a_retranscribir() {
+        // Nadie habla mientras se despiden y cierran la llamada.
+        assert!(!falta_cobertura(Some(7_200_000), 7_150_000));
+    }
+
+    #[test]
+    fn media_clase_sin_cubrir_se_detecta() {
+        // El modelo se cayó a mitad de clase: sin esto, las notas cubrirían
+        // solo la primera hora y nadie se enteraría.
+        assert!(falta_cobertura(Some(7_200_000), 3_600_000));
+    }
+
+    #[test]
+    fn sin_duracion_conocida_no_se_rehace_nada() {
+        assert!(!falta_cobertura(None, 0));
+    }
+
+    #[test]
+    fn una_cobertura_completa_no_dispara_nada() {
+        assert!(!falta_cobertura(Some(3_600_000), 3_600_000));
     }
 }

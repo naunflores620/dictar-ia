@@ -50,8 +50,6 @@ impl Default for OpcionesGrabacion {
 /// para procesar.
 pub struct Grabacion {
     pub session_id: SessionId,
-    /// Canal de eventos, para poder avisar también al detener.
-    eventos: Sender<Evento>,
     /// Transcripción en vivo. Al terminar la clase la transcripción ya está
     /// hecha, así que detener solo cuesta el resumen.
     transcriptor: Option<Arc<TranscriptorVivo>>,
@@ -190,7 +188,6 @@ impl Nucleo {
         let id = sesion.id.clone();
         *self.grabacion.lock().unwrap() = Some(Grabacion {
             session_id: id.clone(),
-            eventos: tx_ev.clone(),
             transcriptor,
             pantalla,
             laminas,
@@ -210,7 +207,6 @@ impl Nucleo {
         let Some(mut grab) = g.take() else {
             return Err(ApiError::NoGrabando);
         };
-        let tx_eventos = grab.eventos.clone();
 
         // El orden importa: primero se corta la captura, para que no lleguen
         // más bloques, y solo después se cierra el hilo de escritura. Al revés,
@@ -247,27 +243,20 @@ impl Nucleo {
             let _ = h.join();
         }
 
-        // Vaciar la cola de transcripción. Es corta por construcción: yendo a
-        // 4,6x tiempo real, nunca se acumula durante la clase, así que lo que
-        // queda son los últimos segundos de audio.
+        // La cola de transcripción que quede se termina en segundo plano.
+        // Detener tiene que volver AL INSTANTE: la versión anterior esperaba
+        // aquí a que se vaciara, y en una clase real —con Meet comiéndose
+        // media CPU— la cola se atrasa, así que el botón se quedaba minutos
+        // clavado. Y sin un solo aviso, porque la interfaz dejaba de leer
+        // eventos justo antes de llamar. Ahora quien espera es el procesado,
+        // con la barra de progreso delante.
         if let Some(t) = grab.transcriptor.take() {
             let pendientes = t.pendientes();
             if pendientes > 0 {
-                // Se avisa por el canal de eventos: sin esto la espera parece
-                // un cuelgue, aunque sean unos segundos.
-                tracing::info!(pendientes, "terminando de transcribir");
-                let _ = tx_eventos.send(Evento::progreso(
-                    crate::eventos::FaseProceso::Transcribiendo,
-                    0.0,
-                    format!("terminando {pendientes} tramo(s) de audio"),
-                ));
+                tracing::info!(pendientes, "la cola se termina en segundo plano");
             }
-            match Arc::try_unwrap(t) {
-                Ok(t) => t.terminar(),
-                // Si el hilo de escritura aún tuviera una referencia, soltarla
-                // dispara el mismo cierre por Drop.
-                Err(compartido) => drop(compartido),
-            }
+            t.pedir_fin();
+            *self.drenaje.lock().unwrap() = Some((grab.session_id.clone(), t));
         }
 
         let id = grab.session_id.clone();
@@ -379,6 +368,8 @@ fn bucle_escritura(
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
+            // La captura soltó el canal: se detuvo antes que nosotros. NO se
+            // hace el cierre aquí sino tras el bucle, común a las dos salidas.
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
@@ -401,24 +392,42 @@ fn bucle_escritura(
         }
 
         if parar.load(Ordering::SeqCst) {
-            // Vaciar lo que quede en el canal antes de cerrar: son los últimos
-            // segundos de la sesión, que suelen ser el resumen final.
-            while let Ok(frame) = rx.try_recv() {
-                escritor.escribir(&frame)?;
-            }
+            break;
+        }
+    }
 
-            // Y cerrar los segmentos a medias, o se perdería lo último que se
-            // dijo: justo el resumen del profesor o el acuerdo con el cliente.
-            if let Some(t) = &transcriptor {
-                for seg in segmentadores.values_mut() {
-                    if let Some(ultimo) = seg.finalizar() {
-                        if ultimo.merece_transcribirse() {
-                            t.encolar(ultimo);
-                        }
-                    }
+    // El cierre va DESPUÉS del bucle, común a las dos formas de salir: la
+    // señal de parar y la desconexión del canal. Antes solo lo hacía el brazo
+    // de parar, y detener corta la captura primero —el canal se desconecta y
+    // el bucle salía por el otro brazo—, así que los segmentos a medias nunca
+    // se cerraban: los últimos ~25 s de cada clase se quedaban sin transcribir
+    // en vivo, y una sesión corta no transcribía nada y se rehacía entera por
+    // lotes, cargando el modelo por segunda vez.
+
+    // Primero, lo que quede en el canal: son los últimos segundos, que suelen
+    // ser el resumen del profesor o el acuerdo final con el cliente.
+    while let Ok(frame) = rx.try_recv() {
+        escritor.escribir(&frame)?;
+        if let Some(t) = &transcriptor {
+            let seg = segmentadores
+                .entry(frame.track)
+                .or_insert_with(|| Segmentador::nuevo(frame.track));
+            for cerrado in seg.empujar(&frame.pcm, frame.timestamp_ms) {
+                if cerrado.merece_transcribirse() {
+                    t.encolar(cerrado);
                 }
             }
-            break;
+        }
+    }
+
+    // Y los segmentos a medias.
+    if let Some(t) = &transcriptor {
+        for seg in segmentadores.values_mut() {
+            if let Some(ultimo) = seg.finalizar() {
+                if ultimo.merece_transcribirse() {
+                    t.encolar(ultimo);
+                }
+            }
         }
     }
 

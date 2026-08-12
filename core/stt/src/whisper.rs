@@ -84,6 +84,14 @@ impl Transcriptor {
         // la comunidad de Amara.org» que sale de la nada en los silencios.
         params.set_suppress_blank(true);
 
+        // Sin escalera de reintentos por temperatura. Ante un segmento de
+        // ruido —el micrófono captando la sala—, Whisper repite la
+        // decodificación completa hasta seis veces subiendo la temperatura, y
+        // ese segmento tarda diez veces más que uno hablado: 222 s para 22 s
+        // de clase, medido. Con un solo pase el tiempo queda acotado; lo
+        // dudoso que salga lo limpian los filtros de alucinación de después.
+        params.set_temperature_inc(0.0);
+
         estado
             .full(params, pcm)
             .map_err(|e| SttError::Transcripcion(e.to_string()))?;

@@ -208,8 +208,12 @@ class RepositorioRust implements Repositorio {
 
   @override
   Future<void> detenerGrabacion() async {
-    _pararSondeo();
+    // Detener vuelve al instante: la cola de transcripción pendiente se
+    // termina en segundo plano y el procesado la espera con la barra de
+    // progreso delante. El sondeo se corta DESPUÉS de la llamada: cortarlo
+    // antes dejaba cualquier espera sin un solo aviso en pantalla.
     await rust.detenerGrabacion(ahoraMs: DateTime.now().millisecondsSinceEpoch);
+    _pararSondeo();
     _estado.add(EstadoGrabacion.parado);
   }
 

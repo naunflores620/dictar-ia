@@ -142,7 +142,14 @@ pub fn iniciar(
                 let mut n = 0usize;
 
                 while !parar.load(Ordering::SeqCst) {
-                    std::thread::sleep(cfg.intervalo);
+                    // Se duerme a tramos de 100 ms: durmiendo el intervalo
+                    // entero, detener la grabación se quedaba hasta 2 s
+                    // esperando a que este hilo despertara para cerrarlo.
+                    let mut dormido = Duration::ZERO;
+                    while dormido < cfg.intervalo && !parar.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(100));
+                        dormido += Duration::from_millis(100);
+                    }
                     if parar.load(Ordering::SeqCst) {
                         break;
                     }

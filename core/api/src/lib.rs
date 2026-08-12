@@ -76,6 +76,9 @@ pub struct Nucleo {
     dir_datos: PathBuf,
     config: ProvidersFile,
     grabacion: Mutex<Option<Grabacion>>,
+    /// Transcriptor de la última sesión detenida, vaciando su cola en segundo
+    /// plano. `procesar_sesion` lo espera con la barra de progreso delante.
+    drenaje: Mutex<Option<(SessionId, std::sync::Arc<transcriptor::TranscriptorVivo>)>>,
 }
 
 impl Nucleo {
@@ -93,6 +96,7 @@ impl Nucleo {
             dir_datos,
             config,
             grabacion: Mutex::new(None),
+            drenaje: Mutex::new(None),
         })
     }
 
