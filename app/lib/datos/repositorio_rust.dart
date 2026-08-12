@@ -223,6 +223,36 @@ class RepositorioRust implements Repositorio {
   @override
   Future<String> capturarDiapositiva() => rust.capturarDiapositiva();
 
+  @override
+  Future<int> reproducir(String sesionId, int desdeMs) =>
+      rust.reproducir(sessionId: sesionId, desdeMs: desdeMs);
+
+  @override
+  Future<void> pausarReproduccion(bool pausar) =>
+      rust.pausarReproduccion(pausar: pausar);
+
+  @override
+  Future<void> saltarReproduccion(int ms) => rust.saltarReproduccion(ms: ms);
+
+  @override
+  Future<void> detenerReproduccion() => rust.detenerReproduccion();
+
+  @override
+  Future<EstadoReproduccion?> estadoReproduccion() async {
+    final e = await rust.estadoReproduccion();
+    if (e == null) return null;
+    return EstadoReproduccion(
+      posicionMs: e.posicionMs.toInt(),
+      duracionMs: e.duracionMs.toInt(),
+      pausado: e.pausado,
+      terminado: e.terminado,
+    );
+  }
+
+  @override
+  Future<void> borrarSesion(String sesionId) =>
+      rust.borrarSesion(sessionId: sesionId);
+
   /// Procesa una sesión ya grabada: transcribe y genera las notas.
   ///
   /// El generador ejecuta las funciones de Rust en su propio hilo, así que

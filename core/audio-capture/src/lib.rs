@@ -16,6 +16,9 @@ pub mod wav;
 #[cfg(target_os = "linux")]
 pub mod pipewire_src;
 
+#[cfg(target_os = "linux")]
+pub mod reproductor;
+
 use dictar_domain::Track;
 use std::sync::mpsc::Receiver;
 

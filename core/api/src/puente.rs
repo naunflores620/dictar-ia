@@ -527,6 +527,56 @@ pub fn exportar_apuntes(session_id: String) -> Result<Option<String>, String> {
         .map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Clone)]
+pub struct ReproduccionDto {
+    pub posicion_ms: i64,
+    pub duracion_ms: i64,
+    pub pausado: bool,
+    pub terminado: bool,
+}
+
+/// Empieza a reproducir una sesión. Devuelve la duración total en ms.
+pub fn reproducir(session_id: String, desde_ms: i64) -> Result<i64, String> {
+    nucleo()?
+        .reproducir(&SessionId::from(session_id), desde_ms)
+        .map_err(|e| e.to_string())
+}
+
+pub fn estado_reproduccion() -> Result<Option<ReproduccionDto>, String> {
+    Ok(nucleo()?
+        .estado_reproduccion()
+        .map(
+            |(posicion_ms, duracion_ms, pausado, terminado)| ReproduccionDto {
+                posicion_ms,
+                duracion_ms,
+                pausado,
+                terminado,
+            },
+        ))
+}
+
+pub fn pausar_reproduccion(pausar: bool) -> Result<(), String> {
+    nucleo()?.pausar_reproduccion(pausar);
+    Ok(())
+}
+
+pub fn saltar_reproduccion(ms: i64) -> Result<(), String> {
+    nucleo()?.saltar_reproduccion(ms);
+    Ok(())
+}
+
+pub fn detener_reproduccion() -> Result<(), String> {
+    nucleo()?.detener_reproduccion();
+    Ok(())
+}
+
+/// Borra una sesión con su audio. Los apuntes ya exportados no se tocan.
+pub fn borrar_sesion(session_id: String) -> Result<(), String> {
+    nucleo()?
+        .borrar_sesion(&SessionId::from(session_id))
+        .map_err(|e| e.to_string())
+}
+
 // -- Grabación ---------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]

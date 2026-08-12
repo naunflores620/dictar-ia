@@ -37,6 +37,9 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   RegionDto dco_decode_box_autoadd_region_dto(dynamic raw);
 
   @protected
+  ReproduccionDto dco_decode_box_autoadd_reproduccion_dto(dynamic raw);
+
+  @protected
   EventoDto dco_decode_evento_dto(dynamic raw);
 
   @protected
@@ -85,6 +88,9 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   RegionDto? dco_decode_opt_box_autoadd_region_dto(dynamic raw);
 
   @protected
+  ReproduccionDto? dco_decode_opt_box_autoadd_reproduccion_dto(dynamic raw);
+
+  @protected
   ProcesadaDto dco_decode_procesada_dto(dynamic raw);
 
   @protected
@@ -95,6 +101,9 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
 
   @protected
   RegionDto dco_decode_region_dto(dynamic raw);
+
+  @protected
+  ReproduccionDto dco_decode_reproduccion_dto(dynamic raw);
 
   @protected
   SesionDto dco_decode_sesion_dto(dynamic raw);
@@ -128,6 +137,11 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
 
   @protected
   RegionDto sse_decode_box_autoadd_region_dto(SseDeserializer deserializer);
+
+  @protected
+  ReproduccionDto sse_decode_box_autoadd_reproduccion_dto(
+    SseDeserializer deserializer,
+  );
 
   @protected
   EventoDto sse_decode_evento_dto(SseDeserializer deserializer);
@@ -182,6 +196,11 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   );
 
   @protected
+  ReproduccionDto? sse_decode_opt_box_autoadd_reproduccion_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ProcesadaDto sse_decode_procesada_dto(SseDeserializer deserializer);
 
   @protected
@@ -194,6 +213,9 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
 
   @protected
   RegionDto sse_decode_region_dto(SseDeserializer deserializer);
+
+  @protected
+  ReproduccionDto sse_decode_reproduccion_dto(SseDeserializer deserializer);
 
   @protected
   SesionDto sse_decode_sesion_dto(SseDeserializer deserializer);
@@ -234,6 +256,12 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   @protected
   void sse_encode_box_autoadd_region_dto(
     RegionDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_reproduccion_dto(
+    ReproduccionDto self,
     SseSerializer serializer,
   );
 
@@ -304,6 +332,12 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_reproduccion_dto(
+    ReproduccionDto? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_procesada_dto(ProcesadaDto self, SseSerializer serializer);
 
   @protected
@@ -317,6 +351,12 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
 
   @protected
   void sse_encode_region_dto(RegionDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_reproduccion_dto(
+    ReproduccionDto self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_sesion_dto(SesionDto self, SseSerializer serializer);

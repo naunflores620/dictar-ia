@@ -54,6 +54,18 @@ abstract class Repositorio {
   /// Es la vía manual: el usuario decide el momento, así que la lámina es la
   /// correcta por definición. La detección automática nunca acertará siempre.
   Future<String> capturarDiapositiva();
+
+  // -- Reproducción ---------------------------------------------------------
+
+  /// Empieza a reproducir la sesión. Devuelve la duración total en ms.
+  Future<int> reproducir(String sesionId, int desdeMs);
+  Future<void> pausarReproduccion(bool pausar);
+  Future<void> saltarReproduccion(int ms);
+  Future<void> detenerReproduccion();
+  Future<EstadoReproduccion?> estadoReproduccion();
+
+  /// Borra la sesión con su audio. Los apuntes exportados no se tocan.
+  Future<void> borrarSesion(String sesionId);
 }
 
 /// Instantánea del procesado en curso.
@@ -82,6 +94,21 @@ class ResultadoProceso {
   final int avisos;
   final double costeUsd;
   final String proveedor;
+}
+
+/// Estado del audio que está sonando.
+class EstadoReproduccion {
+  const EstadoReproduccion({
+    required this.posicionMs,
+    required this.duracionMs,
+    required this.pausado,
+    required this.terminado,
+  });
+
+  final int posicionMs;
+  final int duracionMs;
+  final bool pausado;
+  final bool terminado;
 }
 
 /// Instantánea de la sesión en curso.
@@ -447,6 +474,59 @@ Definición de la transformada. _Diapositiva #7_ · _[00:01:40]_
 
   @override
   Future<String> capturarDiapositiva() async => '/demostración/lámina.png';
+
+  DateTime? _playDesde;
+  int _playBase = 0;
+  int _playDur = 0;
+  bool _playPausa = false;
+
+  @override
+  Future<int> reproducir(String sesionId, int desdeMs) async {
+    _playDur = 90 * 60 * 1000;
+    _playBase = desdeMs;
+    _playDesde = DateTime.now();
+    _playPausa = false;
+    return _playDur;
+  }
+
+  @override
+  Future<void> pausarReproduccion(bool pausar) async {
+    if (pausar && _playDesde != null) {
+      _playBase += DateTime.now().difference(_playDesde!).inMilliseconds;
+      _playDesde = null;
+    } else if (!pausar) {
+      _playDesde = DateTime.now();
+    }
+    _playPausa = pausar;
+  }
+
+  @override
+  Future<void> saltarReproduccion(int ms) async {
+    _playBase = ms;
+    if (!_playPausa) _playDesde = DateTime.now();
+  }
+
+  @override
+  Future<void> detenerReproduccion() async => _playDesde = null;
+
+  @override
+  Future<EstadoReproduccion?> estadoReproduccion() async {
+    final extra = _playDesde == null
+        ? 0
+        : DateTime.now().difference(_playDesde!).inMilliseconds;
+    final pos = (_playBase + extra).clamp(0, _playDur);
+    return EstadoReproduccion(
+      posicionMs: pos,
+      duracionMs: _playDur,
+      pausado: _playPausa,
+      terminado: pos >= _playDur,
+    );
+  }
+
+  @override
+  Future<void> borrarSesion(String sesionId) async {
+    _sesiones.removeWhere((s) => s.id == sesionId);
+  }
 
   @override
   Future<ResultadoProceso> procesar(String sesionId) async {

@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 
+import 'dart:async';
+
 import '../datos/repositorio.dart';
 import '../modelos/dominio.dart';
 import '../widgets/notas_markdown.dart';
+import 'proceso.dart';
 
 /// Detalle de una sesión: las notas y la transcripción, con el audio detrás.
 ///
@@ -23,13 +26,25 @@ class _PantallaSesionState extends State<PantallaSesion> {
   late Future<(Sesion, Notas?, List<Frase>)> _datos;
 
   /// Posición del reproductor. Al pulsar una marca de tiempo en las notas se
-  /// salta aquí y se resalta la frase correspondiente.
+  /// salta aquí, suena el audio desde ese punto y se resalta la frase.
   int _posicionMs = 0;
+  int _totalMs = 0;
+  bool _sonando = false;
+  bool _pausado = false;
+  Timer? _reloj;
 
   @override
   void initState() {
     super.initState();
     _datos = _cargar();
+  }
+
+  @override
+  void dispose() {
+    _reloj?.cancel();
+    // Que la música no siga al salir de la pantalla.
+    widget.repo.detenerReproduccion();
+    super.dispose();
   }
 
   Future<(Sesion, Notas?, List<Frase>)> _cargar() async {
@@ -39,17 +54,64 @@ class _PantallaSesionState extends State<PantallaSesion> {
     return (s, n, t);
   }
 
-  void _saltarA(int ms) {
+  Future<void> _playPausa() async {
+    if (!_sonando) {
+      try {
+        final dur = await widget.repo.reproducir(widget.sesionId, _posicionMs);
+        if (!mounted) return;
+        setState(() {
+          _sonando = true;
+          _pausado = false;
+          _totalMs = dur;
+        });
+        _arrancarReloj();
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo reproducir: $e')),
+        );
+      }
+      return;
+    }
+
+    setState(() => _pausado = !_pausado);
+    await widget.repo.pausarReproduccion(_pausado);
+  }
+
+  /// Sigue la posición real del audio mientras suena.
+  void _arrancarReloj() {
+    _reloj?.cancel();
+    _reloj = Timer.periodic(const Duration(milliseconds: 300), (_) async {
+      final e = await widget.repo.estadoReproduccion();
+      if (!mounted || e == null) return;
+      setState(() {
+        _posicionMs = e.posicionMs;
+        _totalMs = e.duracionMs;
+        if (e.terminado) {
+          _sonando = false;
+          _pausado = false;
+          _reloj?.cancel();
+        }
+      });
+    });
+  }
+
+  /// Salta al instante pedido; si no sonaba, empieza a sonar desde ahí.
+  ///
+  /// Es lo que da sentido a las marcas de tiempo de los apuntes: pinchar una
+  /// afirmación y OÍR el momento exacto en que se dijo.
+  Future<void> _saltarA(int ms) async {
     setState(() => _posicionMs = ms);
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text('Reproduciendo desde ${formatearTs(ms)}'),
-          duration: const Duration(seconds: 2),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+
+    if (_sonando) {
+      await widget.repo.saltarReproduccion(ms);
+      if (_pausado) {
+        setState(() => _pausado = false);
+        await widget.repo.pausarReproduccion(false);
+      }
+    } else {
+      await _playPausa();
+    }
   }
 
   @override
@@ -84,13 +146,23 @@ class _PantallaSesionState extends State<PantallaSesion> {
             ),
             body: TabBarView(
               children: [
-                _VistaNotas(notas: notas, onSaltar: _saltarA, sesion: sesion),
+                _VistaNotas(
+                  notas: notas,
+                  onSaltar: _saltarA,
+                  sesion: sesion,
+                  repoProceso: widget.repo,
+                ),
                 _VistaTranscripcion(frases: frases, posicionMs: _posicionMs),
               ],
             ),
             bottomNavigationBar: _BarraReproductor(
               posicionMs: _posicionMs,
-              duracion: sesion.duracion,
+              totalMs: _totalMs != 0
+                  ? _totalMs
+                  : (sesion.duracion?.inMilliseconds ?? 0),
+              sonando: _sonando && !_pausado,
+              onPlayPausa: _playPausa,
+              onSaltar: _saltarA,
             ),
           ),
         );
@@ -104,22 +176,51 @@ class _VistaNotas extends StatelessWidget {
     required this.notas,
     required this.onSaltar,
     required this.sesion,
+    required this.repoProceso,
   });
 
   final Notas? notas;
   final Sesion sesion;
   final void Function(int ms) onSaltar;
+  final Repositorio repoProceso;
 
   @override
   Widget build(BuildContext context) {
-    if (notas == null) {
+    if (notas == null || notas!.markdown.trim().isEmpty) {
+      // Un vacío sin salida deja al usuario mirando una pantalla en blanco:
+      // la acción que falta se ofrece aquí mismo.
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
-          child: Text(
-            'Todavía no se han generado notas para esta sesión.',
-            style: Theme.of(context).textTheme.bodyLarge,
-            textAlign: TextAlign.center,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                'Esta sesión aún no tiene apuntes.',
+                style: Theme.of(context).textTheme.titleMedium,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'El audio está guardado. Puedes escucharlo abajo, o generar '
+                'los apuntes ahora.',
+                style: Theme.of(context).textTheme.bodyMedium,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: () => Navigator.of(context).pushReplacement(
+                  MaterialPageRoute(
+                    builder: (_) => PantallaProceso(
+                      repo: repoProceso,
+                      sesionId: sesion.id,
+                    ),
+                  ),
+                ),
+                icon: const Icon(Icons.auto_awesome),
+                label: const Text('Generar apuntes'),
+              ),
+            ],
           ),
         ),
       );
@@ -193,7 +294,18 @@ class _VistaTranscripcion extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (frases.isEmpty) {
-      return const Center(child: Text('Sin transcripción.'));
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Text(
+            'Sin transcripción todavía.\n\n'
+            'Se genera junto con los apuntes: usa «Generar apuntes» en la '
+            'pestaña de notas. El audio se puede escuchar abajo igualmente.',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ),
+      );
     }
 
     return ListView.builder(
@@ -272,15 +384,24 @@ class _FilaFrase extends StatelessWidget {
 }
 
 class _BarraReproductor extends StatelessWidget {
-  const _BarraReproductor({required this.posicionMs, this.duracion});
+  const _BarraReproductor({
+    required this.posicionMs,
+    required this.totalMs,
+    required this.sonando,
+    required this.onPlayPausa,
+    required this.onSaltar,
+  });
 
   final int posicionMs;
-  final Duration? duracion;
+  final int totalMs;
+  final bool sonando;
+  final VoidCallback onPlayPausa;
+  final void Function(int ms) onSaltar;
 
   @override
   Widget build(BuildContext context) {
-    final totalMs = duracion?.inMilliseconds ?? 0;
-    final progreso = totalMs == 0 ? 0.0 : (posicionMs / totalMs).clamp(0.0, 1.0);
+    final progreso =
+        totalMs == 0 ? 0.0 : (posicionMs / totalMs).clamp(0.0, 1.0);
 
     return SafeArea(
       child: Padding(
@@ -288,13 +409,20 @@ class _BarraReproductor extends StatelessWidget {
         child: Row(
           children: [
             IconButton.filled(
-              onPressed: () {},
-              icon: const Icon(Icons.play_arrow),
+              onPressed: onPlayPausa,
+              icon: Icon(sonando ? Icons.pause : Icons.play_arrow),
             ),
             const SizedBox(width: 8),
-            Text(formatearTs(posicionMs), style: Theme.of(context).textTheme.labelMedium),
+            Text(formatearTs(posicionMs),
+                style: Theme.of(context).textTheme.labelMedium),
             Expanded(
-              child: Slider(value: progreso, onChanged: (_) {}),
+              child: Slider(
+                value: progreso,
+                // Arrastrar la bolita salta de verdad, no solo dibuja.
+                onChanged: totalMs == 0
+                    ? null
+                    : (v) => onSaltar((v * totalMs).round()),
+              ),
             ),
             Text(
               totalMs == 0 ? '--:--' : formatearTs(totalMs),

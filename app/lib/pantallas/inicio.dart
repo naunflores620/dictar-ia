@@ -72,12 +72,14 @@ class _PantallaInicioState extends State<PantallaInicio> {
                     topic: t,
                     sesiones: porTopic[t.id]!,
                     repo: widget.repo,
+                    onCambio: () => setState(() => _datos = _cargar()),
                   ),
               if (porTopic[null]?.isNotEmpty ?? false)
                 _GrupoTopic(
                   topic: null,
                   sesiones: porTopic[null]!,
                   repo: widget.repo,
+                  onCambio: () => setState(() => _datos = _cargar()),
                 ),
             ],
           );
@@ -98,11 +100,13 @@ class _GrupoTopic extends StatelessWidget {
     required this.topic,
     required this.sesiones,
     required this.repo,
+    required this.onCambio,
   });
 
   final Topic? topic;
   final List<Sesion> sesiones;
   final Repositorio repo;
+  final VoidCallback onCambio;
 
   @override
   Widget build(BuildContext context) {
@@ -132,17 +136,23 @@ class _GrupoTopic extends StatelessWidget {
             ],
           ),
         ),
-        for (final s in sesiones) _FilaSesion(sesion: s, repo: repo),
+        for (final s in sesiones)
+          _FilaSesion(sesion: s, repo: repo, onCambio: onCambio),
       ],
     );
   }
 }
 
 class _FilaSesion extends StatelessWidget {
-  const _FilaSesion({required this.sesion, required this.repo});
+  const _FilaSesion({
+    required this.sesion,
+    required this.repo,
+    required this.onCambio,
+  });
 
   final Sesion sesion;
   final Repositorio repo;
+  final VoidCallback onCambio;
 
   @override
   Widget build(BuildContext context) {
@@ -169,13 +179,36 @@ class _FilaSesion extends StatelessWidget {
           ],
         ],
       ),
-      trailing: pendiente
-          ? FilledButton.tonalIcon(
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (pendiente)
+            FilledButton.tonalIcon(
               onPressed: () => _procesar(context),
               icon: const Icon(Icons.auto_awesome, size: 16),
               label: const Text('Generar apuntes'),
-            )
-          : const Icon(Icons.chevron_right),
+            ),
+          // El listado se llena de pruebas y falsos comienzos; sin poder
+          // borrarlos, encontrar la clase de verdad entre veinte «0 min» es
+          // buscar una aguja.
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            onSelected: (v) {
+              if (v == 'borrar') _confirmarBorrado(context);
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'borrar',
+                child: ListTile(
+                  leading: Icon(Icons.delete_outline),
+                  title: Text('Eliminar'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
       onTap: pendiente
           ? () => _procesar(context)
           : () => Navigator.of(context).push(
@@ -184,6 +217,39 @@ class _FilaSesion extends StatelessWidget {
                 ),
               ),
     );
+  }
+
+  Future<void> _confirmarBorrado(BuildContext context) async {
+    final seguro = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿Eliminar esta sesión?'),
+        content: const Text(
+          'Se borra la grabación, la transcripción y los apuntes de la '
+          'aplicación. Los apuntes ya exportados a tu carpeta de Documentos '
+          'no se tocan.\n\nEsto no se puede deshacer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+              foregroundColor: Theme.of(ctx).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+
+    if (seguro == true) {
+      await repo.borrarSesion(sesion.id);
+      onCambio();
+    }
   }
 
   void _procesar(BuildContext context) {

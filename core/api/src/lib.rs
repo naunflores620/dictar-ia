@@ -76,6 +76,7 @@ pub struct Nucleo {
     dir_datos: PathBuf,
     config: ProvidersFile,
     grabacion: Mutex<Option<Grabacion>>,
+    reproductor: Mutex<Option<dictar_audio::reproductor::Reproductor>>,
     /// Transcriptor de la última sesión detenida, vaciando su cola en segundo
     /// plano. `procesar_sesion` lo espera con la barra de progreso delante.
     drenaje: Mutex<Option<(SessionId, std::sync::Arc<transcriptor::TranscriptorVivo>)>>,
@@ -96,6 +97,7 @@ impl Nucleo {
             dir_datos,
             config,
             grabacion: Mutex::new(None),
+            reproductor: Mutex::new(None),
             drenaje: Mutex::new(None),
         })
     }
@@ -291,6 +293,61 @@ impl Nucleo {
         let destino = std::env::temp_dir().join("dictar_ia_seleccion.png");
         let (ruta, w, h) = dictar_screen::captura_para_seleccion(destino)?;
         Ok((ruta.to_string_lossy().into_owned(), w, h))
+    }
+
+    /// Empieza a reproducir una sesión y devuelve su duración en ms.
+    ///
+    /// Si había otra sonando, se detiene: dos clases a la vez no son audio,
+    /// son ruido.
+    pub fn reproducir(&self, id: &SessionId, desde_ms: i64) -> Result<i64> {
+        let r = dictar_audio::reproductor::Reproductor::iniciar(&self.dir_audio(id), desde_ms)?;
+        let dur = r.duracion_ms();
+        *self.reproductor.lock().unwrap() = Some(r);
+        Ok(dur)
+    }
+
+    /// `(posicion_ms, duracion_ms, pausado, terminado)`, o `None` si no suena.
+    pub fn estado_reproduccion(&self) -> Option<(i64, i64, bool, bool)> {
+        self.reproductor
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|r| (r.posicion_ms(), r.duracion_ms(), r.pausado(), r.terminado()))
+    }
+
+    pub fn pausar_reproduccion(&self, pausar: bool) {
+        if let Some(r) = self.reproductor.lock().unwrap().as_ref() {
+            r.pausar(pausar);
+        }
+    }
+
+    pub fn saltar_reproduccion(&self, ms: i64) {
+        if let Some(r) = self.reproductor.lock().unwrap().as_ref() {
+            r.saltar(ms);
+        }
+    }
+
+    pub fn detener_reproduccion(&self) {
+        *self.reproductor.lock().unwrap() = None;
+    }
+
+    /// Borra una sesión: la base y su audio.
+    ///
+    /// El listado se llena de pruebas y falsos comienzos; sin poder borrarlos,
+    /// encontrar la clase de verdad entre veinte «Clase · 0 min» es buscar
+    /// una aguja. Los apuntes ya exportados a la carpeta de Documentos no se
+    /// tocan: eso es del usuario.
+    pub fn borrar_sesion(&self, id: &SessionId) -> Result<()> {
+        // Si es la que suena, primero se calla.
+        self.detener_reproduccion();
+
+        self.con_db(|db| db.borrar_sesion(id))?;
+
+        let dir = self.dir_audio(id);
+        if dir.is_dir() {
+            std::fs::remove_dir_all(&dir)?;
+        }
+        Ok(())
     }
 
     /// Modelo de Whisper configurado.

@@ -25,6 +25,7 @@ dictar — apuntes y actas a partir de transcripciones
 USO
   dictar sesion [--tipo clase|cliente|equipo] [--contexto \"...\"] [--segundos N]
   dictar grabar [--segundos N] [--salida <dir>] [--solo-microfono]
+  dictar reproducir [--datos <dir>] [--segundos N]   ← oye la última sesión
   dictar transcribir --in <archivo.wav> [--modelo turbo|medium|small]
   dictar modelos [--descargar turbo]
   dictar notas --in <archivo> [opciones]
@@ -104,6 +105,7 @@ async fn main() -> Result<()> {
         Some("grabar") => grabar::ejecutar(&opciones(&args[1..])),
         Some("sesion") => sesion::ejecutar(&opciones(&args[1..])).await,
         Some("transcribir") => transcribir::ejecutar(&opciones(&args[1..])),
+        Some("reproducir") => reproducir(&opciones(&args[1..])),
         Some("modelos") => transcribir::descargar(&opciones(&args[1..])),
         Some("ayuda") | Some("--help") | Some("-h") | None => {
             print!("{AYUDA}");
@@ -292,6 +294,57 @@ async fn notas(args: &[String]) -> Result<()> {
         None => println!("{salida}"),
     }
 
+    Ok(())
+}
+
+/// Reproduce la última sesión por los altavoces.
+///
+/// Es la comprobación real del reproductor: si esto suena y la posición
+/// avanza, el botón de la interfaz —que usa exactamente el mismo camino—
+/// también funciona.
+fn reproducir(opts: &HashMap<String, String>) -> Result<()> {
+    let dir = opts
+        .get("datos")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(dictar_api::Nucleo::dir_por_defecto);
+    let segundos: u64 = opts
+        .get("segundos")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+
+    let nucleo = dictar_api::Nucleo::abrir(&dir)?;
+    let sesiones = nucleo.sesiones(50)?;
+    let Some(sesion) = sesiones.iter().find(|s| {
+        nucleo.dir_audio(&s.id).join("mic.wav").is_file()
+            || nucleo.dir_audio(&s.id).join("system.wav").is_file()
+    }) else {
+        bail!("no hay ninguna sesión con audio en {}", dir.display());
+    };
+
+    let dur = nucleo.reproducir(&sesion.id, 0)?;
+    println!(
+        "▶ {} · {}s de audio · sonando {segundos}s…",
+        sesion.id,
+        dur / 1000
+    );
+
+    for _ in 0..segundos {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        if let Some((pos, total, _, fin)) = nucleo.estado_reproduccion() {
+            println!(
+                "  posición {}s / {}s{}",
+                pos / 1000,
+                total / 1000,
+                if fin { "  (terminado)" } else { "" }
+            );
+            if fin {
+                break;
+            }
+        }
+    }
+
+    nucleo.detener_reproduccion();
+    println!("■ detenido");
     Ok(())
 }
 

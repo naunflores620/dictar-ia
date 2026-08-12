@@ -7,7 +7,7 @@ import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `nucleo`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
 
 /// Abre el almacén del usuario. Debe llamarse una vez al arrancar.
 ///
@@ -112,6 +112,31 @@ Future<List<String>> carpetasSugeridas() =>
 /// Exporta los apuntes de una sesión a la carpeta configurada.
 Future<String?> exportarApuntes({required String sessionId}) =>
     Nucleo.instance.api.cratePuenteExportarApuntes(sessionId: sessionId);
+
+/// Empieza a reproducir una sesión. Devuelve la duración total en ms.
+Future<PlatformInt64> reproducir({
+  required String sessionId,
+  required PlatformInt64 desdeMs,
+}) => Nucleo.instance.api.cratePuenteReproducir(
+  sessionId: sessionId,
+  desdeMs: desdeMs,
+);
+
+Future<ReproduccionDto?> estadoReproduccion() =>
+    Nucleo.instance.api.cratePuenteEstadoReproduccion();
+
+Future<void> pausarReproduccion({required bool pausar}) =>
+    Nucleo.instance.api.cratePuentePausarReproduccion(pausar: pausar);
+
+Future<void> saltarReproduccion({required PlatformInt64 ms}) =>
+    Nucleo.instance.api.cratePuenteSaltarReproduccion(ms: ms);
+
+Future<void> detenerReproduccion() =>
+    Nucleo.instance.api.cratePuenteDetenerReproduccion();
+
+/// Borra una sesión con su audio. Los apuntes ya exportados no se tocan.
+Future<void> borrarSesion({required String sessionId}) =>
+    Nucleo.instance.api.cratePuenteBorrarSesion(sessionId: sessionId);
 
 Future<String> iniciarGrabacion({
   required String tipo,
@@ -460,6 +485,37 @@ class RegionDto {
           y == other.y &&
           ancho == other.ancho &&
           alto == other.alto;
+}
+
+class ReproduccionDto {
+  final PlatformInt64 posicionMs;
+  final PlatformInt64 duracionMs;
+  final bool pausado;
+  final bool terminado;
+
+  const ReproduccionDto({
+    required this.posicionMs,
+    required this.duracionMs,
+    required this.pausado,
+    required this.terminado,
+  });
+
+  @override
+  int get hashCode =>
+      posicionMs.hashCode ^
+      duracionMs.hashCode ^
+      pausado.hashCode ^
+      terminado.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ReproduccionDto &&
+          runtimeType == other.runtimeType &&
+          posicionMs == other.posicionMs &&
+          duracionMs == other.duracionMs &&
+          pausado == other.pausado &&
+          terminado == other.terminado;
 }
 
 class SesionDto {
