@@ -92,6 +92,7 @@ class RepositorioRust implements Repositorio {
   final _estado = StreamController<EstadoGrabacion>.broadcast();
   final _progreso = StreamController<Progreso>.broadcast();
   Timer? _sondeo;
+  bool _sondeando = false;
 
   // -- Consulta -------------------------------------------------------------
 
@@ -207,8 +208,7 @@ class RepositorioRust implements Repositorio {
 
   @override
   Future<void> detenerGrabacion() async {
-    _sondeo?.cancel();
-    _sondeo = null;
+    _pararSondeo();
     await rust.detenerGrabacion(ahoraMs: DateTime.now().millisecondsSinceEpoch);
     _estado.add(EstadoGrabacion.parado);
   }
@@ -239,8 +239,7 @@ class RepositorioRust implements Repositorio {
         proveedor: r.proveedor,
       );
     } finally {
-      _sondeo?.cancel();
-      _sondeo = null;
+      _pararSondeo();
     }
   }
 
@@ -302,41 +301,71 @@ class RepositorioRust implements Repositorio {
 
   /// Vacía la cola de eventos del núcleo hacia los flujos de la interfaz.
   ///
-  /// Se sondea en lugar de usar un `StreamSink` a propósito: el lado Rust
-  /// espera hasta 200 ms dentro de cada llamada, así que no hay espera activa
-  /// —el hilo se bloquea en el canal, no gira—, y a cambio el puente se queda
-  /// sin gestión de ciclo de vida de flujos a través del FFI, que es donde
-  /// suelen aparecer las fugas.
+  /// El bucle se reprograma **al terminar** cada consulta en vez de usar un
+  /// `Timer.periodic`. La diferencia no es cosmética: con el temporizador
+  /// periódico las llamadas se solapaban, se acumulaban y agotaban el grupo
+  /// de hilos del puente, de modo que detener la grabación se quedaba
+  /// esperando un hilo libre y el botón parecía no funcionar.
+  ///
+  /// Ahora nunca hay más de una consulta viva, y el lado Rust devuelve de
+  /// golpe todo lo pendiente sin bloquear.
   void _arrancarSondeo() {
     _sondeo?.cancel();
-    _sondeo = Timer.periodic(const Duration(milliseconds: 120), (_) async {
-      final e = await rust.siguienteEvento(esperaMs: 200);
-      if (e == null) return;
+    _sondeando = true;
+    _sondear();
+  }
 
-      switch (e.tipo) {
-        case 'niveles':
-          _estado.add(EstadoGrabacion(
-            grabando: true,
-            transcurrido: Duration(milliseconds: e.transcurridoMs.toInt()),
-            hablandoMicro: e.nivelMic > 0.01,
-            hablandoSistema: e.nivelSistema > 0.01,
-          ));
-        case 'frase':
-          _frases.add(Frase(
-            inicioMs: e.inicioMs.toInt(),
-            finMs: e.finMs.toInt(),
-            texto: e.texto ?? '',
-            pista: e.track == 'mic' ? Pista.micro : Pista.sistema,
-            definitiva: e.definitiva,
-          ));
-        case 'error':
-              debugPrint('núcleo: ${e.mensaje}');
+  Future<void> _sondear() async {
+    if (!_sondeando) return;
+
+    try {
+      for (final e in await rust.eventosPendientes()) {
+        _procesarEvento(e);
       }
-    });
+    } catch (e) {
+      debugPrint('sondeo: $e');
+    }
+
+    if (!_sondeando) return;
+    _sondeo = Timer(const Duration(milliseconds: 150), _sondear);
+  }
+
+  void _procesarEvento(rust.EventoDto e) {
+    switch (e.tipo) {
+      case 'niveles':
+        _estado.add(EstadoGrabacion(
+          grabando: true,
+          transcurrido: Duration(milliseconds: e.transcurridoMs.toInt()),
+          hablandoMicro: e.nivelMic > 0.01,
+          hablandoSistema: e.nivelSistema > 0.01,
+        ));
+      case 'frase':
+        _frases.add(Frase(
+          inicioMs: e.inicioMs.toInt(),
+          finMs: e.finMs.toInt(),
+          texto: e.texto ?? '',
+          pista: e.track == 'mic' ? Pista.micro : Pista.sistema,
+          definitiva: e.definitiva,
+        ));
+      case 'progreso':
+        _progreso.add(Progreso(
+          fase: e.fase ?? '',
+          fraccion: e.fraccion,
+          detalle: e.detalle ?? '',
+        ));
+      case 'error':
+        debugPrint('núcleo: ${e.mensaje}');
+    }
+  }
+
+  void _pararSondeo() {
+    _sondeando = false;
+    _sondeo?.cancel();
+    _sondeo = null;
   }
 
   void dispose() {
-    _sondeo?.cancel();
+    _pararSondeo();
     _frases.close();
     _estado.close();
     _progreso.close();

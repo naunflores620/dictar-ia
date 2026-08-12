@@ -31,9 +31,6 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   bool dco_decode_bool(dynamic raw);
 
   @protected
-  EventoDto dco_decode_box_autoadd_evento_dto(dynamic raw);
-
-  @protected
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
 
   @protected
@@ -58,6 +55,9 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   List<AvisoDto> dco_decode_list_aviso_dto(dynamic raw);
 
   @protected
+  List<EventoDto> dco_decode_list_evento_dto(dynamic raw);
+
+  @protected
   List<FraseDto> dco_decode_list_frase_dto(dynamic raw);
 
   @protected
@@ -74,9 +74,6 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
-
-  @protected
-  EventoDto? dco_decode_opt_box_autoadd_evento_dto(dynamic raw);
 
   @protected
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
@@ -115,9 +112,6 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
-  EventoDto sse_decode_box_autoadd_evento_dto(SseDeserializer deserializer);
-
-  @protected
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
@@ -142,6 +136,9 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   List<AvisoDto> sse_decode_list_aviso_dto(SseDeserializer deserializer);
 
   @protected
+  List<EventoDto> sse_decode_list_evento_dto(SseDeserializer deserializer);
+
+  @protected
   List<FraseDto> sse_decode_list_frase_dto(SseDeserializer deserializer);
 
   @protected
@@ -160,11 +157,6 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
-
-  @protected
-  EventoDto? sse_decode_opt_box_autoadd_evento_dto(
-    SseDeserializer deserializer,
-  );
 
   @protected
   PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
@@ -206,12 +198,6 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
-  void sse_encode_box_autoadd_evento_dto(
-    EventoDto self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_autoadd_i_64(
     PlatformInt64 self,
     SseSerializer serializer,
@@ -239,6 +225,12 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
   void sse_encode_list_aviso_dto(List<AvisoDto> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_evento_dto(
+    List<EventoDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_frase_dto(List<FraseDto> self, SseSerializer serializer);
 
   @protected
@@ -264,12 +256,6 @@ abstract class NucleoApiImplPlatform extends BaseApiImpl<NucleoWire> {
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_opt_box_autoadd_evento_dto(
-    EventoDto? self,
-    SseSerializer serializer,
-  );
 
   @protected
   void sse_encode_opt_box_autoadd_i_64(

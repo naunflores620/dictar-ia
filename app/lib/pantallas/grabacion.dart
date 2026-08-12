@@ -240,13 +240,21 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_estado.grabando ? 'Grabando' : 'Nueva sesión'),
-        leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: _estado.grabando ? _detener : () => Navigator.pop(context),
-        ),
-      ),
+      appBar: _estado.grabando && _esCompacto
+          // En compacto cada píxel cuenta: la barra se queda en una franja
+          // mínima para que el botón de capturar se lleve el espacio.
+          ? PreferredSize(
+              preferredSize: const Size.fromHeight(0),
+              child: Container(),
+            )
+          : AppBar(
+              title: Text(_estado.grabando ? 'Grabando' : 'Nueva sesión'),
+              leading: IconButton(
+                icon: const Icon(Icons.close),
+                onPressed:
+                    _estado.grabando ? _detener : () => Navigator.pop(context),
+              ),
+            ),
       body: _estado.grabando ? _enCurso() : _configuracion(),
     );
   }
@@ -367,7 +375,97 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
 
   // -- Durante la grabación ---------------------------------------------------
 
-  Widget _enCurso() {
+  /// Umbral por debajo del cual se usa la disposición compacta.
+  ///
+  /// La aplicación se usa encogida en una esquina, encima de Meet, durante la
+  /// clase entera. A ese tamaño la transcripción en vivo no cabe ni se lee, y
+  /// lo único que hace falta a mano alzada es capturar la diapositiva.
+  static const _anchoCompacto = 460.0;
+  static const _altoCompacto = 560.0;
+
+  bool get _esCompacto {
+    final t = MediaQuery.sizeOf(context);
+    return t.width < _anchoCompacto || t.height < _altoCompacto;
+  }
+
+  Widget _enCurso() => _esCompacto ? _enCursoCompacto() : _enCursoAmplio();
+
+  /// Disposición para la ventana encogida sobre la videollamada.
+  ///
+  /// Capturar es el botón grande y detener el pequeño, al revés que en la
+  /// ventana completa: durante la clase se pulsa capturar muchas veces y
+  /// detener una sola, al final. Y pulsar detener por error costaría la
+  /// sesión, así que conviene que no sea el que cae bajo el dedo.
+  Widget _enCursoCompacto() {
+    final t = Theme.of(context);
+    final s = _estado.transcurrido.inSeconds;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Icon(Icons.fiber_manual_record, color: t.colorScheme.error, size: 12),
+              const SizedBox(width: 8),
+              Text(
+                '${(s ~/ 60).toString().padLeft(2, '0')}:'
+                '${(s % 60).toString().padLeft(2, '0')}',
+                style: t.textTheme.titleMedium?.copyWith(
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+              const Spacer(),
+              _Nivel(etiqueta: 'Tú', activo: _estado.hablandoMicro),
+              const SizedBox(width: 10),
+              _Nivel(etiqueta: 'Sistema', activo: _estado.hablandoSistema),
+            ],
+          ),
+          const SizedBox(height: 10),
+
+          // El protagonista: ocupa todo el ancho y buena parte del alto.
+          Expanded(
+            child: FilledButton(
+              onPressed: _capturar,
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(72),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.photo_camera, size: 30),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Capturar diapositiva',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                  if (_capturasManuales > 0)
+                    Text(
+                      '$_capturasManuales guardada'
+                      '${_capturasManuales == 1 ? '' : 's'}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+
+          TextButton.icon(
+            onPressed: _detener,
+            icon: const Icon(Icons.stop, size: 18),
+            label: const Text('Detener y generar notas'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Disposición para la ventana completa, con la transcripción en vivo.
+  Widget _enCursoAmplio() {
     return Column(
       children: [
         _Cabecera(estado: _estado),
@@ -385,30 +483,32 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
         SafeArea(
           child: Padding(
             padding: const EdgeInsets.all(16),
-            child: Column(
+            child: Row(
               children: [
-                // La captura manual va junto al botón de detener, no escondida
-                // en un menú: se usa a mitad de clase, con prisa, mientras el
-                // profesor ya está pasando a la siguiente lámina.
-                OutlinedButton.icon(
-                  onPressed: _capturar,
-                  icon: const Icon(Icons.photo_camera_outlined),
-                  label: Text(
-                    _capturasManuales == 0
-                        ? 'Capturar esta diapositiva'
-                        : 'Capturar esta diapositiva  ($_capturasManuales)',
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    minimumSize: const Size.fromHeight(46),
+                Expanded(
+                  flex: 2,
+                  child: FilledButton.icon(
+                    onPressed: _capturar,
+                    icon: const Icon(Icons.photo_camera),
+                    label: Text(
+                      _capturasManuales == 0
+                          ? 'Capturar diapositiva'
+                          : 'Capturar diapositiva  ($_capturasManuales)',
+                    ),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(52),
+                    ),
                   ),
                 ),
-                const SizedBox(height: 8),
-                FilledButton.icon(
-                  onPressed: _detener,
-                  icon: const Icon(Icons.stop),
-                  label: const Text('Detener y generar notas'),
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size.fromHeight(52),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _detener,
+                    icon: const Icon(Icons.stop),
+                    label: const Text('Detener'),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(52),
+                    ),
                   ),
                 ),
               ],

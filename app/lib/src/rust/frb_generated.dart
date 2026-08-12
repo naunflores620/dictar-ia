@@ -64,7 +64,7 @@ class Nucleo extends BaseEntrypoint<NucleoApi, NucleoApiImpl, NucleoWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 1747038495;
+  int get rustContentHash => 1867807292;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -93,6 +93,8 @@ abstract class NucleoApi extends BaseApi {
   Future<String> cratePuenteDetenerGrabacion({required PlatformInt64 ahoraMs});
 
   Future<EventoDto> cratePuenteEventoDtoDefault();
+
+  Future<List<EventoDto>> cratePuenteEventosPendientes();
 
   Future<String?> cratePuenteExportarApuntes({required String sessionId});
 
@@ -145,8 +147,6 @@ abstract class NucleoApi extends BaseApi {
   });
 
   Future<List<SesionDto>> cratePuenteSesionesInterrumpidas();
-
-  Future<EventoDto?> cratePuenteSiguienteEvento({required int esperaMs});
 }
 
 class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
@@ -362,6 +362,33 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
       const TaskConstMeta(debugName: "evento_dto_default", argNames: []);
 
   @override
+  Future<List<EventoDto>> cratePuenteEventosPendientes() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 8,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_evento_dto,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCratePuenteEventosPendientesConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCratePuenteEventosPendientesConstMeta =>
+      const TaskConstMeta(debugName: "eventos_pendientes", argNames: []);
+
+  @override
   Future<String?> cratePuenteExportarApuntes({required String sessionId}) {
     return handler.executeNormal(
       NormalTask(
@@ -371,7 +398,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 9,
             port: port_,
           );
         },
@@ -400,7 +427,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 10,
             port: port_,
           );
         },
@@ -434,7 +461,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 11,
             port: port_,
           );
         },
@@ -468,7 +495,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 12,
             port: port_,
           );
         },
@@ -498,7 +525,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 13,
             port: port_,
           );
         },
@@ -540,7 +567,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 14,
             port: port_,
           );
         },
@@ -586,7 +613,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 15,
             port: port_,
           );
         },
@@ -613,7 +640,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 16,
             port: port_,
           );
         },
@@ -641,7 +668,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 17,
             port: port_,
           );
         },
@@ -668,7 +695,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 18,
             port: port_,
           );
         },
@@ -695,7 +722,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 19,
             port: port_,
           );
         },
@@ -723,7 +750,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 20,
             port: port_,
           );
         },
@@ -753,7 +780,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 21,
             port: port_,
           );
         },
@@ -784,7 +811,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 22,
             port: port_,
           );
         },
@@ -816,7 +843,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 23,
             port: port_,
           );
         },
@@ -845,7 +872,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 24,
             port: port_,
           );
         },
@@ -862,36 +889,6 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
 
   TaskConstMeta get kCratePuenteSesionesInterrumpidasConstMeta =>
       const TaskConstMeta(debugName: "sesiones_interrumpidas", argNames: []);
-
-  @override
-  Future<EventoDto?> cratePuenteSiguienteEvento({required int esperaMs}) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_u_32(esperaMs, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 24,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_opt_box_autoadd_evento_dto,
-          decodeErrorData: sse_decode_String,
-        ),
-        constMeta: kCratePuenteSiguienteEventoConstMeta,
-        argValues: [esperaMs],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCratePuenteSiguienteEventoConstMeta => const TaskConstMeta(
-    debugName: "siguiente_evento",
-    argNames: ["esperaMs"],
-  );
 
   @protected
   String dco_decode_String(dynamic raw) {
@@ -934,12 +931,6 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
   bool dco_decode_bool(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as bool;
-  }
-
-  @protected
-  EventoDto dco_decode_box_autoadd_evento_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_evento_dto(raw);
   }
 
   @protected
@@ -1020,6 +1011,12 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
   }
 
   @protected
+  List<EventoDto> dco_decode_list_evento_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_evento_dto).toList();
+  }
+
+  @protected
   List<FraseDto> dco_decode_list_frase_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_frase_dto).toList();
@@ -1053,12 +1050,6 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
   String? dco_decode_opt_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_String(raw);
-  }
-
-  @protected
-  EventoDto? dco_decode_opt_box_autoadd_evento_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_evento_dto(raw);
   }
 
   @protected
@@ -1200,12 +1191,6 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
   }
 
   @protected
-  EventoDto sse_decode_box_autoadd_evento_dto(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_evento_dto(deserializer));
-  }
-
-  @protected
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_i_64(deserializer));
@@ -1310,6 +1295,18 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
   }
 
   @protected
+  List<EventoDto> sse_decode_list_evento_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <EventoDto>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_evento_dto(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<FraseDto> sse_decode_list_frase_dto(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -1372,19 +1369,6 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_String(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  EventoDto? sse_decode_opt_box_autoadd_evento_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_evento_dto(deserializer));
     } else {
       return null;
     }
@@ -1536,15 +1520,6 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
   }
 
   @protected
-  void sse_encode_box_autoadd_evento_dto(
-    EventoDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_evento_dto(self, serializer);
-  }
-
-  @protected
   void sse_encode_box_autoadd_i_64(
     PlatformInt64 self,
     SseSerializer serializer,
@@ -1624,6 +1599,18 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
   }
 
   @protected
+  void sse_encode_list_evento_dto(
+    List<EventoDto> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_evento_dto(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_frase_dto(
     List<FraseDto> self,
     SseSerializer serializer,
@@ -1688,19 +1675,6 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_String(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_evento_dto(
-    EventoDto? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_evento_dto(self, serializer);
     }
   }
 

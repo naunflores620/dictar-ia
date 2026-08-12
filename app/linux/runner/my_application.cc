@@ -59,6 +59,14 @@ static void my_application_activate(GApplication* application) {
   // dictar-ia.png en todos los tamaños.
   gtk_window_set_icon_name(window, "dictar-ia");
 
+  // Mínimo pequeño para que la ventana pueda encogerse hasta caber en una
+  // esquina sobre la videollamada. Es como se usa durante la clase entera, así
+  // que la interfaz tiene una disposición compacta pensada para ese tamaño.
+  GdkGeometry limites;
+  limites.min_width = 300;
+  limites.min_height = 260;
+  gtk_window_set_geometry_hints(window, nullptr, &limites, GDK_HINT_MIN_SIZE);
+
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(
       project, self->dart_entrypoint_arguments);

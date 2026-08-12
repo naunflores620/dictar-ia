@@ -546,25 +546,37 @@ pub fn grabando() -> Result<Option<String>, String> {
     Ok(nucleo()?.grabando().map(|id| id.0))
 }
 
-/// Consume los eventos de la grabación en curso.
+/// Vacía la cola de eventos de la grabación o del procesado en curso.
 ///
-/// Devuelve el siguiente evento, o `None` cuando la grabación termina. Se
-/// consulta en bucle desde Dart: es más simple que un `StreamSink` y evita que
-/// el generador tenga que gestionar el ciclo de vida de un flujo a través del
-/// FFI.
-pub fn siguiente_evento(espera_ms: u32) -> Result<Option<EventoDto>, String> {
+/// **No bloquea.** La versión anterior esperaba hasta 200 ms dentro del canal
+/// y con el mutex tomado, y eso provocó un fallo serio: la interfaz consultaba
+/// cada 120 ms, así que las llamadas llegaban más deprisa de lo que se
+/// resolvían, se acumulaban y acababan agotando el grupo de hilos del puente.
+/// Con el grupo lleno, cualquier otra llamada —detener la grabación, por
+/// ejemplo— se quedaba esperando un hilo que nunca llegaba, y el botón parecía
+/// no funcionar.
+///
+/// Devolviendo de golpe todo lo que hay pendiente, cada llamada dura
+/// microsegundos y no hay forma de que se solapen.
+pub fn eventos_pendientes() -> Result<Vec<EventoDto>, String> {
     let guard = EVENTOS.lock().unwrap();
     let Some(rx) = guard.as_ref() else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
 
-    match rx.recv_timeout(std::time::Duration::from_millis(espera_ms as u64)) {
-        Ok(e) => Ok(Some(e.into())),
-        // Ni el tiempo agotado ni el canal cerrado son errores: el primero
-        // significa «todavía nada» y el segundo «ya terminó». La interfaz
-        // trata ambos igual y sigue consultando.
-        Err(_) => Ok(None),
+    let mut out = Vec::new();
+    // Tope por llamada: si la interfaz se ha quedado atrás, es preferible
+    // entregar un lote y volver enseguida a construir uno gigante.
+    while out.len() < 200 {
+        match rx.try_recv() {
+            Ok(e) => out.push(e.into()),
+            // Ni «vacío» ni «cerrado» son errores: el primero significa
+            // «todavía nada» y el segundo «ya terminó».
+            Err(_) => break,
+        }
     }
+
+    Ok(out)
 }
 
 /// Transcribe y genera las notas de una sesión ya grabada.

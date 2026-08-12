@@ -124,14 +124,20 @@ Future<String> capturarDiapositiva() =>
 
 Future<String?> grabando() => Nucleo.instance.api.cratePuenteGrabando();
 
-/// Consume los eventos de la grabación en curso.
+/// Vacía la cola de eventos de la grabación o del procesado en curso.
 ///
-/// Devuelve el siguiente evento, o `None` cuando la grabación termina. Se
-/// consulta en bucle desde Dart: es más simple que un `StreamSink` y evita que
-/// el generador tenga que gestionar el ciclo de vida de un flujo a través del
-/// FFI.
-Future<EventoDto?> siguienteEvento({required int esperaMs}) =>
-    Nucleo.instance.api.cratePuenteSiguienteEvento(esperaMs: esperaMs);
+/// **No bloquea.** La versión anterior esperaba hasta 200 ms dentro del canal
+/// y con el mutex tomado, y eso provocó un fallo serio: la interfaz consultaba
+/// cada 120 ms, así que las llamadas llegaban más deprisa de lo que se
+/// resolvían, se acumulaban y acababan agotando el grupo de hilos del puente.
+/// Con el grupo lleno, cualquier otra llamada —detener la grabación, por
+/// ejemplo— se quedaba esperando un hilo que nunca llegaba, y el botón parecía
+/// no funcionar.
+///
+/// Devolviendo de golpe todo lo que hay pendiente, cada llamada dura
+/// microsegundos y no hay forma de que se solapen.
+Future<List<EventoDto>> eventosPendientes() =>
+    Nucleo.instance.api.cratePuenteEventosPendientes();
 
 /// Transcribe y genera las notas de una sesión ya grabada.
 ///
