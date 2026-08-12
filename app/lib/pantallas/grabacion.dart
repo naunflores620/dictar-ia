@@ -40,6 +40,8 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
   /// Se incrementa al crear una asignatura, para releer el desplegable.
   int _recargaTopics = 0;
 
+  int _capturasManuales = 0;
+
   static const _valorCrear = '__crear__';
 
   @override
@@ -144,6 +146,30 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
       _topicId = id;
       _recargaTopics++;
     });
+  }
+
+  /// Guarda una captura de la pantalla en este instante.
+  Future<void> _capturar() async {
+    try {
+      await widget.repo.capturarDiapositiva();
+      if (!mounted) return;
+      setState(() => _capturasManuales++);
+
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Diapositiva guardada'),
+            duration: Duration(milliseconds: 900),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo capturar: $e')),
+      );
+    }
   }
 
   Future<bool> _confirmarConsentimiento() async {
@@ -309,8 +335,9 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
           onChanged: (v) => setState(() => _capturarPantalla = v),
           title: const Text('Capturar diapositivas'),
           subtitle: const Text(
-            'Guarda una imagen cada vez que cambia la pantalla compartida, '
-            'anclada al segundo exacto',
+            'Guarda una imagen cuando la pantalla compartida cambia y se queda '
+            'quieta unos segundos. Si solo hay cámaras de participantes, no '
+            'captura nada.',
           ),
           secondary: const Icon(Icons.slideshow_outlined),
           contentPadding: EdgeInsets.zero,
@@ -358,11 +385,33 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
         SafeArea(
           child: Padding(
             padding: const EdgeInsets.all(16),
-            child: FilledButton.icon(
-              onPressed: _detener,
-              icon: const Icon(Icons.stop),
-              label: const Text('Detener y generar notas'),
-              style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(52)),
+            child: Column(
+              children: [
+                // La captura manual va junto al botón de detener, no escondida
+                // en un menú: se usa a mitad de clase, con prisa, mientras el
+                // profesor ya está pasando a la siguiente lámina.
+                OutlinedButton.icon(
+                  onPressed: _capturar,
+                  icon: const Icon(Icons.photo_camera_outlined),
+                  label: Text(
+                    _capturasManuales == 0
+                        ? 'Capturar esta diapositiva'
+                        : 'Capturar esta diapositiva  ($_capturasManuales)',
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(46),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                FilledButton.icon(
+                  onPressed: _detener,
+                  icon: const Icon(Icons.stop),
+                  label: const Text('Detener y generar notas'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(52),
+                  ),
+                ),
+              ],
             ),
           ),
         ),

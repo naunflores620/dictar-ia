@@ -227,6 +227,30 @@ impl Nucleo {
             .map(|g| g.duracion())
     }
 
+    /// Guarda una captura de la pantalla en la sesión que se está grabando.
+    ///
+    /// Es la vía manual: el usuario decide el momento, así que el encuadre y
+    /// la lámina son los correctos por definición. La detección automática
+    /// nunca acertará siempre —hay clases sin diapositivas y presentaciones
+    /// con vídeo dentro—, y esta opción no depende de ella.
+    pub fn capturar_diapositiva(&self) -> Result<PathBuf> {
+        let g = self.grabacion.lock().unwrap();
+        let Some(grab) = g.as_ref() else {
+            return Err(ApiError::NoGrabando);
+        };
+
+        let id = grab.session_id.clone();
+        let ts = grab.duracion().as_millis() as i64;
+        drop(g);
+
+        let s = dictar_screen::capturar_ahora(self.dir_audio(&id).join("diapositivas"), ts, None)?;
+
+        let ruta = s.ruta.to_string_lossy().into_owned();
+        self.con_db(|db| db.insertar_diapositiva(&id, &ruta, s.ts_ms, &s.phash))?;
+
+        Ok(s.ruta)
+    }
+
     /// Carpeta de audio de una sesión.
     pub fn dir_audio(&self, id: &SessionId) -> PathBuf {
         self.dir_datos().join("audio").join(id.as_str())

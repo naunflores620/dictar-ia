@@ -116,6 +116,12 @@ Future<String> iniciarGrabacion({
 Future<String> detenerGrabacion({required PlatformInt64 ahoraMs}) =>
     Nucleo.instance.api.cratePuenteDetenerGrabacion(ahoraMs: ahoraMs);
 
+/// Guarda una captura de la pantalla en la sesión en curso.
+///
+/// Devuelve la ruta del archivo. Falla si no se está grabando.
+Future<String> capturarDiapositiva() =>
+    Nucleo.instance.api.cratePuenteCapturarDiapositiva();
+
 Future<String?> grabando() => Nucleo.instance.api.cratePuenteGrabando();
 
 /// Consume los eventos de la grabación en curso.

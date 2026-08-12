@@ -216,6 +216,9 @@ class RepositorioRust implements Repositorio {
   @override
   Stream<Progreso> get progreso => _progreso.stream;
 
+  @override
+  Future<String> capturarDiapositiva() => rust.capturarDiapositiva();
+
   /// Procesa una sesión ya grabada: transcribe y genera las notas.
   ///
   /// El generador ejecuta las funciones de Rust en su propio hilo, así que

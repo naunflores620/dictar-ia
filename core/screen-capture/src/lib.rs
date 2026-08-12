@@ -221,6 +221,48 @@ fn muestrear(
     }
 }
 
+/// Captura la pantalla ahora mismo, sin pasar por el detector.
+///
+/// Es la vía manual, y existe porque la detección automática nunca acertará
+/// siempre: hay clases sin diapositivas, presentaciones con vídeo dentro y
+/// profesores que enseñan algo tres segundos. Con un botón, el usuario decide
+/// el momento exacto y el resultado es correcto por definición.
+pub fn capturar_ahora(
+    dir: impl AsRef<Path>,
+    ts_ms: TsMs,
+    pantalla: Option<usize>,
+) -> Result<SlideCapturada> {
+    let dir = dir.as_ref();
+    std::fs::create_dir_all(dir)?;
+
+    let monitores = xcap::Monitor::all().map_err(|e| ScreenError::Captura(e.to_string()))?;
+    let monitor = match pantalla {
+        Some(i) => monitores.get(i).ok_or(ScreenError::SinPantalla)?,
+        None => monitores.first().ok_or(ScreenError::SinPantalla)?,
+    };
+
+    let imagen = monitor
+        .capture_image()
+        .map_err(|e| ScreenError::Captura(e.to_string()))?;
+    let dyn_img = image::DynamicImage::ImageRgba8(imagen);
+    let h = hash::dhash(&hash::region_central(&dyn_img, 0.12));
+
+    // El nombre lleva la marca de tiempo, no un contador: así no choca con las
+    // que va guardando el hilo automático, que lleva su propia numeración.
+    let ruta = dir.join(format!("manual-{ts_ms}.png"));
+    dyn_img
+        .save(&ruta)
+        .map_err(|e| ScreenError::Imagen(e.to_string()))?;
+
+    tracing::info!(ruta = %ruta.display(), "captura manual");
+
+    Ok(SlideCapturada {
+        ts_ms,
+        phash: hash::a_hex(h),
+        ruta,
+    })
+}
+
 /// Pantallas disponibles, para que el usuario elija.
 pub fn pantallas() -> Result<Vec<String>> {
     let monitores = xcap::Monitor::all().map_err(|e| ScreenError::Captura(e.to_string()))?;

@@ -48,6 +48,12 @@ abstract class Repositorio {
 
   /// Avance del procesado, para la barra.
   Stream<Progreso> get progreso;
+
+  /// Guarda una captura de la pantalla en la sesión en curso.
+  ///
+  /// Es la vía manual: el usuario decide el momento, así que la lámina es la
+  /// correcta por definición. La detección automática nunca acertará siempre.
+  Future<String> capturarDiapositiva();
 }
 
 /// Instantánea del procesado en curso.
@@ -438,6 +444,9 @@ Definición de la transformada. _Diapositiva #7_ · _[00:01:40]_
 
   @override
   Stream<Progreso> get progreso => _progreso.stream;
+
+  @override
+  Future<String> capturarDiapositiva() async => '/demostración/lámina.png';
 
   @override
   Future<ResultadoProceso> procesar(String sesionId) async {

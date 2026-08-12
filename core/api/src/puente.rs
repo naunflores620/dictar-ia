@@ -532,6 +532,16 @@ pub fn detener_grabacion(ahora_ms: i64) -> Result<String, String> {
     Ok(id.0)
 }
 
+/// Guarda una captura de la pantalla en la sesión en curso.
+///
+/// Devuelve la ruta del archivo. Falla si no se está grabando.
+pub fn capturar_diapositiva() -> Result<String, String> {
+    nucleo()?
+        .capturar_diapositiva()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
+}
+
 pub fn grabando() -> Result<Option<String>, String> {
     Ok(nucleo()?.grabando().map(|id| id.0))
 }

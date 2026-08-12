@@ -43,6 +43,9 @@ pub enum ApiError {
     Stt(#[from] dictar_stt::SttError),
 
     #[error(transparent)]
+    Pantalla(#[from] dictar_screen::ScreenError),
+
+    #[error(transparent)]
     Notas(#[from] dictar_notes::NotesError),
 
     #[error(transparent)]

@@ -64,7 +64,7 @@ class Nucleo extends BaseEntrypoint<NucleoApi, NucleoApiImpl, NucleoWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -408904154;
+  int get rustContentHash => 1747038495;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -77,6 +77,8 @@ class Nucleo extends BaseEntrypoint<NucleoApi, NucleoApiImpl, NucleoWire> {
 
 abstract class NucleoApi extends BaseApi {
   Future<List<FraseDto>> cratePuenteBuscar({required String consulta});
+
+  Future<String> cratePuenteCapturarDiapositiva();
 
   Future<List<String>> cratePuenteCarpetasSugeridas();
 
@@ -184,7 +186,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
       const TaskConstMeta(debugName: "buscar", argNames: ["consulta"]);
 
   @override
-  Future<List<String>> cratePuenteCarpetasSugeridas() {
+  Future<String> cratePuenteCapturarDiapositiva() {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
@@ -193,6 +195,33 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
             generalizedFrbRustBinding,
             serializer,
             funcId: 2,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCratePuenteCapturarDiapositivaConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCratePuenteCapturarDiapositivaConstMeta =>
+      const TaskConstMeta(debugName: "capturar_diapositiva", argNames: []);
+
+  @override
+  Future<List<String>> cratePuenteCarpetasSugeridas() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 3,
             port: port_,
           );
         },
@@ -226,7 +255,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 4,
             port: port_,
           );
         },
@@ -256,7 +285,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 5,
             port: port_,
           );
         },
@@ -284,7 +313,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 6,
             port: port_,
           );
         },
@@ -314,7 +343,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 7,
             port: port_,
           );
         },
@@ -342,7 +371,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 8,
             port: port_,
           );
         },
@@ -371,7 +400,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 9,
             port: port_,
           );
         },
@@ -405,7 +434,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 10,
             port: port_,
           );
         },
@@ -439,7 +468,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 11,
             port: port_,
           );
         },
@@ -469,7 +498,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 12,
             port: port_,
           );
         },
@@ -511,7 +540,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 13,
             port: port_,
           );
         },
@@ -557,7 +586,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 14,
             port: port_,
           );
         },
@@ -584,7 +613,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 15,
             port: port_,
           );
         },
@@ -612,7 +641,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 16,
             port: port_,
           );
         },
@@ -639,7 +668,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 17,
             port: port_,
           );
         },
@@ -666,7 +695,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 18,
             port: port_,
           );
         },
@@ -694,7 +723,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 19,
             port: port_,
           );
         },
@@ -724,7 +753,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 20,
             port: port_,
           );
         },
@@ -755,7 +784,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 21,
             port: port_,
           );
         },
@@ -787,7 +816,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 22,
             port: port_,
           );
         },
@@ -816,7 +845,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 23,
             port: port_,
           );
         },
@@ -844,7 +873,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 24,
             port: port_,
           );
         },
