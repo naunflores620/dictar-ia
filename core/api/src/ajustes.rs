@@ -33,7 +33,69 @@ fn verdadero() -> bool {
     true
 }
 
+/// Nombre de la carpeta que se crea dentro de Documentos.
+pub const CARPETA_POR_DEFECTO: &str = "Apuntes dictar_ia";
+
+/// Carpeta de Documentos del usuario, respetando su idioma.
+///
+/// Se lee de `user-dirs.dirs`, que es donde el escritorio guarda el nombre
+/// real: en un sistema en español es «Documentos», en uno en inglés
+/// «Documents», y dar por bueno uno de los dos dejaría los apuntes en una
+/// carpeta nueva y desconcertante junto a la de verdad.
+pub fn dir_documentos() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+
+    if let Ok(texto) = std::fs::read_to_string(config.join("user-dirs.dirs")) {
+        for linea in texto.lines() {
+            let linea = linea.trim();
+            let Some(valor) = linea.strip_prefix("XDG_DOCUMENTS_DIR=") else {
+                continue;
+            };
+            let valor = valor.trim_matches('"');
+            let ruta = match valor.strip_prefix("$HOME/") {
+                Some(resto) => home.join(resto),
+                None => PathBuf::from(valor),
+            };
+            if ruta.is_dir() {
+                return Some(ruta);
+            }
+        }
+    }
+
+    // Sin user-dirs.dirs —un entorno mínimo, una sesión remota— se prueban los
+    // dos nombres habituales antes de rendirse.
+    for nombre in ["Documentos", "Documents"] {
+        let ruta = home.join(nombre);
+        if ruta.is_dir() {
+            return Some(ruta);
+        }
+    }
+
+    Some(home)
+}
+
+/// Carpeta de apuntes por defecto: `<Documentos>/Apuntes dictar_ia`.
+pub fn carpeta_apuntes_por_defecto() -> Option<PathBuf> {
+    dir_documentos().map(|d| d.join(CARPETA_POR_DEFECTO))
+}
+
 impl Ajustes {
+    /// Carpeta donde se exportan los apuntes, configurada o por defecto.
+    ///
+    /// Que haya un valor por defecto importa: sin él, quien no entre en
+    /// ajustes nunca vería un apunte fuera de la aplicación, y no sabría que
+    /// esa exportación existe.
+    pub fn carpeta_efectiva(&self) -> Option<PathBuf> {
+        match &self.carpeta_apuntes {
+            Some(c) if !c.trim().is_empty() => Some(PathBuf::from(c)),
+            _ => carpeta_apuntes_por_defecto(),
+        }
+    }
+
     pub fn cargar(dir: &Path) -> Self {
         let ruta = dir.join("ajustes.toml");
         std::fs::read_to_string(ruta)
@@ -172,6 +234,47 @@ mod tests {
 
         let a = Ajustes::cargar(dir.path());
         assert!(a.capturar_diapositivas);
+    }
+
+    #[test]
+    fn sin_configurar_nada_se_usa_una_carpeta_dentro_de_documentos() {
+        // Sin valor por defecto, quien no entre en ajustes nunca vería un
+        // apunte fuera de la aplicación.
+        let a = Ajustes::default();
+        let c = a.carpeta_efectiva().expect("debe haber una por defecto");
+        assert!(c.ends_with(CARPETA_POR_DEFECTO), "quedó en {}", c.display());
+    }
+
+    #[test]
+    fn lo_configurado_manda_sobre_la_carpeta_por_defecto() {
+        let a = Ajustes {
+            carpeta_apuntes: Some("/tmp/mis-apuntes".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            a.carpeta_efectiva().unwrap(),
+            std::path::Path::new("/tmp/mis-apuntes")
+        );
+    }
+
+    #[test]
+    fn una_carpeta_en_blanco_cuenta_como_no_configurada() {
+        // Vaciar el campo en la interfaz no debe dejar la exportación muerta.
+        let a = Ajustes {
+            carpeta_apuntes: Some("   ".into()),
+            ..Default::default()
+        };
+        let c = a.carpeta_efectiva().unwrap();
+        assert!(c.ends_with(CARPETA_POR_DEFECTO));
+    }
+
+    #[test]
+    fn se_respeta_el_nombre_real_de_documentos() {
+        // En español es «Documentos» y en inglés «Documents»: dar por bueno
+        // uno de los dos dejaría los apuntes en una carpeta nueva y
+        // desconcertante junto a la de verdad.
+        let d = dir_documentos().expect("debe encontrar alguna");
+        assert!(d.is_absolute());
     }
 
     #[test]

@@ -837,10 +837,12 @@ impl SseDecode for crate::puente::AjustesDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_carpetaApuntes = <Option<String>>::sse_decode(deserializer);
+        let mut var_carpetaEfectiva = <Option<String>>::sse_decode(deserializer);
         let mut var_modelo = <Option<String>>::sse_decode(deserializer);
         let mut var_capturarDiapositivas = <bool>::sse_decode(deserializer);
         return crate::puente::AjustesDto {
             carpeta_apuntes: var_carpetaApuntes,
+            carpeta_efectiva: var_carpetaEfectiva,
             modelo: var_modelo,
             capturar_diapositivas: var_capturarDiapositivas,
         };
@@ -1235,6 +1237,7 @@ impl flutter_rust_bridge::IntoDart for crate::puente::AjustesDto {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.carpeta_apuntes.into_into_dart().into_dart(),
+            self.carpeta_efectiva.into_into_dart().into_dart(),
             self.modelo.into_into_dart().into_dart(),
             self.capturar_diapositivas.into_into_dart().into_dart(),
         ]
@@ -1414,6 +1417,7 @@ impl SseEncode for crate::puente::AjustesDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Option<String>>::sse_encode(self.carpeta_apuntes, serializer);
+        <Option<String>>::sse_encode(self.carpeta_efectiva, serializer);
         <Option<String>>::sse_encode(self.modelo, serializer);
         <bool>::sse_encode(self.capturar_diapositivas, serializer);
     }

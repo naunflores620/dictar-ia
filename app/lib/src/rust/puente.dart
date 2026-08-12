@@ -140,19 +140,28 @@ Future<ProcesadaDto> procesarSesion({
 );
 
 class AjustesDto {
+  /// Lo que el usuario configuró, o `None` si nunca tocó nada.
   final String? carpetaApuntes;
+
+  /// La que se usa de verdad: la configurada, o la de por defecto dentro de
+  /// Documentos. La interfaz enseña esta.
+  final String? carpetaEfectiva;
   final String? modelo;
   final bool capturarDiapositivas;
 
   const AjustesDto({
     this.carpetaApuntes,
+    this.carpetaEfectiva,
     this.modelo,
     required this.capturarDiapositivas,
   });
 
   @override
   int get hashCode =>
-      carpetaApuntes.hashCode ^ modelo.hashCode ^ capturarDiapositivas.hashCode;
+      carpetaApuntes.hashCode ^
+      carpetaEfectiva.hashCode ^
+      modelo.hashCode ^
+      capturarDiapositivas.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -160,6 +169,7 @@ class AjustesDto {
       other is AjustesDto &&
           runtimeType == other.runtimeType &&
           carpetaApuntes == other.carpetaApuntes &&
+          carpetaEfectiva == other.carpetaEfectiva &&
           modelo == other.modelo &&
           capturarDiapositivas == other.capturarDiapositivas;
 }

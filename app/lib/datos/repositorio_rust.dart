@@ -12,6 +12,7 @@ import 'repositorio.dart';
 class AjustesApp {
   const AjustesApp({
     this.carpetaApuntes,
+    this.carpetaEfectiva,
     this.modelo,
     this.capturarDiapositivas = true,
   });
@@ -21,6 +22,11 @@ class AjustesApp {
   /// Apuntando a OneDrive, Drive o Nextcloud, los apuntes acaban en el móvil
   /// solos, sin que la aplicación hable con ninguna API de nube.
   final String? carpetaApuntes;
+
+  /// La que se usa de verdad: la configurada, o la carpeta por defecto dentro
+  /// de Documentos si nunca se tocó nada. Es la que se enseña.
+  final String? carpetaEfectiva;
+
   final String? modelo;
   final bool capturarDiapositivas;
 
@@ -267,6 +273,7 @@ class RepositorioRust implements Repositorio {
     final a = await rust.obtenerAjustes();
     return AjustesApp(
       carpetaApuntes: a.carpetaApuntes,
+      carpetaEfectiva: a.carpetaEfectiva,
       modelo: a.modelo,
       capturarDiapositivas: a.capturarDiapositivas,
     );

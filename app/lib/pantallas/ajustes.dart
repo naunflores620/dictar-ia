@@ -276,7 +276,7 @@ class _FilaProveedorState extends State<_FilaProveedor> {
                         widget.onCambio();
                       }
                     },
-                    child: const Text('Quitar'),
+                    child: const Text('Volver a la de Documentos'),
                   ),
                 ],
               )
@@ -398,6 +398,8 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
   List<String> _sugeridas = const [];
   String? _error;
   bool _guardado = false;
+  String? _efectiva;
+  bool _esPorDefecto = true;
 
   @override
   void initState() {
@@ -421,6 +423,8 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
 
     setState(() {
       _campo.text = a.carpetaApuntes ?? '';
+      _efectiva = a.carpetaEfectiva;
+      _esPorDefecto = a.carpetaApuntes == null || a.carpetaApuntes!.trim().isEmpty;
       _sugeridas = s;
     });
   }
@@ -442,10 +446,8 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
         capturarDiapositivas: a.capturarDiapositivas,
       ));
       if (mounted) {
-        setState(() {
-          _campo.text = ruta;
-          _guardado = true;
-        });
+        setState(() => _guardado = true);
+        await _cargar();
       }
     } catch (e) {
       // El núcleo comprueba que existe y que se puede escribir antes de
@@ -477,11 +479,44 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
                 ?.copyWith(color: t.colorScheme.outline, height: 1.45),
           ),
           const SizedBox(height: 12),
+
+          // Se enseña la carpeta que se está usando de verdad, no solo la
+          // configurada: si nunca se tocó nada, el usuario tiene que saber
+          // dónde están apareciendo sus apuntes.
+          if (_efectiva != null)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: t.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.folder_open, size: 18, color: t.colorScheme.primary),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _esPorDefecto ? 'Guardando en (por defecto)' : 'Guardando en',
+                          style: t.textTheme.labelSmall
+                              ?.copyWith(color: t.colorScheme.outline),
+                        ),
+                        Text(_efectiva!, style: t.textTheme.bodyMedium),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
           TextField(
             controller: _campo,
             decoration: InputDecoration(
               labelText: 'Ruta',
-              hintText: '/home/tu-usuario/OneDrive/Apuntes',
+              hintText: 'Déjalo vacío para usar la de Documentos',
               border: const OutlineInputBorder(),
               isDense: true,
               errorText: _error,
@@ -511,9 +546,12 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
                       modelo: a.modelo,
                       capturarDiapositivas: a.capturarDiapositivas,
                     ));
-                    if (mounted) setState(() => _campo.clear());
+                    if (mounted) {
+                      _campo.clear();
+                      await _cargar();
+                    }
                   },
-                  child: const Text('Quitar'),
+                  child: const Text('Volver a la de Documentos'),
                 ),
             ],
           ),

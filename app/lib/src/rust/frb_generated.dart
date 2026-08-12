@@ -874,12 +874,13 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
   AjustesDto dco_decode_ajustes_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
     return AjustesDto(
       carpetaApuntes: dco_decode_opt_String(arr[0]),
-      modelo: dco_decode_opt_String(arr[1]),
-      capturarDiapositivas: dco_decode_bool(arr[2]),
+      carpetaEfectiva: dco_decode_opt_String(arr[1]),
+      modelo: dco_decode_opt_String(arr[2]),
+      capturarDiapositivas: dco_decode_bool(arr[3]),
     );
   }
 
@@ -1131,10 +1132,12 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
   AjustesDto sse_decode_ajustes_dto(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_carpetaApuntes = sse_decode_opt_String(deserializer);
+    var var_carpetaEfectiva = sse_decode_opt_String(deserializer);
     var var_modelo = sse_decode_opt_String(deserializer);
     var var_capturarDiapositivas = sse_decode_bool(deserializer);
     return AjustesDto(
       carpetaApuntes: var_carpetaApuntes,
+      carpetaEfectiva: var_carpetaEfectiva,
       modelo: var_modelo,
       capturarDiapositivas: var_capturarDiapositivas,
     );
@@ -1480,6 +1483,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
   void sse_encode_ajustes_dto(AjustesDto self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_opt_String(self.carpetaApuntes, serializer);
+    sse_encode_opt_String(self.carpetaEfectiva, serializer);
     sse_encode_opt_String(self.modelo, serializer);
     sse_encode_bool(self.capturarDiapositivas, serializer);
   }

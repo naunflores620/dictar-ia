@@ -284,7 +284,10 @@ impl Nucleo {
     ///
     /// Devuelve la ruta escrita, o `None` si no hay carpeta configurada.
     pub fn exportar_apuntes(&self, id: &SessionId) -> Result<Option<PathBuf>> {
-        let Some(carpeta) = self.ajustes().carpeta_apuntes else {
+        // Sin configurar nada se usa <Documentos>/Apuntes dictar_ia: quien no
+        // entre en ajustes nunca vería un apunte fuera de la aplicación, y no
+        // sabría que esta exportación existe.
+        let Some(carpeta) = self.ajustes().carpeta_efectiva() else {
             return Ok(None);
         };
         let Some(md) = self.notas_markdown(id)? else {
@@ -302,7 +305,7 @@ impl Nucleo {
             .map(|t| t.name)
             .unwrap_or_else(|| "Sin clasificar".to_owned());
 
-        let destino = PathBuf::from(&carpeta).join(ajustes::nombre_seguro(&asignatura));
+        let destino = carpeta.join(ajustes::nombre_seguro(&asignatura));
         std::fs::create_dir_all(&destino)?;
 
         // La fecha va delante para que el orden alfabético sea el cronológico.

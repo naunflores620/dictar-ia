@@ -416,14 +416,23 @@ pub fn probar_proveedor(id: String) -> Result<String, String> {
 
 #[derive(Debug, Clone)]
 pub struct AjustesDto {
+    /// Lo que el usuario configuró, o `None` si nunca tocó nada.
     pub carpeta_apuntes: Option<String>,
+    /// La que se usa de verdad: la configurada, o la de por defecto dentro de
+    /// Documentos. La interfaz enseña esta.
+    pub carpeta_efectiva: Option<String>,
     pub modelo: Option<String>,
     pub capturar_diapositivas: bool,
 }
 
 pub fn obtener_ajustes() -> Result<AjustesDto, String> {
     let a = nucleo()?.ajustes();
+    let efectiva = a
+        .carpeta_efectiva()
+        .map(|p| p.to_string_lossy().into_owned());
+
     Ok(AjustesDto {
+        carpeta_efectiva: efectiva,
         carpeta_apuntes: a.carpeta_apuntes,
         modelo: a.modelo,
         capturar_diapositivas: a.capturar_diapositivas,
