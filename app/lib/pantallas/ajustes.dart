@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../datos/repositorio.dart';
 import '../datos/repositorio_rust.dart';
+import 'region.dart';
 
 /// Configuración de los proveedores de IA.
 ///
@@ -55,6 +56,8 @@ class _PantallaAjustesState extends State<PantallaAjustes> {
             padding: const EdgeInsets.only(bottom: 32),
             children: [
               _CarpetaApuntes(repo: widget.repo),
+              const Divider(height: 32),
+              _AreaCaptura(repo: widget.repo),
               const Divider(height: 32),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
@@ -573,6 +576,85 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
               ],
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Área de la pantalla que se guarda como diapositiva.
+class _AreaCaptura extends StatefulWidget {
+  const _AreaCaptura({required this.repo});
+
+  final Repositorio repo;
+
+  @override
+  State<_AreaCaptura> createState() => _AreaCapturaState();
+}
+
+class _AreaCapturaState extends State<_AreaCaptura> {
+  String _texto = '…';
+
+  @override
+  void initState() {
+    super.initState();
+    _cargar();
+  }
+
+  Future<void> _cargar() async {
+    final r = widget.repo;
+    if (r is! RepositorioRust) return;
+
+    final reg = await r.region();
+    if (!mounted) return;
+    setState(() {
+      _texto = reg == null
+          ? 'Pantalla entera'
+          : 'Recortado a ${reg.ancho}×${reg.alto} px';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Área de la diapositiva',
+            style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Sin recortar, cada captura guarda la pantalla completa: las '
+            'cámaras y los nombres de todos los participantes, tus pestañas y '
+            'la barra de tareas. Eligiendo el área una vez, solo se guarda la '
+            'diapositiva.',
+            style: t.textTheme.bodySmall
+                ?.copyWith(color: t.colorScheme.outline, height: 1.45),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Icon(Icons.crop, size: 18, color: t.colorScheme.primary),
+              const SizedBox(width: 10),
+              Expanded(child: Text(_texto, style: t.textTheme.bodyMedium)),
+              FilledButton.tonal(
+                onPressed: () async {
+                  await Navigator.of(context).push<bool>(
+                    MaterialPageRoute(
+                      builder: (_) => PantallaRegion(repo: widget.repo),
+                    ),
+                  );
+                  await _cargar();
+                },
+                child: const Text('Elegir'),
+              ),
+            ],
+          ),
         ],
       ),
     );

@@ -27,6 +27,14 @@ pub struct Ajustes {
     /// Capturar diapositivas de la pantalla compartida.
     #[serde(default = "verdadero")]
     pub capturar_diapositivas: bool,
+
+    /// Área de la pantalla a la que se recortan las capturas: `[x, y, w, h]`.
+    ///
+    /// Sin ella se guarda la pantalla entera, y en una clase por videollamada
+    /// eso incluye las caras y los nombres de todos los participantes. Elegir
+    /// el área una vez deja fuera todo lo que no es la diapositiva.
+    #[serde(default)]
+    pub region_captura: Option<[u32; 4]>,
 }
 
 fn verdadero() -> bool {
@@ -215,6 +223,7 @@ mod tests {
             carpeta_apuntes: Some("/home/x/OneDrive/Apuntes".into()),
             modelo: Some("turbo".into()),
             capturar_diapositivas: false,
+            region_captura: Some([100, 200, 800, 600]),
         };
         a.guardar(dir.path()).unwrap();
 
@@ -224,6 +233,7 @@ mod tests {
             Some("/home/x/OneDrive/Apuntes")
         );
         assert!(!b.capturar_diapositivas);
+        assert_eq!(b.region_captura, Some([100, 200, 800, 600]));
     }
 
     #[test]

@@ -271,6 +271,23 @@ impl Nucleo {
         dictar_providers::secretos::dir_configuracion().unwrap_or_else(|| self.dir_datos.clone())
     }
 
+    /// Área a la que se recortan las capturas, si el usuario eligió una.
+    pub fn region_captura(&self) -> Option<dictar_screen::Region> {
+        self.ajustes()
+            .region_captura
+            .map(|[x, y, ancho, alto]| dictar_screen::Region { x, y, ancho, alto })
+    }
+
+    /// Prepara una captura de la pantalla para que el usuario elija el área.
+    ///
+    /// Devuelve `(ruta, ancho, alto)`. La imagen va a un archivo temporal, no
+    /// a los datos de la sesión: es material de trabajo, no una diapositiva.
+    pub fn captura_para_seleccion(&self) -> Result<(String, u32, u32)> {
+        let destino = std::env::temp_dir().join("dictar_ia_seleccion.png");
+        let (ruta, w, h) = dictar_screen::captura_para_seleccion(destino)?;
+        Ok((ruta.to_string_lossy().into_owned(), w, h))
+    }
+
     pub fn ajustes(&self) -> ajustes::Ajustes {
         ajustes::Ajustes::cargar(&self.dir_config())
     }

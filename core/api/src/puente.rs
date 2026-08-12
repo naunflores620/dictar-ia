@@ -415,6 +415,48 @@ pub fn probar_proveedor(id: String) -> Result<String, String> {
 }
 
 #[derive(Debug, Clone)]
+pub struct RegionDto {
+    pub x: u32,
+    pub y: u32,
+    pub ancho: u32,
+    pub alto: u32,
+}
+
+/// Guarda una captura de la pantalla completa para elegir el área encima.
+///
+/// Devuelve `(ruta, ancho, alto)` de la imagen.
+pub fn captura_para_seleccion() -> Result<(String, u32, u32), String> {
+    nucleo()?
+        .captura_para_seleccion()
+        .map_err(|e| e.to_string())
+}
+
+/// Fija el área a la que se recortan las capturas. Con `None`, se guarda la
+/// pantalla entera.
+pub fn guardar_region(region: Option<RegionDto>) -> Result<(), String> {
+    let n = nucleo()?;
+    let mut a = n.ajustes();
+    a.region_captura = region.map(|r| [r.x, r.y, r.ancho, r.alto]);
+    n.guardar_ajustes(&a).map_err(|e| e.to_string())
+}
+
+pub fn obtener_region() -> Result<Option<RegionDto>, String> {
+    Ok(nucleo()?
+        .ajustes()
+        .region_captura
+        .map(|[x, y, ancho, alto]| RegionDto { x, y, ancho, alto }))
+}
+
+/// Carpeta donde se guardan las diapositivas de una sesión.
+pub fn carpeta_diapositivas(session_id: String) -> Result<String, String> {
+    let n = nucleo()?;
+    Ok(n.dir_audio(&SessionId::from(session_id))
+        .join("diapositivas")
+        .to_string_lossy()
+        .into_owned())
+}
+
+#[derive(Debug, Clone)]
 pub struct AjustesDto {
     /// Lo que el usuario configuró, o `None` si nunca tocó nada.
     pub carpeta_apuntes: Option<String>,
@@ -462,12 +504,14 @@ pub fn guardar_ajustes(
         let _ = std::fs::remove_file(&prueba);
     }
 
-    n.guardar_ajustes(&crate::ajustes::Ajustes {
-        carpeta_apuntes: carpeta,
-        modelo,
-        capturar_diapositivas,
-    })
-    .map_err(|e| e.to_string())
+    // Se conserva la región elegida: guardar los ajustes generales no debería
+    // borrar el área de captura que el usuario configuró aparte.
+    let mut nuevos = n.ajustes();
+    nuevos.carpeta_apuntes = carpeta;
+    nuevos.modelo = modelo;
+    nuevos.capturar_diapositivas = capturar_diapositivas;
+
+    n.guardar_ajustes(&nuevos).map_err(|e| e.to_string())
 }
 
 /// Carpetas de sincronización detectadas en el equipo, para sugerirlas.

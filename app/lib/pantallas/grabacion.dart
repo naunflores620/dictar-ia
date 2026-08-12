@@ -6,6 +6,7 @@ import '../datos/repositorio.dart';
 import '../datos/repositorio_rust.dart';
 import '../modelos/dominio.dart';
 import '../ventana.dart';
+import 'region.dart';
 import 'proceso.dart';
 
 /// Pantalla de grabación en curso.
@@ -152,6 +153,25 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
       _topicId = id;
       _recargaTopics++;
     });
+  }
+
+  /// Texto del área elegida, para la pantalla de configuración.
+  Future<String> _descripcionRegion() async {
+    final r = widget.repo;
+    if (r is! RepositorioRust) return 'No disponible';
+
+    final reg = await r.region();
+    if (reg == null) {
+      return 'Pantalla entera — incluye a los participantes y tus pestañas';
+    }
+    return 'Recortado a ${reg.ancho}×${reg.alto} px';
+  }
+
+  Future<void> _elegirRegion() async {
+    final cambiado = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => PantallaRegion(repo: widget.repo)),
+    );
+    if (cambiado == true && mounted) setState(() {});
   }
 
   /// Guarda una captura de la pantalla en este instante.
@@ -345,6 +365,21 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
           },
         ),
         const SizedBox(height: 12),
+        // El área importa más que el interruptor: sin recortar, cada captura
+        // guarda las caras de todos los participantes y tus pestañas abiertas.
+        FutureBuilder<String>(
+          future: _descripcionRegion(),
+          builder: (context, snap) => ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.crop),
+            title: const Text('Área de la diapositiva'),
+            subtitle: Text(snap.data ?? '…'),
+            trailing: FilledButton.tonal(
+              onPressed: _elegirRegion,
+              child: const Text('Elegir'),
+            ),
+          ),
+        ),
         SwitchListTile(
           value: _capturarPantalla,
           onChanged: (v) => setState(() => _capturarPantalla = v),

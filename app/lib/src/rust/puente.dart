@@ -7,7 +7,7 @@ import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `nucleo`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
 
 /// Abre el almacén del usuario. Debe llamarse una vez al arrancar.
 ///
@@ -73,6 +73,24 @@ Future<String> guardarClave({required String proveedor, String? clave}) =>
 /// mitad de una clase es toda la diferencia.
 Future<String> probarProveedor({required String id}) =>
     Nucleo.instance.api.cratePuenteProbarProveedor(id: id);
+
+/// Guarda una captura de la pantalla completa para elegir el área encima.
+///
+/// Devuelve `(ruta, ancho, alto)` de la imagen.
+Future<(String, int, int)> capturaParaSeleccion() =>
+    Nucleo.instance.api.cratePuenteCapturaParaSeleccion();
+
+/// Fija el área a la que se recortan las capturas. Con `None`, se guarda la
+/// pantalla entera.
+Future<void> guardarRegion({RegionDto? region}) =>
+    Nucleo.instance.api.cratePuenteGuardarRegion(region: region);
+
+Future<RegionDto?> obtenerRegion() =>
+    Nucleo.instance.api.cratePuenteObtenerRegion();
+
+/// Carpeta donde se guardan las diapositivas de una sesión.
+Future<String> carpetaDiapositivas({required String sessionId}) =>
+    Nucleo.instance.api.cratePuenteCarpetaDiapositivas(sessionId: sessionId);
 
 Future<AjustesDto> obtenerAjustes() =>
     Nucleo.instance.api.cratePuenteObtenerAjustes();
@@ -415,6 +433,33 @@ class ProveedorDto {
           modelo == other.modelo &&
           origenClave == other.origenClave &&
           esLocal == other.esLocal;
+}
+
+class RegionDto {
+  final int x;
+  final int y;
+  final int ancho;
+  final int alto;
+
+  const RegionDto({
+    required this.x,
+    required this.y,
+    required this.ancho,
+    required this.alto,
+  });
+
+  @override
+  int get hashCode => x.hashCode ^ y.hashCode ^ ancho.hashCode ^ alto.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RegionDto &&
+          runtimeType == other.runtimeType &&
+          x == other.x &&
+          y == other.y &&
+          ancho == other.ancho &&
+          alto == other.alto;
 }
 
 class SesionDto {

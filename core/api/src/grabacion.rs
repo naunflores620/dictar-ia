@@ -135,7 +135,10 @@ impl Nucleo {
         let (laminas, pantalla) = if opts.capturar_diapositivas {
             match dictar_screen::iniciar(
                 dir_audio.join("diapositivas"),
-                dictar_screen::ConfigCaptura::default(),
+                dictar_screen::ConfigCaptura {
+                    region: self.region_captura(),
+                    ..Default::default()
+                },
             ) {
                 Ok((rx, ses)) => (Some(rx), Some(ses)),
                 Err(e) => {
@@ -243,7 +246,12 @@ impl Nucleo {
         let ts = grab.duracion().as_millis() as i64;
         drop(g);
 
-        let s = dictar_screen::capturar_ahora(self.dir_audio(&id).join("diapositivas"), ts, None)?;
+        let s = dictar_screen::capturar_ahora(
+            self.dir_audio(&id).join("diapositivas"),
+            ts,
+            None,
+            self.region_captura(),
+        )?;
 
         let ruta = s.ruta.to_string_lossy().into_owned();
         self.con_db(|db| db.insertar_diapositiva(&id, &ruta, s.ts_ms, &s.phash))?;

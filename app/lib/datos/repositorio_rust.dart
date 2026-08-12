@@ -291,6 +291,33 @@ class RepositorioRust implements Repositorio {
   /// Carpetas de sincronización detectadas, para sugerirlas.
   Future<List<String>> carpetasSugeridas() => rust.carpetasSugeridas();
 
+  // -- Área de captura ------------------------------------------------------
+
+  /// Captura la pantalla completa para que el usuario elija el área encima.
+  ///
+  /// Devuelve la ruta de la imagen y el tamaño real de la pantalla, que hace
+  /// falta para convertir las coordenadas del recuadro.
+  Future<(String, int, int)> capturaParaSeleccion() async {
+    final r = await rust.capturaParaSeleccion();
+    return (r.$1, r.$2, r.$3);
+  }
+
+  /// Fija el área a la que se recortan las capturas.
+  ///
+  /// Sin argumentos, vuelve a guardar la pantalla entera.
+  Future<void> guardarRegion({int? x, int? y, int? ancho, int? alto}) =>
+      rust.guardarRegion(
+        region: (x == null || y == null || ancho == null || alto == null)
+            ? null
+            : rust.RegionDto(x: x, y: y, ancho: ancho, alto: alto),
+      );
+
+  Future<rust.RegionDto?> region() => rust.obtenerRegion();
+
+  /// Carpeta donde se guardan las diapositivas de una sesión.
+  Future<String> carpetaDiapositivas(String sesionId) =>
+      rust.carpetaDiapositivas(sessionId: sesionId);
+
   /// Crea una asignatura o cliente y devuelve su identificador.
   Future<String> crearTopic({
     required String nombre,
