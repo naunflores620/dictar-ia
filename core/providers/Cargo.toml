@@ -17,6 +17,20 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 toml = { workspace = true }
 
+# `keyring` no es un backend monolítico: es una arquitectura de backends
+# conectables por *feature*. Su conjunto por defecto (`v1`) resuelve Windows
+# con el Credential Manager nativo, macOS con Keychain y Linux con
+# `zbus-secret-service-keyring-store` —cliente D-Bus en Rust puro, que **no**
+# enlaza `libsecret`—, así que no hace falta pedir ninguna *feature* extra ni
+# desactivar las que trae por defecto.
+#
+# Solo en escritorio: en Android no hay llavero de sistema al que enlazar, y
+# `android-native-keyring-store` ni siquiera está en el conjunto por
+# defecto —solo entra con la *feature* `cli`, que tampoco se pide aquí—.
+# Mismo patrón que usa `dictar-screen` con `xcap`, en `core/screen-capture/Cargo.toml`.
+[target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
+keyring = "4.2.0"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 tempfile = "3"
