@@ -186,6 +186,11 @@ CREATE TRIGGER utterance_au AFTER UPDATE ON utterance BEGIN
   INSERT INTO utterance_fts(rowid, text)
     SELECT new.id, new.text WHERE new.is_final = 1;
 END;
+
+-- Los triggers solo indexan filas futuras. Sin este `rebuild`, al actualizar
+-- de la v1 a la v2 las transcripciones ya guardadas se quedan fuera del
+-- índice y buscar() no encuentra nada de las clases anteriores.
+INSERT INTO utterance_fts(utterance_fts) VALUES('rebuild');
 "#;
 
 #[cfg(test)]

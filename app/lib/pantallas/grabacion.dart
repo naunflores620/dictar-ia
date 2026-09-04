@@ -33,7 +33,10 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
   EstadoGrabacion _estado = EstadoGrabacion.parado;
   TipoSesion _tipo = TipoSesion.clase;
   String? _topicId;
-  bool _capturarPantalla = true;
+  // En escritorio se captura por defecto: es la mitad del valor del producto.
+  // En un móvil no hay pantalla compartida que capturar, y pedirlo haría que
+  // `core/screen-capture` devolviera `NoSoportada` nada más empezar a grabar.
+  bool _capturarPantalla = Ventana.esEscritorio;
   bool _iniciando = false;
 
   /// Sesión creada al empezar a grabar; hace falta para procesarla después.
@@ -365,33 +368,41 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
           },
         ),
         const SizedBox(height: 12),
-        // El área importa más que el interruptor: sin recortar, cada captura
-        // guarda las caras de todos los participantes y tus pestañas abiertas.
-        FutureBuilder<String>(
-          future: _descripcionRegion(),
-          builder: (context, snap) => ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.crop),
-            title: const Text('Área de la diapositiva'),
-            subtitle: Text(snap.data ?? '…'),
-            trailing: FilledButton.tonal(
-              onPressed: _elegirRegion,
-              child: const Text('Elegir'),
+
+        // Todo lo de diapositivas, solo en escritorio: en un móvil no hay una
+        // pantalla compartida que capturar —el profesor comparte en tu
+        // portátil, no en tu teléfono— y `core/screen-capture` devuelve
+        // `NoSoportada` allí. Un interruptor que solo puede fallar estorba.
+        if (Ventana.esEscritorio) ...[
+          // El área importa más que el interruptor: sin recortar, cada captura
+          // guarda las caras de todos los participantes y tus pestañas abiertas.
+          FutureBuilder<String>(
+            future: _descripcionRegion(),
+            builder: (context, snap) => ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.crop),
+              title: const Text('Área de la diapositiva'),
+              subtitle: Text(snap.data ?? '…'),
+              trailing: FilledButton.tonal(
+                onPressed: _elegirRegion,
+                child: const Text('Elegir'),
+              ),
             ),
           ),
-        ),
-        SwitchListTile(
-          value: _capturarPantalla,
-          onChanged: (v) => setState(() => _capturarPantalla = v),
-          title: const Text('Capturar diapositivas'),
-          subtitle: const Text(
-            'Guarda una imagen cuando la pantalla compartida cambia y se queda '
-            'quieta unos segundos. Si solo hay cámaras de participantes, no '
-            'captura nada.',
+          SwitchListTile(
+            value: _capturarPantalla,
+            onChanged: (v) => setState(() => _capturarPantalla = v),
+            title: const Text('Capturar diapositivas'),
+            subtitle: const Text(
+              'Guarda una imagen cuando la pantalla compartida cambia y se queda '
+              'quieta unos segundos. Si solo hay cámaras de participantes, no '
+              'captura nada.',
+            ),
+            secondary: const Icon(Icons.slideshow_outlined),
+            contentPadding: EdgeInsets.zero,
           ),
-          secondary: const Icon(Icons.slideshow_outlined),
-          contentPadding: EdgeInsets.zero,
-        ),
+        ],
+
         const SizedBox(height: 24),
         FilledButton.icon(
           onPressed: _iniciando ? null : _iniciar,
@@ -419,18 +430,22 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
 
   // -- Durante la grabación ---------------------------------------------------
 
-  /// Umbral por debajo del cual se usa la disposición compacta.
+  /// Alto por debajo del cual se usa la disposición compacta.
   ///
   /// La aplicación se usa encogida en una esquina, encima de Meet, durante la
   /// clase entera. A ese tamaño la transcripción en vivo no cabe ni se lee, y
   /// lo único que hace falta a mano alzada es capturar la diapositiva.
-  static const _anchoCompacto = 460.0;
+  ///
+  /// Decide el alto y solo el alto. Antes entraba también por ancho, y eso
+  /// mandaba a **todos los móviles** a la disposición pensada para un panel de
+  /// 380×330: un teléfono mide unos 400 de ancho, así que cumplía la condición
+  /// siempre. Pero un móvil tiene 800 de alto, sitio de sobra para la
+  /// transcripción, y no hay ninguna pantalla compartida que capturar. Lo que
+  /// de verdad se está preguntando aquí es si cabe la lista de frases, y eso
+  /// es una cuestión vertical.
   static const _altoCompacto = 560.0;
 
-  bool get _esCompacto {
-    final t = MediaQuery.sizeOf(context);
-    return t.width < _anchoCompacto || t.height < _altoCompacto;
-  }
+  bool get _esCompacto => MediaQuery.sizeOf(context).height < _altoCompacto;
 
   Widget _enCurso() => _esCompacto ? _enCursoCompacto() : _enCursoAmplio();
 

@@ -66,6 +66,58 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+  nucleo-windows:
+    name: núcleo Rust (Windows)
+    runs-on: windows-latest
+    # Este job nació de un fallo real: `core/api` llevaba tiempo sin compilar
+    # en Windows (usaba `dictar_audio::reproductor`, que está tras
+    # `cfg(target_os = "linux")`) y el CI daba verde porque `nucleo` solo
+    # corre en `ubuntu-24.04`. Aquí se comprueba que el workspace compila
+    # multiplataforma; no se repiten fmt/clippy, que ya corren arriba, en
+    # Linux. `test` sí se añadió (ver más abajo el paso de `dictar-audio`):
+    # no es una repetición, es lo único que ejercita de verdad el código
+    # gateado a `cfg(windows)` de `wasapi_src.rs`, que en el job de Linux ni
+    # siquiera se compila.
+    env:
+      # LLVM viene preinstalado en los runners de Windows de GitHub, pero
+      # nada apunta a él por defecto. `whisper-rs-sys` genera sus bindings
+      # con bindgen, que busca libclang.dll a través de esta variable; sin
+      # ella el build.rs falla antes de compilar una sola línea Rust. CMake y
+      # el enlazador de MSVC, que ese mismo build.rs necesita para compilar
+      # whisper.cpp, ya vienen instalados en el runner.
+      LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Nada que instalar aquí: pipewire y libspa solo son dependencias bajo
+      # cfg(target_os = "linux") (ver core/audio-capture/Cargo.toml), así que
+      # en Windows Cargo ni siquiera las descarga.
+
+      # cargo check para todo el workspace, no build ni test. El build.rs de
+      # whisper-rs-sys compila whisper.cpp con CMake da igual el modo, así
+      # que esa parte no se evita; lo que sí evita `check` es generar código
+      # y enlazar todos los binarios y tests del workspace (`--all-targets`
+      # incluye el CLI y los tests de cada crate) y repetir aquí la batería
+      # completa de `cargo test`, que ya corre en el job de Linux. Basta
+      # para cazar rupturas de compilación multiplataforma sin pagar ese
+      # coste dos veces en cada PR. El paso siguiente sí ejecuta tests, pero
+      # solo los de `dictar-audio`: ver su comentario.
+      - name: comprobar compilación
+        run: cargo check --workspace --all-targets
+
+      # Solo `dictar-audio`, no todo el workspace: repetir aquí los tests de
+      # `cli`, `core/stt`, etc. duplicaría el coste que este job existe
+      # justamente para evitar (ver el comentario de más arriba), sin cubrir
+      # nada nuevo — esos crates no tienen código gateado a Windows.
+      - name: tests de dictar-audio
+        run: cargo test -p dictar-audio
+        env:
+          RUST_BACKTRACE: 1
+
   app:
     name: análisis de Flutter
     runs-on: ubuntu-24.04

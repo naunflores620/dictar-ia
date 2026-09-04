@@ -13,14 +13,19 @@
 pub mod detector;
 pub mod hash;
 
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 use detector::{Decision, Detector};
 use dictar_domain::TsMs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+use std::time::Instant;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScreenError {
@@ -35,6 +40,9 @@ pub enum ScreenError {
 
     #[error("no se pudo guardar la imagen: {0}")]
     Imagen(String),
+
+    #[error("esta plataforma todavía no está soportada")]
+    NoSoportada,
 }
 
 pub type Result<T> = std::result::Result<T, ScreenError>;
@@ -115,6 +123,13 @@ impl Drop for SesionCaptura {
 /// pantalla falla o se ralentiza, **la grabación de audio no se ve afectada**.
 /// Nunca al revés — perder la clase por un fallo capturando imágenes sería
 /// inaceptable.
+///
+/// Fuera del escritorio devuelve [`ScreenError::NoSoportada`]: en Android no
+/// hay pantalla ajena que capturar —el profesor comparte en tu portátil, no en
+/// tu móvil— y xcap, que es quien sabe hacerlo, no compila siquiera para ese
+/// objetivo. Mismo criterio que `dictar_audio::iniciar`: devolver un error
+/// claro en vez de dejar sin compilar a medio núcleo.
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub fn iniciar(
     dir: impl AsRef<Path>,
     cfg: ConfigCaptura,
@@ -182,6 +197,7 @@ pub fn iniciar(
     ))
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 fn muestrear(
     dir: &Path,
     cfg: &ConfigCaptura,
@@ -208,7 +224,11 @@ fn muestrear(
     let recorte = hash::region_central(&dyn_img, cfg.margen);
     let h = hash::dhash(&recorte);
 
-    match det.observar(h) {
+    // El timestamp real es lo que activa el tope de MIN_ENTRE_LAMINAS_MS:
+    // `observar` sin marca fabrica un `ts` que hace esa comprobación siempre
+    // falsa, y dos láminas en menos de cinco segundos se guardarían como nuevas.
+    let ts = transcurrido.as_millis() as i64;
+    match det.observar_en(h, ts) {
         Decision::Nueva { phash } => {
             *n += 1;
             let ruta = dir.join(format!("{:04}.png", n));
@@ -280,6 +300,7 @@ impl Region {
 ///
 /// Sirve para que la interfaz enseñe la pantalla y el usuario dibuje encima el
 /// área de la diapositiva.
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub fn captura_para_seleccion(destino: impl AsRef<Path>) -> Result<(PathBuf, u32, u32)> {
     use image::GenericImageView;
 
@@ -309,6 +330,7 @@ pub fn captura_para_seleccion(destino: impl AsRef<Path>) -> Result<(PathBuf, u32
 /// siempre: hay clases sin diapositivas, presentaciones con vídeo dentro y
 /// profesores que enseñan algo tres segundos. Con un botón, el usuario decide
 /// el momento exacto y el resultado es correcto por definición.
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub fn capturar_ahora(
     dir: impl AsRef<Path>,
     ts_ms: TsMs,
@@ -355,6 +377,7 @@ pub fn capturar_ahora(
 }
 
 /// Pantallas disponibles, para que el usuario elija.
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub fn pantallas() -> Result<Vec<String>> {
     let monitores = xcap::Monitor::all().map_err(|e| ScreenError::Captura(e.to_string()))?;
 
@@ -368,6 +391,46 @@ pub fn pantallas() -> Result<Vec<String>> {
             format!("{} ({}x{})", m.name(), m.width(), m.height())
         })
         .collect())
+}
+
+// ---------------------------------------------------------------------------
+// Sustitutos para las plataformas sin backend de captura de pantalla.
+//
+// Misma superficie pública, firma por firma, que las funciones de arriba: es
+// lo que permite que `core/api` las llame sin un solo `#[cfg]` propio, igual
+// que hace con `dictar_audio::reproductor`. Sin esto, cruzar el núcleo a
+// Android no falla en tiempo de ejecución: falla al compilar, y se lleva por
+// delante `dictar-api` y con él la aplicación entera.
+// ---------------------------------------------------------------------------
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub fn iniciar(
+    _dir: impl AsRef<Path>,
+    _cfg: ConfigCaptura,
+) -> Result<(Receiver<SlideCapturada>, SesionCaptura)> {
+    Err(ScreenError::NoSoportada)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub fn captura_para_seleccion(_destino: impl AsRef<Path>) -> Result<(PathBuf, u32, u32)> {
+    Err(ScreenError::NoSoportada)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub fn capturar_ahora(
+    _dir: impl AsRef<Path>,
+    _ts_ms: TsMs,
+    _pantalla: Option<usize>,
+    _region: Option<Region>,
+) -> Result<SlideCapturada> {
+    Err(ScreenError::NoSoportada)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub fn pantallas() -> Result<Vec<String>> {
+    // Vacío y no error: preguntar qué pantallas hay es legítimo en cualquier
+    // plataforma, y la respuesta honesta aquí es «ninguna».
+    Ok(Vec::new())
 }
 
 #[cfg(test)]

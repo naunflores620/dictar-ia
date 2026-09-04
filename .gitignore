@@ -81,3 +81,14 @@ app/macos/Flutter/ephemeral/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# ---------------------------------------------------------------------------
+# Núcleo Rust compilado para Android. Lo genera `cargo ndk` en cada build
+# (ver app/android/app/build.gradle.kts); versionarlo sería meter binarios de
+# 40 MB en el repo y que además caducan con cada cambio del núcleo.
+# ---------------------------------------------------------------------------
+app/android/app/src/main/jniLibs/
+
+# La clave de firma de release y sus contraseñas. El .keystore ya está cubierto
+# más arriba; esto es el archivo que apunta a él.
+key.properties

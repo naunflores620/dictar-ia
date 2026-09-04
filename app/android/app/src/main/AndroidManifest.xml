@@ -1,4 +1,23 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Grabar el micrófono es la función principal en el móvil. En Android no
+         existe el loopback del sistema que se usa en el escritorio: el caso de
+         uso aquí es la reunión presencial, no la clase por videollamada. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+
+    <!-- Sin servicio en primer plano, Android corta la captura en cuanto la
+         pantalla se apaga o el usuario cambia de aplicación, y una reunión de
+         una hora se queda en tres minutos. La notificación permanente es el
+         precio, y es obligatoria desde Android 9.
+
+         Falta todavía la clase del servicio: estos permisos son la mitad
+         declarativa del trabajo, no el trabajo entero. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+
+    <!-- Desde Android 13 la notificación del servicio no se muestra sin este
+         permiso, y sin notificación visible el sistema mata el servicio. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
     <application
         android:label="dictar_ia"
         android:name="${applicationName}"

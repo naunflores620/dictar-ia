@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../datos/repositorio.dart';
 import '../datos/repositorio_rust.dart';
+import '../ventana.dart';
 import 'region.dart';
 
 /// Configuración de los proveedores de IA.
@@ -57,8 +58,17 @@ class _PantallaAjustesState extends State<PantallaAjustes> {
             children: [
               _CarpetaApuntes(repo: widget.repo),
               const Divider(height: 32),
-              _AreaCaptura(repo: widget.repo),
-              const Divider(height: 32),
+
+              // El área de captura solo se ofrece en escritorio. En un móvil
+              // no hay pantalla ajena que recortar —el profesor comparte en tu
+              // portátil, no en tu teléfono—, y `core/screen-capture` devuelve
+              // `NoSoportada` allí. Ofrecer un botón que solo puede fallar es
+              // peor que no ofrecerlo.
+              if (Ventana.esEscritorio) ...[
+                _AreaCaptura(repo: widget.repo),
+                const Divider(height: 32),
+              ],
+
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
                 child: Text(

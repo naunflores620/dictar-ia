@@ -87,6 +87,50 @@ if(PLUGIN_BUNDLED_LIBRARIES)
     COMPONENT Runtime)
 endif()
 
+# --- Núcleo Rust -----------------------------------------------------------
+# El equivalente del bloque que hay en linux/CMakeLists.txt. Sin esto, el .exe
+# se construye y el instalador también, pero al arrancar no encuentra
+# `dictar_api.dll`: `main.dart` cae en su `catch` y la aplicación se abre con
+# datos de demostración. Un instalador que parece funcionar es peor que uno
+# que falla.
+#
+# Se invoca a cargo desde aquí y no a mano para que `flutter build` y
+# `flutter run` produzcan siempre una librería al día.
+set(RUST_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+
+# Aquí no vale `CMAKE_BUILD_TYPE`: Flutter compila Windows con el generador de
+# Visual Studio, que es multiconfiguración, así que la configuración no se
+# conoce hasta el momento de construir. De ahí las expresiones generadoras.
+# «Profile» va con el perfil de release de cargo, igual que en Linux.
+set(RUST_PERFIL "$<IF:$<CONFIG:Debug>,debug,release>")
+set(RUST_FLAG "$<$<NOT:$<CONFIG:Debug>>:--release>")
+set(RUST_LIB "${RUST_ROOT}/target/${RUST_PERFIL}/dictar_api.dll")
+
+# rustup instala cargo en %USERPROFILE%\.cargo\bin, que no siempre está en el
+# PATH que hereda CMake cuando lo lanza Visual Studio o el propio `flutter`.
+find_program(CARGO_BIN cargo
+  HINTS "$ENV{USERPROFILE}/.cargo/bin" "$ENV{CARGO_HOME}/bin")
+
+if(NOT CARGO_BIN)
+  message(FATAL_ERROR
+    "No se encontró cargo. Instálalo desde https://rustup.rs")
+endif()
+
+add_custom_target(dictar_nucleo ALL
+  COMMAND "${CARGO_BIN}" build ${RUST_FLAG} -p dictar-api
+  WORKING_DIRECTORY "${RUST_ROOT}"
+  COMMENT "Compilando el núcleo Rust"
+  USES_TERMINAL)
+
+add_dependencies(${BINARY_NAME} dictar_nucleo)
+
+# Junto al .exe, no en un subdirectorio: Windows busca las DLL en la carpeta
+# del ejecutable, y `INSTALL_BUNDLE_LIB_DIR` es justo esa carpeta.
+install(FILES "${RUST_LIB}"
+  DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
+# ---------------------------------------------------------------------------
+
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")
 install(DIRECTORY "${NATIVE_ASSETS_DIR}"

@@ -166,8 +166,14 @@ pub fn similitud(a: &str, b: &str) -> f32 {
         return 0.0;
     }
 
+    let set_a: std::collections::HashSet<&String> = pa.iter().collect();
     let set_b: std::collections::HashSet<&String> = pb.iter().collect();
-    let comunes = pa.iter().filter(|p| set_b.contains(p)).count();
+
+    // Sobre conjuntos, no sobre listas: contar cada palabra una sola vez
+    // mantiene el resultado en [0, 1]. Si se contaran las repeticiones de `a`
+    // y el denominador usara la lista más corta, «a a a» frente a «a b» daría
+    // 1.5, un valor imposible que rompería el umbral de supresión de diafonía.
+    let comunes = set_a.iter().filter(|p| set_b.contains(*p)).count();
 
     // Sobre la más corta: un fragmento del micro suele recoger solo parte de
     // lo que dijo el profesor, y aun así es la misma voz filtrada.
@@ -315,6 +321,17 @@ mod tests {
         let a = "la transformada de Laplace convierte ecuaciones diferenciales";
         let b = "¿puede repetir la última parte por favor?";
         assert!(similitud(a, b) < 0.3, "{}", similitud(a, b));
+    }
+
+    #[test]
+    fn la_similitud_nunca_supera_el_uno() {
+        // Las repeticiones de una pista no pueden inflar la similitud: antes de
+        // deduplicar, «a a a» frente a «a b» daba 1.5, un valor imposible que
+        // desvirtuaba el umbral de supresión de diafonía.
+        let a = "a a a";
+        let b = "a b";
+        let s = similitud(a, b);
+        assert!((0.0..=1.0).contains(&s), "similitud fuera de [0, 1]: {s}");
     }
 
     #[test]

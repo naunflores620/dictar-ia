@@ -392,14 +392,16 @@ pub fn listar_proveedores() -> Result<Vec<ProveedorDto>, String> {
 
 /// Guarda la clave de API de un proveedor, o la borra con `None`.
 ///
-/// Escribe en `~/.config/dictar_ia/.env` con permisos 0600. Surte efecto en la
-/// siguiente petición, sin reiniciar: el router se construye en cada uso.
+/// Se intenta primero el llavero del sistema; si no hay uno disponible, se
+/// recurre a `~/.config/dictar_ia/.env` con permisos 0600. El texto devuelto
+/// dice cuál de los dos se usó (ver `Origen`). Surte efecto en la siguiente
+/// petición, sin reiniciar: el router se construye en cada uso.
 pub fn guardar_clave(proveedor: String, clave: Option<String>) -> Result<String, String> {
     let referencia = format!("keyring:{proveedor}");
     let limpia = clave.map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
 
     dictar_providers::secretos::guardar_clave(&referencia, limpia.as_deref())
-        .map(|r| r.to_string_lossy().into_owned())
+        .map(|origen| origen.to_string())
         .map_err(|e| e.to_string())
 }
 

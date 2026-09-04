@@ -292,8 +292,10 @@ class RepositorioRust implements Repositorio {
 
   /// Guarda la clave de un proveedor; con cadena vacía, la borra.
   ///
-  /// Devuelve el archivo donde quedó, para poder decírselo al usuario: si
-  /// algún día algo no cuadra, saber dónde está la clave ahorra la búsqueda.
+  /// Devuelve dónde quedó: "llavero del sistema", o la ruta del archivo si no
+  /// hay uno disponible y se recurrió al `.env`. Para poder decírselo al
+  /// usuario: si algún día algo no cuadra, saber dónde está la clave ahorra
+  /// la búsqueda.
   Future<String> guardarClave(String proveedor, String clave) =>
       rust.guardarClave(
         proveedor: proveedor,

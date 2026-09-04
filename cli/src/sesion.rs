@@ -235,6 +235,9 @@ fn recortar(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_owned();
     }
+    if max == 0 {
+        return String::new();
+    }
     let corte: String = s.chars().take(max - 1).collect();
     format!("{corte}…")
 }
@@ -303,5 +306,13 @@ mod tests {
         let s = "áéíóú".repeat(30);
         let r = recortar(&s, 10);
         assert_eq!(r.chars().count(), 10);
+    }
+
+    #[test]
+    fn recortar_con_cero_no_se_desborda() {
+        // Antes del guard, `take(max - 1)` con max=0 hacía underflow y entraba
+        // en pánico en un build de debug.
+        let r = recortar("hola", 0);
+        assert_eq!(r, "");
     }
 }
