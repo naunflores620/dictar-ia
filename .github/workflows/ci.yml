@@ -66,6 +66,20 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      # La rama `#[cfg(not(any(linux, windows, android)))]` --la plataforma
+      # sin backend-- no la compila ningún otro job, y eso resultó ser peor
+      # que "no se ejecuta": escondió durante tres vueltas de revisión un
+      # test que **no compilaba** (`unwrap_err()` sobre un tipo sin `Debug`).
+      #
+      # Se creía que cerrar esta deuda exigía un runner de macOS para poder
+      # ejecutar esas pruebas. No hace falta: lo que estaba roto era la
+      # compilación, y para eso basta un `check` cruzado a cualquier objetivo
+      # que cumpla el `cfg`. FreeBSD sirve y no necesita runner propio.
+      - name: la rama sin backend compila
+        run: |
+          rustup target add x86_64-unknown-freebsd
+          cargo check --target x86_64-unknown-freebsd -p dictar-audio --all-targets
+
   nucleo-windows:
     name: núcleo Rust (Windows)
     runs-on: windows-latest

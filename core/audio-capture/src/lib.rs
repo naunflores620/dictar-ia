@@ -424,17 +424,30 @@ mod tests {
     // mismo criterio que
     // `fuera_de_linux_reproducir_avisa_en_vez_de_no_compilar`, arriba.
     //
-    // Con la matriz de CI actual (jobs solo para Linux y Windows, más el
-    // cruce a Android que compila pero no ejecuta) esta rama no compila en
-    // ningún job existente, así que este test tampoco corre hoy -- ninguna prueba automatizada puede ejercitarla sin
-    // compilar para una tercera plataforma. Sigue siendo mejor que la
-    // réplica: en cuanto exista un job así, protege de verdad; la réplica
-    // nunca lo habría hecho.
+    // Ningún job de la matriz satisface este `cfg`, y eso resultó ser algo
+    // peor que "no se ejecuta": la prueba de `iniciar`, más abajo, **no
+    // compilaba**. El comentario que había aquí decía que en cuanto
+    // existiera un job para esta rama la prueba protegería de verdad. Era al
+    // revés: lo primero que habría hecho ese job es fallar al compilar.
+    //
+    // Se descubrió añadiendo un objetivo cualquiera que cumpla el `cfg`
+    // (`rustup target add x86_64-unknown-freebsd`) y ejecutando
+    // `cargo check --target x86_64-unknown-freebsd --all-targets`.
+    //
+    // De ahí sale la forma barata de cerrar T-13: no hace falta un runner de
+    // macOS para *ejecutar* estas pruebas, porque lo que estaba roto era la
+    // compilación. Un `cargo check` cruzado a un objetivo así, que no
+    // necesita runner propio, ya lo habría cazado.
     #[test]
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "android")))]
     fn fuera_de_windows_linux_y_android_iniciar_devuelve_no_soportada() {
-        let err = iniciar(CaptureConfig::default()).unwrap_err();
-        assert!(matches!(err, AudioError::NoSoportada));
+        // Contra el `Result` entero, no con `unwrap_err()`: ese método pide
+        // `Debug` en el tipo Ok para poder imprimirlo, y aquí el tipo Ok es
+        // `(Receiver<AudioFrame>, Box<dyn CaptureSession>)` --
+        // `CaptureSession` es `Send` y nada más. Mismo motivo que en la
+        // prueba del reproductor, unas líneas más arriba.
+        let r = iniciar(CaptureConfig::default());
+        assert!(matches!(r, Err(AudioError::NoSoportada)));
     }
 
     /// Mismo caso que la de arriba, para la otra mitad del invariante 4: la
