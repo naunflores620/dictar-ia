@@ -1,0 +1,168 @@
+# REVIEW — HU-05 «Claves de API en el llavero del SO»
+
+Consolidado por el orquestador. Ninguno de los tres revisores es quien implementó.
+
+Reportes de origen, en esta misma carpeta: `REVIEW-codigo.md`, `REVIEW-pruebas.md`,
+`REVIEW-plataforma.md`. No se resumen ni se suavizan aquí: se referencian y se decide.
+
+## 1. Hallazgos consolidados
+
+| # | Hallazgo | Origen | Severidad | Estado |
+|---|---|---|---|---|
+| 1 | `secretos.rs:439-446` — `guardar_clave` escribe en el llavero y, si tiene éxito, no toca el `.env`. Pero `resolver_por_defecto()` (390-401) resuelve el `.env` **antes** que el llavero. En cualquier instalación existente —donde toda clave vive hoy en `.env`, que era el único mecanismo— cambiar una clave desde Ajustes muestra «Guardada en llavero del sistema» **mientras la aplicación sigue usando la clave vieja en cada petición**. Trazado por el revisor a lo largo de cinco archivos, de `ajustes.dart` a `secretos.rs` | `revisor-codigo` (H1) | **Bloqueante** (elevado; ver §2) | Vuelve a implementación |
+| 2 | `secretos.rs:730-776` — `el_llavero_va_despues_del_entorno_y_del_env` **nunca llama a `resolver_por_defecto()`**: construye su propia `CadenaResolvers` ya en el orden correcto. La mutación que el propio plan esperaba —reordenar la cadena real— no la pondría en rojo. Ninguna prueba del repositorio invoca esa función | `verificador-pruebas` (1) | **Importante** | Vuelve a implementación |
+| 3 | `secretos.rs:896-922` — `ningun_evento_de_tracing_contiene_el_valor_de_la_clave` solo puede capturar el `tracing::warn!` de la **rama de error**. Ni la rama de éxito, ni `LlaveroResolver::resolver`, ni `guardar_clave_en` emiten evento alguno. En el CI de Linux la escritura falla siempre porque no hay D-Bus, así que la prueba entra por la única rama que vigila: **la salva el accidente**. Una fuga en la rama de éxito no se detectaría nunca | `verificador-pruebas` (2) | **Importante** | Vuelve a implementación |
+| 4 | Esa misma prueba llama a `escribir_en_llavero` real, así que **escribe de verdad en el Credential Manager / Keychain al correr `cargo test`** — contradiciendo la «Decisión #1» que el propio `HANDOFF` declara en otro punto | `revisor-codigo` (H2) | **Importante** | Vuelve a implementación |
+| 5 | `guardar_clave()`, el punto de entrada real del AC 3, no se ejercita nunca como composición completa: solo sus piezas por separado. Mismo patrón que el hallazgo 2 | `verificador-pruebas` | **Importante** | Vuelve a implementación |
+| 6 | `Cargo.toml:20` — `rust-version = "1.75"` es una promesa falsa. **No es bloqueante**: ningún workflow fija `rustc` (`dtolnay/rust-toolchain@stable` sin pin) ni usa `--locked`/`--frozen`, así que el CI no se rompe | `auditor-plataforma` (I-1) | **Importante** | A deuda: T-12 |
+| 7 | `xcap` —ajeno a esta HU— arrastra `dbus` → `libdbus-sys`, que necesita `libdbus-1-dev` en Linux, **y eso no está declarado en ningún sitio**. Si hoy llega por accidente vía `apt` como transitiva de `libsecret-1-dev`, quitar `libsecret` al cerrar la deuda rompería `core/screen-capture` por un motivo ajeno al llavero | `auditor-plataforma` (I-2) | **Importante** | A deuda: T-11, con el aviso escrito |
+| 8 | El `HANDOFF` dice «siete archivos» con la suposición obsoleta de `libsecret` y enumera seis. Falta `docs/01-arquitectura.md:591` | `auditor-plataforma` (I-3) | **Menor** | A deuda: T-11 |
+| 9 | `secretos.rs:883` — posible `clippy::uninlined_format_args` | `revisor-codigo` (H3) | **Menor** | Se corrige en la vuelta |
+| 10 | Falta una prueba de ida y vuelta para el AC 1. El `HANDOFF` lo declara; el `verificador-pruebas` apunta una vía no explorada: el backend `mock` de `keyring-core` | Ambos | **Nota** | Se evalúa en la vuelta |
+
+## 2. Desacuerdos
+
+**Con el `revisor-codigo`, sobre la severidad del hallazgo 1.** Él lo clasifica como Importante;
+el orquestador lo eleva a **Bloqueante**. Razón: viola el invariante 5 del protocolo —un fallo no
+se traga— y además le da al usuario información falsa sobre el estado de una credencial. Que no
+encaje literalmente en la tabla de severidad («pierde audio, corrompe una sesión, rompe la
+compilación, o produce un paquete con datos de demostración») es un defecto de esa tabla, no del
+hallazgo. Se anota para revisarla.
+
+**Con el orquestador, sobre el MSRV.** Al lanzar al `auditor-plataforma` le dije que si el MSRV
+se quedaba corto sería Bloqueante. Fue a comprobarlo en vez de aceptarlo y demostró que no lo es:
+ningún workflow fija `rustc` ni usa `--locked`. **Mi premisa era mala y queda corregida.** Es
+exactamente lo que se le pide a un revisor.
+
+**Con el PLAN, y la premisa es mía.** El plan afirmaba que no hacía falta migrar las claves que
+ya estuvieran en un `.env` porque «se resuelve solo, ya que el `.env` conserva prioridad sobre el
+llavero». El `revisor-codigo` atacó esa premisa: no se resuelve solo, **se rompe solo**. Esa
+prioridad, que defendí como virtud, es la causa directa del hallazgo 1. Error del plan, no del
+implementador.
+
+**Entre revisores no hubo contradicciones.**
+
+## 3. Qué quedó sin verificar
+
+Los tres confirmaron B-1 de primera mano, cada uno por su cuenta, incluido el WSL. Sin
+compilador no se ejecutó nada. Además:
+
+- El texto exacto de `keyring::Error`: si alguna variante incluye el secreto en su `Display`, la
+  política «error → `None`» no basta. Nadie pudo comprobarlo.
+- El comportamiento de `zbus` sin sesión D-Bus, que es el caso del criterio 4.
+- La compilación cruzada a Android (B-3).
+
+Lo que sí se verificó y está conforme: la tabla `[target...]` del `Cargo.toml` no se llevó por
+delante ninguna entrada (parseado con `tomllib`); las dos ramas `#[cfg]` de `LlaveroResolver` y
+`escribir_en_llavero` tienen firma idéntica; `resolver_por_defecto()` y `guardar_clave` no llevan
+`#[cfg]` propio; **Android queda excluido por construcción** —no por confiar en el crate—, porque
+`target_os = "android"` no está en el `any(...)` y Cargo nunca añade `keyring` a ese grafo; no
+hay `unwrap`/`expect`/pánico en el resolutor; los cinco tests preexistentes conservan sus
+aserciones originales, adaptados con un helper que entra en pánico en vez de aceptar cualquier
+variante; `puente.rs` solo cambió la línea autorizada más el doc-comment; y el ancho máximo real
+de línea es 97 caracteres.
+
+**Mención aparte, a favor del implementador:** resolvió la verificación previa bloqueante
+descargando y leyendo las fuentes reales de `keyring` 4.2.0 y sus backends desde crates.io, en
+vez de asumir. Confirmó que el backend de Linux por defecto es D-Bus puro y no enlaza `libsecret`,
+y que Android está excluido del conjunto por defecto. Es el estándar de evidencia que este
+protocolo pide y casi nunca se alcanza.
+
+## 4. Checklist de cierre
+
+- [ ] `cargo fmt` / `clippy` / `test` — **no ejecutables** (B-1)
+- [ ] Cada AC tiene su prueba, nombrada — **no**: el AC 2 tiene una que no ejercita la función
+      real (hallazgo 2), el AC 5 una que solo cubre media rama (3), el AC 3 no se prueba como
+      composición (5), y el AC 1 no tiene ninguna (10)
+- [ ] Cada prueba nueva se puso en rojo al mutar — **no ejecutable** (B-1); dos no podrían
+      ponerse en rojo ni con toolchain
+- [x] Los nombres de prueba describen el fallo que previenen, en español
+- [x] `auditor-plataforma` lo cotejó, con archivo y línea
+- [x] Documentación afectada actualizada en el mismo cambio
+
+## Veredicto
+
+**VUELVE A IMPLEMENTACIÓN.**
+
+Un Bloqueante y cuatro Importantes, ninguno dependiente de que haya compilador.
+
+El hallazgo 1 es el que decide: la funcionalidad **no hace lo que dice hacer** en el único
+escenario que importa, que es el de un usuario que ya tiene claves. Y falla en silencio,
+informando de lo contrario. La corrección natural, que respeta el criterio 2 de la HU sin dejar
+la trampa: al escribir en el llavero con éxito, **retirar esa clave del `.env`**, para que no
+queden dos fuentes en conflicto. Que es, además, lo que el usuario espera al «mover» una clave al
+llavero.
+
+Lo que **no** hay que rehacer: la elección del crate y su condicionamiento por plataforma están
+bien resueltos y bien verificados, el contrato `#[cfg]` es correcto, Android queda protegido por
+construcción, y el cambio de `PathBuf` a `Origen` es la solución acertada.
+
+Para la vuelta, por orden: hallazgo 1; después 2, 3, 4 y 5, que son la misma familia —pruebas
+que no ejercitan el código de producción, la «regla de la réplica» de `protocolo.md`—; el 9 al
+paso. Los hallazgos 6, 7 y 8 salen de esta tarea y van al tablero.
+
+Orquestador · 2026-09-03
+
+---
+
+# Segunda vuelta — 2026-09-03
+
+## Lo que quedó cerrado
+
+- **Hallazgos 2, 3, 4 y 5 (la familia de la réplica).** Se extrajeron `ensamblar_cadena_por_defecto`,
+  `registrar_resultado_de_llavero` y `guardar_clave_orquestada`. El `verificador-pruebas` confirmó
+  que `guardar_clave` es literalmente `guardar_clave_orquestada(...)` sin lógica propia añadida, y
+  que el test de `tracing` ya no toca el llavero real y es determinista en cualquier plataforma.
+- **La asimetría de `#[cfg]`.** El `auditor-plataforma` emparejó los once uno por uno y rastreó las
+  54 apariciones de `keyring` en el archivo: cuatro pares completos con firma idéntica y tres
+  positivos que no necesitan contraria. **Ninguna de las cuatro referencias reales al crate escapa
+  de su rama**: Android sigue protegido por construcción.
+- **Los permisos 0600.** `purgar_del_env` no duplica esa lógica: delega en `guardar_clave_en`, que
+  ya tenía el único bloque `cfg(unix)` desde antes de esta HU. Resuelto por reutilización.
+- **El mock de `keyring-core`, descartado con razón.** Los dos revisores lo verificaron por
+  separado leyendo las fuentes reales del crate: el `LazyLock` de `keyring-4.2.0/src/v1.rs:107`
+  con su corte temprano en `Entry::new`, y que `zbus-secret-service-keyring-store` conecta a D-Bus
+  de forma síncrona y eager. Una sugerencia del propio `verificador-pruebas`, descartada con
+  evidencia por el implementador y ratificada por él mismo: es el resultado que este mecanismo
+  busca.
+
+## Hallazgos nuevos
+
+| # | Hallazgo | Origen | Severidad | Estado |
+|---|---|---|---|---|
+| H1-bis | **El Bloqueante original, reproducido por otra vía.** `purgar_del_env` (`secretos.rs:606-627`) compara solo contra `nombre_canonico(referencia)`, una forma. Pero `nombres_candidatos` (36-52) devuelve **tres** —`gemini`, `GEMINI`, `GEMINI_API_KEY`— y el resolutor del `.env` busca las tres. Un `.env` preexistente con `GEMINI=sk-vieja` sobrevive a la purga, y la cadena lo sigue devolviendo porque el `.env` antecede al llavero. La interfaz dice «Guardada en llavero del sistema» y la aplicación sigue usando la vieja: **el H1 original, letra por letra, sin ninguna condición de entorno especial** | `revisor-codigo` | **Bloqueante** | Tercera vuelta |
+| H2-bis | La purga retira la única red de seguridad de la clave migrada: si el llavero deja de estar disponible en una sesión posterior, la clave no está en ningún sitio. Verificado contra las fuentes del crate que el riesgo es específicamente Linux/headless, no Windows | `revisor-codigo` | **Importante** | Tercera vuelta |
+| H3-bis | `let Ok(previo) = read_to_string(&ruta) else { return Ok(()) }` conflaciona «archivo ausente» con **cualquier** error de lectura —permisos denegados incluidos— y lo trata como éxito. Invariante 5 | `revisor-codigo` | **Importante** | Tercera vuelta |
+| H4-bis | La reescritura no atómica del `.env` es heredada, pero ahora tiene un **disparador automático nuevo**: antes solo ocurría cuando el usuario guardaba; ahora, en cada guardado con llavero disponible | `revisor-codigo` | **Importante** | Tercera vuelta |
+| H5-bis | El cableado posicional entre `resolver_por_defecto` y `ensamblar_cadena_por_defecto` sigue sin proteger | `revisor-codigo` | **Importante** | Tercera vuelta |
+| H6-bis | La fuga residual de `tracing` es **hallazgo abierto, no deuda aceptable**: existe una mitigación de coste casi nulo | `revisor-codigo` | **Importante** | Tercera vuelta |
+| H7-bis | `resolver_por_defecto` conserva **dos** decisiones sin prueba, no una: el cableado posicional **y** la traducción de `dotenv.origen()` a `Origen::Archivo`/`Origen::Memoria` (línea 435), esta preexistente. Ninguna prueba del repositorio llama a `resolver_por_defecto()` | `verificador-pruebas` | **Importante** | Tercera vuelta |
+| H8-bis | `purgar_del_env_no_toca_el_archivo_si_la_clave_no_esta` **no protege el `if ya_estaba` que dice proteger**: quitar el guard produce una reescritura idempotente byte a byte en ese escenario. El comportamiento visible queda a salvo por otra prueba, pero esta no detecta su propia mutación | `verificador-pruebas` | **Importante** | Tercera vuelta |
+| H9-bis | El cuarto caso de borde de `purgar_del_env` —fallo al reescribir— sigue sin ninguna prueba | `verificador-pruebas` | **Importante** | Tercera vuelta |
+| H10-bis | `README.md:78-80` afirma que el llavero «todavía no está implementado (pendiente de `libsecret`)». Será falso al cerrar esta HU. **No se toca antes de cerrar**: si la HU volviera a implementación, mentiría en la otra dirección | `auditor-plataforma` | **Nota** | Condición de cierre |
+
+## Desacuerdos
+
+**Con el implementador, sobre H6-bis.** Él declaró la fuga de `tracing` como deuda aceptable y lo
+hizo con honestidad. El `revisor-codigo` sostiene que es hallazgo abierto porque hay una
+mitigación de coste casi nulo. Decide el orquestador: **vale el revisor**. Una deuda se acepta
+cuando cerrarla es caro; si es barata, se cierra.
+
+**Entre revisores, ninguno.** El `verificador-pruebas` y el `revisor-codigo` llegaron por caminos
+distintos a la misma conclusión sobre `resolver_por_defecto` (H5-bis y H7-bis son la misma raíz).
+
+## Veredicto
+
+**VUELVE A IMPLEMENTACIÓN.**
+
+H1-bis lo decide solo: es el mismo Bloqueante que provocó la vuelta anterior, corregido para una
+grafía y abierto para las otras dos. Es una lección concreta y vale anotarla: **la corrección se
+hizo contra el ejemplo, no contra el contrato**. `nombres_candidatos` es la función que define qué
+nombres cuentan como «esta clave», y `purgar_del_env` tenía que consultarla a ella, no reimplementar
+una versión reducida. Es la regla de la réplica otra vez, esta vez en código de producción y no en
+una prueba.
+
+Lo que **no** hay que rehacer: la extracción de las tres funciones, el contrato `#[cfg]`, la
+protección de Android, los permisos por reutilización y la decisión sobre el mock.
+
+Orquestador · 2026-09-03
