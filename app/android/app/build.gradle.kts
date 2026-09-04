@@ -22,6 +22,11 @@ plugins {
 // clang para bindgen. `cargo ndk` prepara ese entorno; a mano son quince
 // variables fáciles de equivocar.
 //
+// Aquí hubo un `--bindgen` que **no existe en cargo-ndk 4.x** y hacía fallar
+// la orden entera con «unexpected argument». Venía de la 3.x, donde había que
+// pedir esas variables de clang a mano; ahora se ponen solas. No se detectó
+// porque este archivo nunca se había ejecutado.
+//
 //   cargo install cargo-ndk && rustup target add aarch64-linux-android
 //
 // Necesita ANDROID_NDK_HOME apuntando al NDK.
@@ -63,9 +68,6 @@ val compilarNucleo by tasks.registering(Exec::class) {
             add("26")
             add("-o")
             add(destino.absolutePath)
-            // bindgen necesita el sysroot del NDK para generar los bindings de
-            // whisper.cpp; sin esto falla con «stdio.h no encontrado».
-            add("--bindgen")
             add("build")
             add("--release")
             add("-p")
