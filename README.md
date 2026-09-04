@@ -1,9 +1,12 @@
 # dictar_ia
 
 Grabación de clases online y reuniones, con transcripción y **apuntes generados por IA** al
-estilo de Notion AI. Hoy graba en **Linux** (escritorio, plataforma principal); **Windows** y
-**Android** son el objetivo de diseño, pero ninguno de los dos graba todavía — falta el backend
-de captura de audio en cada uno (WASAPI *loopback* en Windows, AAudio en Android).
+estilo de Notion AI. La única plataforma donde la grabación está **comprobada contra clases
+reales** es **Linux**. Windows (WASAPI *loopback*) y Android (AAudio, solo micrófono) ya tienen
+su backend de captura escrito, pero **ninguno de los dos se ha ejecutado todavía sobre un equipo
+de verdad**. La lógica que no depende del hardware —formatos, relojes, qué pistas se
+graban— sí tiene pruebas, y el CI las ejecuta; el código que habla con el sistema de audio, no.
+Hasta que alguien grabe una clase con ellos, dan por buenos supuestos que no lo son.
 
 El motor de IA es **intercambiable**: Gemini, DeepSeek, OpenAI o modelos locales (Ollama /
 llama.cpp), sin tocar código — solo configuración.
@@ -103,9 +106,9 @@ los apuntes. Verificado de extremo a extremo con audio real.
 |---|---|---|
 | [core/domain](core/domain/) — tipos y esquemas JSON derivados | ✅ | 14 |
 | [core/storage](core/storage/) — SQLite, FTS5, glosario acumulativo | ✅ | 28 |
-| [core/providers](core/providers/) — Gemini, OpenAI-compat, `.env`, enrutado | ✅ | 63 |
+| [core/providers](core/providers/) — Gemini, OpenAI-compat, `.env`, enrutado | ✅ | 82 |
 | [core/notes](core/notes/) — map-reduce, prompts, Markdown | ✅ | 33 |
-| [core/audio-capture](core/audio-capture/) — PipeWire, dos pistas | ✅ | 32 |
+| [core/audio-capture](core/audio-capture/) — PipeWire, WASAPI y AAudio | ✅ | 55 |
 | [core/screen-capture](core/screen-capture/) — muestreo de pantalla, hash perceptual | ✅ | 24 |
 | [core/vad](core/vad/) — detección de voz y troceado | ✅ | 21 |
 | [core/stt](core/stt/) — whisper.cpp, filtros de alucinación | ✅ | 40 |
@@ -114,7 +117,11 @@ los apuntes. Verificado de extremo a extremo con audio real.
 | [app/](app/) — interfaz Flutter | ✅ grabar, procesar y leer apuntes; importar y buscar sin cablear | 24 |
 | Puente `flutter_rust_bridge` | ✅ 33 funciones | — |
 
-**331 tests en verde.** `cargo clippy -D warnings` y `flutter analyze` limpios.
+**373 tests** — 349 en Rust y 24 en Dart. Los de Flutter **están en verde**
+(`flutter analyze` limpio, `flutter test` en verde, comprobado el 04/09). Los de Rust se cuentan,
+no se han ejecutado en esta máquina: `cargo` no estuvo instalado durante toda la fase en la que
+se escribieron WASAPI y el llavero, así que **la compuerta que vale es el CI**, no una
+afirmación de este archivo.
 
 ### Medido en un Core Ultra (Lunar Lake), 8 núcleos
 
@@ -188,11 +195,14 @@ están hechas, no son "siguiente paso". Lo que sí queda:
   maquetas: los dos llaman a `_avisar()`, que solo muestra un aviso de "pendiente de conectar con
   el núcleo". El backend de ambos ya está — `leer_wav` para importar, `db.buscar()` con FTS5 para
   buscar —; falta cablear el botón a la función.
-- **WASAPI *loopback* en Windows**, para poder grabar allí de verdad (ver el porqué en
-  `.github/workflows/release.yml`).
+- **Grabar una vez en Windows y una vez en un teléfono.** Los dos backends están escritos
+  (`wasapi_src.rs` y `aaudio_src.rs`) y ninguno se ha ejecutado nunca contra un dispositivo. No
+  es trabajo de programación: es la comprobación que convierte «debería funcionar» en «funciona»,
+  y la que va a encontrar lo que las pruebas sin hardware no pueden encontrar.
+- **Revisar HU-02.** El backend de Android se implementó sin pasar por el `contradictor` ni por
+  los tres revisores que exige `_orquestacion/protocolo.md`. Está declarado en su `PLAN.md`, no
+  escondido, pero es deuda de revisión abierta.
 
 **Y lo más importante: empieza a grabar tus clases de verdad.** El riesgo que queda no es
 técnico sino de calidad —que los apuntes sean realmente buenos y no genéricos—, y eso solo se
 afina iterando contra clases reales. La orden `dictar sesion` ya sirve para eso hoy.
-</content>
-</invoke>
