@@ -1,4 +1,22 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Grabar el micrófono es la función principal en el móvil. En Android no
+         existe el loopback del sistema que se usa en el escritorio: el caso de
+         uso aquí es la reunión presencial, no la clase por videollamada. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+
+    <!-- Sin servicio en primer plano, Android corta la captura en cuanto la
+         pantalla se apaga o el usuario cambia de aplicación, y una reunión de
+         una hora se queda en tres minutos. La notificación permanente es el
+         precio, y es obligatoria desde Android 9.
+
+         El servicio es `ServicioGrabacion`, declarado más abajo. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+
+    <!-- Desde Android 13 la notificación del servicio no se muestra sin este
+         permiso, y sin notificación visible el sistema mata el servicio. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
     <application
         android:label="dictar_ia"
         android:name="${applicationName}"
@@ -25,6 +43,18 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Sostiene la grabación con la pantalla apagada y la aplicación en
+             segundo plano. `foregroundServiceType` tiene que coincidir con el
+             permiso FOREGROUND_SERVICE_MICROPHONE de arriba: desde Android 14
+             el sistema rechaza el servicio si no coinciden.
+
+             `exported="false"`: no lo arranca nadie de fuera de la
+             aplicación. -->
+        <service
+            android:name=".ServicioGrabacion"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../datos/repositorio.dart';
 import '../datos/repositorio_rust.dart';
 import '../modelos/dominio.dart';
+import '../plataforma/android.dart';
 import '../ventana.dart';
 import 'region.dart';
 import 'proceso.dart';
@@ -33,7 +34,10 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
   EstadoGrabacion _estado = EstadoGrabacion.parado;
   TipoSesion _tipo = TipoSesion.clase;
   String? _topicId;
-  bool _capturarPantalla = true;
+  // En escritorio se captura por defecto: es la mitad del valor del producto.
+  // En un móvil no hay pantalla compartida que capturar, y pedirlo haría que
+  // `core/screen-capture` devolviera `NoSoportada` nada más empezar a grabar.
+  bool _capturarPantalla = Ventana.esEscritorio;
   bool _iniciando = false;
 
   /// Sesión creada al empezar a grabar; hace falta para procesarla después.
@@ -61,6 +65,14 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
       return;
     }
 
+    // En Android no se puede grabar sin permiso, y pedirlo a bocajarro —el
+    // diálogo del sistema, sin contexto, nada más pulsar «Grabar»— es la
+    // forma más rápida de que lo denieguen. Fuera de Android esto no hace
+    // nada y devuelve `true`.
+    if (!await _asegurarPermisos()) {
+      return;
+    }
+
     setState(() => _iniciando = true);
 
     _subFrases = widget.repo.fraseEnVivo.listen((f) {
@@ -79,12 +91,78 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
       capturarPantalla: _capturarPantalla,
     );
 
+    // El servicio en primer plano de Android, que es lo que impide que el
+    // sistema corte la captura al apagar la pantalla. Va *después* de que la
+    // grabación haya arrancado de verdad: si `iniciarGrabacion` falla, no
+    // tiene sentido dejar una notificación diciendo que se está grabando.
+    await Android.iniciarServicio();
+
     // La ventana se encoge sola y se pone encima: durante la clase esto vive
     // en una esquina sobre Meet, y pedirle al usuario que la ajuste a mano
     // cada vez sería pedirle que haga el trabajo de la aplicación.
     await Ventana.modoGrabacion();
 
     if (mounted) setState(() => _iniciando = false);
+  }
+
+  /// Se asegura de tener permiso de micrófono, explicándolo antes de pedirlo.
+  ///
+  /// Criterios 3 y 4 de HU-02. Los tres desenlaces posibles terminan en algo
+  /// que el usuario entiende; ninguno deja la pantalla muerta:
+  ///
+  /// - Ya concedido: sigue sin molestar.
+  /// - Lo concede ahora: sigue.
+  /// - Lo deniega: se dice qué se ha perdido y cómo revertirlo, y se vuelve
+  ///   al estado anterior en vez de quedarse en una pantalla que no graba sin
+  ///   decir por qué.
+  Future<bool> _asegurarPermisos() async {
+    if (await Android.tienePermisos()) return true;
+    if (!mounted) return false;
+
+    // El diálogo del sistema no dice para qué se quiere el micrófono, solo
+    // que se quiere. Esta explicación va antes, y es lo que distingue una
+    // petición razonable de una que se deniega por reflejo.
+    final seguir = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Permiso para grabar'),
+        content: const Text(
+          'dictar_ia necesita el micrófono para grabar la reunión y '
+          'transcribirla.\n\n'
+          'El audio se queda en este teléfono: se transcribe aquí mismo y no '
+          'se envía a ningún servidor.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Ahora no'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Continuar'),
+          ),
+        ],
+      ),
+    );
+
+    if (seguir != true) return false;
+
+    if (await Android.pedirPermisos()) return true;
+    if (!mounted) return false;
+
+    // Denegado. Decirlo y decir cómo se arregla: desde el segundo rechazo
+    // Android ya no vuelve a mostrar el diálogo, y sin esta indicación el
+    // usuario se queda pulsando «Grabar» sin que ocurra nada.
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Sin permiso de micrófono no se puede grabar. Se activa en '
+          'Ajustes del teléfono › Aplicaciones › dictar_ia › Permisos.',
+        ),
+        duration: Duration(seconds: 6),
+      ),
+    );
+    return false;
   }
 
   /// Crea una asignatura o cliente sin salir de la pantalla.
@@ -231,6 +309,7 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
   /// grabadas y sin apuntes, que es tener el trabajo hecho a medias.
   Future<void> _detener() async {
     await widget.repo.detenerGrabacion();
+    await Android.detenerServicio();
     await Ventana.modoNormal();
     await _subFrases?.cancel();
     await _subEstado?.cancel();
@@ -365,33 +444,41 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
           },
         ),
         const SizedBox(height: 12),
-        // El área importa más que el interruptor: sin recortar, cada captura
-        // guarda las caras de todos los participantes y tus pestañas abiertas.
-        FutureBuilder<String>(
-          future: _descripcionRegion(),
-          builder: (context, snap) => ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.crop),
-            title: const Text('Área de la diapositiva'),
-            subtitle: Text(snap.data ?? '…'),
-            trailing: FilledButton.tonal(
-              onPressed: _elegirRegion,
-              child: const Text('Elegir'),
+
+        // Todo lo de diapositivas, solo en escritorio: en un móvil no hay una
+        // pantalla compartida que capturar —el profesor comparte en tu
+        // portátil, no en tu teléfono— y `core/screen-capture` devuelve
+        // `NoSoportada` allí. Un interruptor que solo puede fallar estorba.
+        if (Ventana.esEscritorio) ...[
+          // El área importa más que el interruptor: sin recortar, cada captura
+          // guarda las caras de todos los participantes y tus pestañas abiertas.
+          FutureBuilder<String>(
+            future: _descripcionRegion(),
+            builder: (context, snap) => ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.crop),
+              title: const Text('Área de la diapositiva'),
+              subtitle: Text(snap.data ?? '…'),
+              trailing: FilledButton.tonal(
+                onPressed: _elegirRegion,
+                child: const Text('Elegir'),
+              ),
             ),
           ),
-        ),
-        SwitchListTile(
-          value: _capturarPantalla,
-          onChanged: (v) => setState(() => _capturarPantalla = v),
-          title: const Text('Capturar diapositivas'),
-          subtitle: const Text(
-            'Guarda una imagen cuando la pantalla compartida cambia y se queda '
-            'quieta unos segundos. Si solo hay cámaras de participantes, no '
-            'captura nada.',
+          SwitchListTile(
+            value: _capturarPantalla,
+            onChanged: (v) => setState(() => _capturarPantalla = v),
+            title: const Text('Capturar diapositivas'),
+            subtitle: const Text(
+              'Guarda una imagen cuando la pantalla compartida cambia y se queda '
+              'quieta unos segundos. Si solo hay cámaras de participantes, no '
+              'captura nada.',
+            ),
+            secondary: const Icon(Icons.slideshow_outlined),
+            contentPadding: EdgeInsets.zero,
           ),
-          secondary: const Icon(Icons.slideshow_outlined),
-          contentPadding: EdgeInsets.zero,
-        ),
+        ],
+
         const SizedBox(height: 24),
         FilledButton.icon(
           onPressed: _iniciando ? null : _iniciar,
@@ -419,18 +506,22 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
 
   // -- Durante la grabación ---------------------------------------------------
 
-  /// Umbral por debajo del cual se usa la disposición compacta.
+  /// Alto por debajo del cual se usa la disposición compacta.
   ///
   /// La aplicación se usa encogida en una esquina, encima de Meet, durante la
   /// clase entera. A ese tamaño la transcripción en vivo no cabe ni se lee, y
   /// lo único que hace falta a mano alzada es capturar la diapositiva.
-  static const _anchoCompacto = 460.0;
+  ///
+  /// Decide el alto y solo el alto. Antes entraba también por ancho, y eso
+  /// mandaba a **todos los móviles** a la disposición pensada para un panel de
+  /// 380×330: un teléfono mide unos 400 de ancho, así que cumplía la condición
+  /// siempre. Pero un móvil tiene 800 de alto, sitio de sobra para la
+  /// transcripción, y no hay ninguna pantalla compartida que capturar. Lo que
+  /// de verdad se está preguntando aquí es si cabe la lista de frases, y eso
+  /// es una cuestión vertical.
   static const _altoCompacto = 560.0;
 
-  bool get _esCompacto {
-    final t = MediaQuery.sizeOf(context);
-    return t.width < _anchoCompacto || t.height < _altoCompacto;
-  }
+  bool get _esCompacto => MediaQuery.sizeOf(context).height < _altoCompacto;
 
   Widget _enCurso() => _esCompacto ? _enCursoCompacto() : _enCursoAmplio();
 

@@ -34,13 +34,9 @@ pub fn ejecutar(opts: &HashMap<String, String>) -> Result<()> {
     println!("Modelo:  {}", modelo.nombre_humano());
     println!("Archivo: {entrada}");
 
-    let (pcm, sr) = leer_wav(entrada).with_context(|| format!("no se pudo leer «{entrada}»"))?;
-    if sr != SAMPLE_RATE {
-        bail!(
-            "el audio está a {sr} Hz y hace falta a {SAMPLE_RATE}. \
-             Grábalo con «dictar grabar», que ya remuestrea."
-        );
-    }
+    // leer_wav ya remuestrea a 16 kHz: un WAV del móvil a 48 kHz entra
+    // directamente, sin necesidad de volver a grabarlo.
+    let (pcm, _sr) = leer_wav(entrada).with_context(|| format!("no se pudo leer «{entrada}»"))?;
 
     let duracion_s = pcm.len() as f64 / SAMPLE_RATE as f64;
     println!("Duración: {duracion_s:.1} s\n");

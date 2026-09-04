@@ -16,9 +16,16 @@ Se dibuja a 4x y se reduce con LANCZOS: es lo que da bordes limpios a 48 px,
 que es el tamaño al que de verdad se ve en el menú de aplicaciones.
 """
 
+import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw
+
+# La consola de Windows usa cp1252 por defecto y revienta con el «✔» de más
+# abajo: el script generaba los iconos y moría al anunciarlo. Se fuerza UTF-8
+# en la salida en vez de renunciar al símbolo.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 RAIZ = Path(__file__).resolve().parent.parent
 
@@ -29,6 +36,11 @@ BLANCO = (255, 255, 255, 255)
 
 # Tamaños del tema de iconos de Linux. 48 es el que se ve en el menú.
 TAMANOS_LINUX = [16, 24, 32, 48, 64, 128, 256, 512]
+
+# Tamaños que Windows espera dentro de un .ico. Los mete todos en un solo
+# archivo y elige el que necesita en cada sitio: 16 en la barra de título, 32
+# en la barra de tareas, 256 en la vista de iconos grandes del explorador.
+TAMANOS_WINDOWS = [16, 24, 32, 48, 64, 128, 256]
 
 # Densidades de Android, con su tamaño en píxeles.
 DENSIDADES_ANDROID = {
@@ -138,6 +150,23 @@ def main() -> None:
             destino.mkdir(parents=True, exist_ok=True)
             render(tam).save(destino / "ic_launcher.png")
         print(f"✔ Android: {len(DENSIDADES_ANDROID)} densidades")
+
+    # --- Windows -------------------------------------------------------------
+    # Un .ico no es una imagen sino un contenedor de varias, y Windows elige
+    # dentro según el contexto. Se generan una por una con `render`, en vez de
+    # dejar que Pillow reescale la de 256, porque `render` ya usa la versión
+    # simplificada por debajo de 32 px: reducir el dibujo completo a 16 px da
+    # una mancha, y ese es justo el tamaño de la barra de título.
+    ico = RAIZ / "app" / "windows" / "runner" / "resources" / "app_icon.ico"
+    if ico.parent.is_dir():
+        capas = [render(t) for t in TAMANOS_WINDOWS]
+        capas[-1].save(
+            ico,
+            format="ICO",
+            sizes=[(t, t) for t in TAMANOS_WINDOWS],
+            append_images=capas[:-1],
+        )
+        print(f"✔ Windows: {len(TAMANOS_WINDOWS)} tamaños en {ico.name}")
 
     # --- Ventana y documentación --------------------------------------------
     render(512).save(RAIZ / "packaging" / "iconos" / "dictar-ia.png")

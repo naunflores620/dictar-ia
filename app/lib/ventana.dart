@@ -26,15 +26,37 @@ class Ventana {
   static bool _soportado = false;
   static Size? _antesDeGrabar;
 
+  /// Si hay un gestor de ventanas con el que hablar.
+  ///
+  /// Lo consulta cualquiera que vaya a llamar a `windowManager` por su cuenta:
+  /// en Android no hay implementación y cada llamada lanza
+  /// `MissingPluginException`, así que preguntar aquí evita repetir la
+  /// comprobación de plataforma —y equivocarse al repetirla— en cada pantalla.
+  ///
+  /// Distinto de [esEscritorio]: esto es si el gestor **respondió**, no si la
+  /// plataforma lo tiene. En un Linux sin sesión gráfica sería `false` aunque
+  /// siga siendo escritorio.
+  static bool get soportado => _soportado;
+
+  /// Si la plataforma es de escritorio.
+  ///
+  /// Es la pregunta que hay que hacer para decidir si ofrecer una función que
+  /// depende de que exista una pantalla ajena: capturar diapositivas solo
+  /// tiene sentido donde el profesor comparte pantalla, y eso es el portátil,
+  /// no el móvil. Se comprueba la plataforma y no [soportado] a propósito: la
+  /// captura de pantalla la hace `core/screen-capture`, que no depende del
+  /// gestor de ventanas, y usar `soportado` escondería la función en un
+  /// escritorio donde el gestor falló por otro motivo.
+  static bool get esEscritorio =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.linux ||
+          defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.macOS);
+
   /// Prepara la ventana al arrancar. Se llama antes de `runApp`.
   static Future<void> preparar() async {
     // Solo escritorio: en Android no hay ventana que gestionar.
-    if (kIsWeb) return;
-    if (!(defaultTargetPlatform == TargetPlatform.linux ||
-        defaultTargetPlatform == TargetPlatform.windows ||
-        defaultTargetPlatform == TargetPlatform.macOS)) {
-      return;
-    }
+    if (!esEscritorio) return;
 
     try {
       await windowManager.ensureInitialized();

@@ -1,7 +1,12 @@
 # dictar_ia
 
 Grabación de clases online y reuniones, con transcripción y **apuntes generados por IA** al
-estilo de Notion AI. **Windows y Linux** (escritorio, plataforma principal) y **Android**.
+estilo de Notion AI. La única plataforma donde la grabación está **comprobada contra clases
+reales** es **Linux**. Windows (WASAPI *loopback*) y Android (AAudio, solo micrófono) ya tienen
+su backend de captura escrito, pero **ninguno de los dos se ha ejecutado todavía sobre un equipo
+de verdad**. La lógica que no depende del hardware —formatos, relojes, qué pistas se
+graban— sí tiene pruebas, y el CI las ejecuta; el código que habla con el sistema de audio, no.
+Hasta que alguien grabe una clase con ellos, dan por buenos supuestos que no lo son.
 
 El motor de IA es **intercambiable**: Gemini, DeepSeek, OpenAI o modelos locales (Ollama /
 llama.cpp), sin tocar código — solo configuración.
@@ -14,7 +19,7 @@ llama.cpp), sin tocar código — solo configuración.
 |---|---|---|---|
 | **Clases universitarias online** | ~10 h/semana | Loopback de Meet / Zoom / Teams | Apuntes |
 | **Reuniones con clientes** | Puntual | Loopback de Meet / Zoom | Acta comercial |
-| Reuniones presenciales | Ocasional | Grabas con el móvil e importas el archivo | Acta simple |
+| Reuniones presenciales | Ocasional | Grabas con el móvil e importas el archivo (por CLI: el botón de la interfaz aún no está cableado) | Acta simple |
 
 Llamadas telefónicas, no: es imposible en Android e iOS a nivel de sistema operativo, y no hace
 falta para este caso de uso.
@@ -69,8 +74,13 @@ Cada afirmación generada por la IA es clicable y lleva al segundo exacto del au
 diapositiva que estaba en pantalla. Sin esto no puedes confiar en unos apuntes automáticos.
 
 **8. Sin backend, sin cuentas, sin coste mensual.**
-SQLite cifrado en local y claves de API en el llavero del SO. Es la simplificación más valiosa
-del diseño.
+Todo vive en SQLite local, sin servidor y sin login: la simplificación más valiosa del diseño.
+Lo que hoy está pendiente de terminar, sin rodeos: el cifrado en reposo (`SQLCipher`) existe
+como feature `cifrado`, pero apagada por defecto — vendoriza OpenSSL y multiplica el tiempo de
+compilación, lo que estorba mientras se itera sobre el esquema, así que la base de datos hoy no
+está cifrada. Las claves de API se resuelven en cadena: variable de entorno, luego archivo
+`.env`; el llavero del SO es el tercer eslabón previsto y todavía no está implementado (pendiente
+de `libsecret`), así que hoy las claves quedan en texto plano en el `.env`.
 
 ---
 
@@ -78,12 +88,12 @@ del diseño.
 
 | Capa | Elección |
 |---|---|
-| Núcleo | **Rust** — audio, VAD, STT, captura de pantalla, proveedores, almacenamiento |
+| Núcleo | **Rust** — audio (hoy solo PipeWire/Linux), VAD, STT, captura de pantalla, proveedores, almacenamiento |
 | UI | **Flutter** + `flutter_rust_bridge` — una sola interfaz para Windows, Linux y Android |
 | Transcripción | `whisper.cpp` / `large-v3-turbo`, con Vulkan si hay GPU |
-| Datos | SQLite + SQLCipher + `sqlite-vec` |
+| Datos | SQLite + FTS5. `SQLCipher` existe como feature `cifrado`, apagada por defecto; `sqlite-vec` no se usa todavía |
 | IA | Adaptador compatible-OpenAI (cubre DeepSeek, OpenAI, Ollama…) + adaptador Gemini nativo |
-| Empaquetado | `flutter_distributor` → Inno Setup (`.exe`) y `dpkg-deb` (`.deb`), vía GitHub Actions |
+| Empaquetado | `dpkg-deb` (`.deb`), Inno Setup (`.exe`) y `flutter build apk`, vía GitHub Actions. Los tres llevan el núcleo dentro y el CI falla si no; el `.exe` y el APK todavía no graban |
 
 ---
 
@@ -96,17 +106,22 @@ los apuntes. Verificado de extremo a extremo con audio real.
 |---|---|---|
 | [core/domain](core/domain/) — tipos y esquemas JSON derivados | ✅ | 14 |
 | [core/storage](core/storage/) — SQLite, FTS5, glosario acumulativo | ✅ | 28 |
-| [core/providers](core/providers/) — Gemini, OpenAI-compat, `.env`, enrutado | ✅ | 58 |
+| [core/providers](core/providers/) — Gemini, OpenAI-compat, `.env`, enrutado | ✅ | 82 |
 | [core/notes](core/notes/) — map-reduce, prompts, Markdown | ✅ | 33 |
-| [core/audio-capture](core/audio-capture/) — PipeWire, dos pistas | ✅ | 23 |
+| [core/audio-capture](core/audio-capture/) — PipeWire, WASAPI y AAudio | ✅ | 55 |
+| [core/screen-capture](core/screen-capture/) — muestreo de pantalla, hash perceptual | ✅ | 24 |
 | [core/vad](core/vad/) — detección de voz y troceado | ✅ | 21 |
-| [core/stt](core/stt/) — whisper.cpp, filtros de alucinación | ✅ | 39 |
-| [core/api](core/api/) — fachada del núcleo | ✅ | 17 |
-| [cli/](cli/) — `dictar` | ✅ | 15 |
-| [app/](app/) — interfaz Flutter | ✅ conectada al núcleo real | 24 |
-| Puente `flutter_rust_bridge` | ✅ 16 funciones | — |
+| [core/stt](core/stt/) — whisper.cpp, filtros de alucinación | ✅ | 40 |
+| [core/api](core/api/) — fachada del núcleo | ✅ | 36 |
+| [cli/](cli/) — `dictar` | ✅ | 16 |
+| [app/](app/) — interfaz Flutter | ✅ grabar, procesar y leer apuntes; importar y buscar sin cablear | 24 |
+| Puente `flutter_rust_bridge` | ✅ 33 funciones | — |
 
-**276 tests en verde.** `cargo clippy -D warnings` y `flutter analyze` limpios.
+**373 tests** — 349 en Rust y 24 en Dart. Los de Flutter **están en verde**
+(`flutter analyze` limpio, `flutter test` en verde, comprobado el 04/09). Los de Rust se cuentan,
+no se han ejecutado en esta máquina: `cargo` no estuvo instalado durante toda la fase en la que
+se escribieron WASAPI y el llavero, así que **la compuerta que vale es el CI**, no una
+afirmación de este archivo.
 
 ### Medido en un Core Ultra (Lunar Lake), 8 núcleos
 
@@ -122,7 +137,8 @@ los apuntes. Verificado de extremo a extremo con audio real.
 ```bash
 # Requisitos del sistema (único paso con sudo) — ver INSTALL.md
 sudo apt install -y cmake ninja-build clang pkg-config libgtk-3-dev \
-  liblzma-dev libpipewire-0.3-dev libasound2-dev libsecret-1-dev
+  liblzma-dev libpipewire-0.3-dev libasound2-dev libsecret-1-dev \
+  libdbus-1-dev libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
 
 # Claves de API
 cp .env.example .env      # y rellena GEMINI_API_KEY o DEEPSEEK_API_KEY
@@ -172,11 +188,22 @@ demostración en lugar de quedarse en blanco.
 
 ## Siguiente paso
 
-Captura de diapositivas por detección de cambio de pantalla, y transcripción en vivo durante la
-clase. Ambas ya tienen su sitio en el núcleo.
+La captura de diapositivas por cambio de pantalla y la transcripción en vivo durante la clase ya
+están hechas, no son "siguiente paso". Lo que sí queda:
+
+- **Conectar dos botones de la interfaz al núcleo que ya existe.** En
+  `app/lib/pantallas/inicio.dart`, "Importar audio de una reunión presencial" y el buscador son
+  maquetas: los dos llaman a `_avisar()`, que solo muestra un aviso de "pendiente de conectar con
+  el núcleo". El backend de ambos ya está — `leer_wav` para importar, `db.buscar()` con FTS5 para
+  buscar —; falta cablear el botón a la función.
+- **Grabar una vez en Windows y una vez en un teléfono.** Los dos backends están escritos
+  (`wasapi_src.rs` y `aaudio_src.rs`) y ninguno se ha ejecutado nunca contra un dispositivo. No
+  es trabajo de programación: es la comprobación que convierte «debería funcionar» en «funciona»,
+  y la que va a encontrar lo que las pruebas sin hardware no pueden encontrar.
+- **Revisar HU-02.** El backend de Android se implementó sin pasar por el `contradictor` ni por
+  los tres revisores que exige `_orquestacion/protocolo.md`. Está declarado en su `PLAN.md`, no
+  escondido, pero es deuda de revisión abierta.
 
 **Y lo más importante: empieza a grabar tus clases de verdad.** El riesgo que queda no es
 técnico sino de calidad —que los apuntes sean realmente buenos y no genéricos—, y eso solo se
 afina iterando contra clases reales. La orden `dictar sesion` ya sirve para eso hoy.
-</content>
-</invoke>

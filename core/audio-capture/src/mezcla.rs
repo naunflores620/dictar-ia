@@ -38,6 +38,11 @@ pub fn a_mono(intercalado: &[f32], canales: usize) -> Vec<f32> {
 /// el audio se desincronizaría poco a poco del reloj de la sesión.
 pub struct Remuestreador {
     interno: Option<FastFixedIn<f32>>,
+    // Se guarda aparte del `interno` (en vez de recalcularla a partir de la
+    // frecuencia de entrada) porque `vaciar` la necesita para saber cuántas
+    // muestras de salida corresponden a las últimas muestras reales, y no hay
+    // otro sitio donde consultarla una vez construido el `FastFixedIn`.
+    ratio: f64,
     pendientes: Vec<f32>,
     salida: Vec<f32>,
 }
@@ -49,6 +54,7 @@ impl Remuestreador {
         if frecuencia_entrada == SAMPLE_RATE {
             return Ok(Self {
                 interno: None,
+                ratio: 1.0,
                 pendientes: Vec::new(),
                 salida: Vec::new(),
             });
@@ -60,6 +66,7 @@ impl Remuestreador {
 
         Ok(Self {
             interno: Some(interno),
+            ratio,
             pendientes: Vec::with_capacity(BLOQUE * 2),
             salida: Vec::new(),
         })
@@ -91,6 +98,52 @@ impl Remuestreador {
     /// Muestras aún sin procesar. Solo para comprobaciones.
     pub fn pendientes(&self) -> usize {
         self.pendientes.len()
+    }
+
+    /// Vacía lo que haya quedado en `pendientes` sin completar un bloque.
+    ///
+    /// `procesar` solo emite bloques completos: en un flujo continuo eso no
+    /// importa, porque siempre llega más audio detrás. Pero al final de un
+    /// archivo (por ejemplo al leer un WAV entero de una sola pasada, en vez
+    /// de recibirlo en vivo) pueden quedar hasta `BLOQUE - 1` muestras —hasta
+    /// 21 ms a 48 kHz— sin remuestrear, y nadie más va a pedirlas.
+    ///
+    /// `FastFixedIn` exige bloques de tamaño fijo, así que la única forma de
+    /// remuestrear ese resto es rellenarlo con ceros hasta completar uno y
+    /// procesarlo. Pero esos ceros también generan muestras de salida, y si
+    /// no se recortaran se colaría un silencio artificial al final de cada
+    /// archivo importado —poco, pero audible si varios clips se concatenan—.
+    /// Por eso se recorta la salida al número de muestras que corresponde,
+    /// según el ratio de remuestreo, a las muestras reales que había (no al
+    /// bloque completo con relleno).
+    pub fn vaciar(&mut self) -> Result<Vec<f32>> {
+        let Some(r) = self.interno.as_mut() else {
+            // A 16 kHz `procesar` no acumula nada en `pendientes`: no hay
+            // cola que vaciar.
+            return Ok(Vec::new());
+        };
+
+        if self.pendientes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let reales = self.pendientes.len();
+        self.pendientes.resize(BLOQUE, 0.0);
+        let bloque: Vec<f32> = self.pendientes.drain(..BLOQUE).collect();
+
+        let procesado = r
+            .process(&[bloque], None)
+            .map_err(|e| AudioError::Remuestreo(e.to_string()))?;
+
+        // Redondeo, no truncado: truncar sistemáticamente recortaría por
+        // debajo (por ejemplo 1,9 muestras se convertirían en 1), perdiendo
+        // un poco de señal real en cada archivo importado.
+        let cantidad = (reales as f64 * self.ratio).round() as usize;
+
+        Ok(procesado
+            .first()
+            .map(|canal| canal.iter().take(cantidad).copied().collect())
+            .unwrap_or_default())
     }
 }
 
@@ -125,6 +178,17 @@ mod tests {
         let mut r = Remuestreador::nuevo(16_000).unwrap();
         let entrada = vec![0.5; 1000];
         assert_eq!(r.procesar(&entrada).unwrap().len(), 1000);
+    }
+
+    #[test]
+    fn vaciar_no_inventa_muestras_cuando_ya_venia_a_16k() {
+        // A 16 kHz `procesar` no pasa por `pendientes` (devuelve la entrada
+        // tal cual), así que `vaciar` no tiene nada que rellenar con ceros ni
+        // que recortar: debe devolver un vector vacío, no un bloque de
+        // silencio fabricado de la nada.
+        let mut r = Remuestreador::nuevo(16_000).unwrap();
+        r.procesar(&vec![0.5; 1000]).unwrap();
+        assert!(r.vaciar().unwrap().is_empty());
     }
 
     #[test]
@@ -168,6 +232,37 @@ mod tests {
         let salida = r.procesar(&vec![0.1; 600]).unwrap();
         assert!(!salida.is_empty());
         assert_eq!(r.pendientes(), 1100 - BLOQUE);
+    }
+
+    #[test]
+    fn vaciar_recupera_la_cola_que_procesar_deja_sin_emitir() {
+        // Antes de `vaciar`, las últimas muestras de un archivo (las que no
+        // llegaban a completar un bloque de 1024) se quedaban para siempre en
+        // `pendientes`: `procesar` nunca las devolvía y no había forma de
+        // pedírselas. En un WAV importado eso es hasta 21 ms de audio real
+        // que desaparecen en silencio, sin ningún error.
+        let mut r = Remuestreador::nuevo(48_000).unwrap();
+
+        // Un segundo y medio a 48 kHz: no es múltiplo de 1024, así que algo
+        // queda pendiente tras `procesar`.
+        let entrada: Vec<f32> = (0..72_000).map(|i| (i as f32 * 0.01).sin() * 0.5).collect();
+
+        let mut salida = r.procesar(&entrada).unwrap();
+        assert!(r.pendientes() > 0, "la entrada era múltiplo del bloque");
+
+        salida.extend(r.vaciar().unwrap());
+
+        // 72 000 muestras a 48 kHz equivalen a ~24 000 a 16 kHz (un tercio).
+        // La tolerancia cubre el redondeo del remuestreo, no una pérdida real.
+        let esperado = 24_000;
+        assert!(
+            (salida.len() as i64 - esperado).abs() < 400,
+            "salieron {} muestras, esperaba ~{esperado}",
+            salida.len()
+        );
+
+        // Y la cola queda realmente vacía: nada se queda atascado dentro.
+        assert_eq!(r.pendientes(), 0);
     }
 
     #[test]

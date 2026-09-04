@@ -5,9 +5,17 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-# El .exe de Windows NO se puede construir desde Linux: Flutter necesita MSVC y
-# el SDK de Windows, y no hay atajo fiable. De ahí la matriz: cada plataforma se
-# compila en su propio runner.
+# La matriz compila cada plataforma en su propio runner: Flutter necesita el
+# MSVC y el SDK de Windows para el .exe, y no hay cross-compile fiable desde
+# Linux.
+#
+# Aviso honesto sobre lo que sale de aquí: el .exe de Windows y el APK de
+# Android se construyen y llevan el núcleo dentro, pero **todavía no pueden
+# grabar**. La captura de audio solo está implementada para PipeWire
+# (core/audio-capture/src/lib.rs: `iniciar()` devuelve `NoSoportada` fuera de
+# Linux). Falta WASAPI *loopback* en Windows y AAudio en Android. Todo lo demás
+# —transcribir un audio importado, generar apuntes, consultar el historial— sí
+# funciona en las tres.
 jobs:
   build:
     strategy:
@@ -38,11 +46,28 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             cmake ninja-build clang libclang-dev pkg-config \
             libgtk-3-dev liblzma-dev \
-            libpipewire-0.3-dev libasound2-dev libsecret-1-dev
+            libpipewire-0.3-dev libasound2-dev libsecret-1-dev \
+            libdbus-1-dev libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
+
+      # El equivalente en Windows de instalar `libclang-dev`: LLVM ya viene en
+      # el runner, pero nada apunta a él, y `whisper-rs-sys` genera sus
+      # bindings con bindgen, que busca libclang.dll por esta variable. Sin
+      # ella el build.rs falla antes de compilar una sola línea de Rust. CMake
+      # y MSVC, que ese mismo build.rs necesita para whisper.cpp, ya están.
+      - name: dependencias del sistema (Windows)
+        if: matrix.plataforma == 'windows'
+        shell: pwsh
+        run: |
+          "LIBCLANG_PATH=$env:ProgramFiles\LLVM\bin" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: compilar el núcleo
         run: cargo build --release --workspace
 
+      # `flutter build` invoca a CMake, y el CMakeLists de cada plataforma
+      # compila y coloca la librería del núcleo junto al ejecutable
+      # (app/linux/CMakeLists.txt y app/windows/CMakeLists.txt). Por eso no hay
+      # aquí ningún paso de copiar la .so o la .dll a mano.
       - name: compilar la aplicación
         working-directory: app
         run: |
@@ -69,6 +94,20 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           & $iscc packaging\windows\inno_setup.iss
 
+      # Comprueba que la librería del núcleo acabó de verdad junto al .exe. Es
+      # el fallo que este workflow tuvo durante meses sin que nadie lo notara:
+      # el instalador se generaba igual, y la aplicación arrancaba con datos de
+      # demostración porque no encontraba la DLL.
+      - name: comprobar que el núcleo va dentro (Windows)
+        if: matrix.plataforma == 'windows'
+        shell: pwsh
+        run: |
+          $dll = "app\build\windows\x64\runner\Release\dictar_api.dll"
+          if (-not (Test-Path $dll)) {
+            throw "No se generó $dll: el instalador quedaría sin núcleo."
+          }
+          Write-Host "OK: $((Get-Item $dll).Length) bytes"
+
       - uses: actions/upload-artifact@v4
         with:
           name: dictar_ia-${{ matrix.plataforma }}
@@ -79,25 +118,74 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           # arm64 cubre prácticamente cualquier móvil actual; armeabi-v7a solo
-          # hace falta para equipos antiguos.
+          # hace falta para equipos antiguos. Tiene que coincidir con el ABI
+          # que pide app/android/app/build.gradle.kts.
           targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+
+      # Sin esto, el target de Rust instalado arriba no servía de nada: el
+      # Gradle no llamaba a cargo, y el APK salía sin `libdictar_api.so`
+      # dentro. `cargo ndk` es quien prepara el enlazador del NDK, el
+      # CMAKE_TOOLCHAIN_FILE que necesita whisper.cpp para cruzarse, y los
+      # argumentos de clang para bindgen.
+      - name: cargo-ndk y NDK
+        run: |
+          cargo install cargo-ndk --locked
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+
+      # Firma de verdad si el repositorio tiene los secretos configurados; si
+      # no, Gradle usa la clave de depuración y el APK sirve para probar pero
+      # no para publicar. Es deliberado que la ausencia de secretos no rompa el
+      # workflow: un fork debe poder construirlo.
+      - name: clave de firma
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/dictar_ia.keystore"
+          cat > app/android/key.properties <<EOF
+          storeFile=$RUNNER_TEMP/dictar_ia.keystore
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
 
       - name: APK
         working-directory: app
         run: |
           flutter pub get
           flutter build apk --release --split-per-abi --target-platform android-arm64
+
+      # Mismo control que en Windows: que el núcleo viaje dentro del paquete.
+      # Un APK sin la librería nativa se instala, arranca y enseña datos de
+      # demostración, que es la peor forma de fallar.
+      - name: comprobar que el núcleo va dentro
+        run: |
+          apk=$(ls app/build/app/outputs/flutter-apk/*arm64*.apk | head -1)
+          if ! unzip -l "$apk" | grep -q "lib/arm64-v8a/libdictar_api.so"; then
+            echo "El APK no lleva libdictar_api.so: se instalaría sin núcleo." >&2
+            unzip -l "$apk" | grep "lib/" || true
+            exit 1
+          fi
+          echo "OK: $apk lleva el núcleo"
 
       - uses: actions/upload-artifact@v4
         with:

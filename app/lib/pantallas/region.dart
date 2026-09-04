@@ -5,6 +5,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../datos/repositorio.dart';
 import '../datos/repositorio_rust.dart';
+import '../ventana.dart';
 
 /// Selector del área de la pantalla que se guarda como diapositiva.
 ///
@@ -50,13 +51,23 @@ class _PantallaRegionState extends State<PantallaRegion> {
     try {
       // La propia ventana saldría en la captura y taparía justo la zona que
       // hay que elegir. Se esconde un instante.
-      await windowManager.hide();
-      await Future<void>.delayed(const Duration(milliseconds: 350));
+      //
+      // Solo donde hay gestor de ventanas: en Android `windowManager` no tiene
+      // implementación y lanza `MissingPluginException`. Antes de esta guarda,
+      // esa excepción caía en el `catch` de abajo, que volvía a llamar a
+      // `show()` y volvía a lanzarla — desde dentro del propio manejador de
+      // errores, así que escapaba sin capturar de un `initState`.
+      if (Ventana.soportado) {
+        await windowManager.hide();
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+      }
 
       final (ruta, w, h) = await r.capturaParaSeleccion();
 
-      await windowManager.show();
-      await windowManager.focus();
+      if (Ventana.soportado) {
+        await windowManager.show();
+        await windowManager.focus();
+      }
 
       if (!mounted) return;
       setState(() {
@@ -65,7 +76,9 @@ class _PantallaRegionState extends State<PantallaRegion> {
         _altoPantalla = h;
       });
     } catch (e) {
-      await windowManager.show();
+      if (Ventana.soportado) {
+        await windowManager.show();
+      }
       if (mounted) setState(() => _error = '$e');
     }
   }

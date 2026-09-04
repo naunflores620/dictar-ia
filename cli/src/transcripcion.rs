@@ -111,7 +111,12 @@ fn separar_hablante(linea: &str) -> Option<(&str, &str)> {
     let i = linea.find(':')?;
     let nombre = linea[..i].trim();
 
-    if nombre.is_empty() || nombre.len() > 40 || nombre.contains([',', ';', '?', '¿', '!', '¡']) {
+    // 40 caracteres, no bytes: contar bytes recortaría antes a los nombres con
+    // tildes, y un rótulo válido «Álvaro…» se rechazaría por equivocación.
+    if nombre.is_empty()
+        || nombre.chars().count() > 40
+        || nombre.contains([',', ';', '?', '¿', '!', '¡'])
+    {
         return None;
     }
 

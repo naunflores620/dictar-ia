@@ -9,6 +9,12 @@ dictar-domain = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+# xcap solo tiene implementación para escritorio: su lib.rs elige el módulo con
+# `cfg(target_os)` entre linux, windows y macos, y en Android no encaja ninguno,
+# así que ni siquiera compila. Condicionar la dependencia —y las funciones que
+# la usan, más abajo en lib.rs— es lo que permite cruzar el núcleo al móvil.
+[target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
 xcap = "0.0.14"
 
 [dev-dependencies]

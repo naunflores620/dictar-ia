@@ -1,5 +1,5 @@
 name: dictar_ia
-description: "A new Flutter project."
+description: "Interfaz de dictar_ia: grabación de clases y reuniones con transcripción local y apuntes generados por IA."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

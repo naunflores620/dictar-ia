@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------------------
+# Finales de línea.
+#
+# El proyecto se desarrolla, se compila y se empaqueta en Linux, pero el árbol
+# se abre también desde Windows, donde `core.autocrlf=true` mete CRLF en todo
+# lo que toca. Un script que acaba con `#!/usr/bin/env bash\r` falla con un
+# «bad interpreter» que no dice nada de la causa real, y una hora de depuración
+# después resulta que era un retorno de carro invisible.
+#
+# Por eso LF es la norma para todo lo que sea texto, y CRLF solo la excepción
+# donde Windows lo exige de verdad. No depende de la configuración local de
+# cada máquina, que es justo lo que falló.
+# ---------------------------------------------------------------------------
+* text=auto eol=lf
+
+*.sh    text eol=lf
+gradlew text eol=lf
+
+# Los .bat y .ps1 los ejecuta Windows: ahí CRLF es lo correcto. `gradlew.bat`
+# viene así de Flutter y debe quedarse así.
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+
+# ---------------------------------------------------------------------------
+# Binarios. Marcarlos evita que git intente normalizarlos o que los muestre
+# como texto en un diff.
+# ---------------------------------------------------------------------------
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.bin   binary
+*.wav   binary
+*.deb   binary
+*.so    binary
+*.dll   binary
+*.jar   binary
+*.keystore binary
