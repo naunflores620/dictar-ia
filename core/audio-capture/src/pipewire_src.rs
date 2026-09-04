@@ -279,8 +279,10 @@ fn crear_flujo(
 
             // El formato negociado es F32LE, que es lo que pedimos.
             let muestras: Vec<f32> = bytes[..tam]
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
                 .collect();
 
             let mono = a_mono(&muestras, estado.canales);

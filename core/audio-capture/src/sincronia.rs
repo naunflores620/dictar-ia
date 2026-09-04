@@ -59,16 +59,22 @@ pub enum FormatoNativo {
 pub fn normalizar_a_f32(bytes: &[u8], formato: FormatoNativo) -> Vec<f32> {
     match formato {
         FormatoNativo::F32 => bytes
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect(),
         FormatoNativo::I16 => bytes
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / (i16::MAX as f32 + 1.0))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b) as f32 / (i16::MAX as f32 + 1.0))
             .collect(),
         FormatoNativo::I32 => bytes
-            .chunks_exact(4)
-            .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / (i32::MAX as f32 + 1.0))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| i32::from_le_bytes(*b) as f32 / (i32::MAX as f32 + 1.0))
             .collect(),
     }
 }

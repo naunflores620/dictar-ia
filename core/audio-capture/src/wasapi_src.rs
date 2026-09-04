@@ -49,7 +49,7 @@ const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 0x2;
 // `WAVEFORMATEXTENSIBLE` como `f32`, y es un identificador fijo de la ABI, no
 // algo que dependa de qué módulo de `windows` lo reexporte.
 const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT: GUID =
-    GUID::from_u128(0x0000_0003_0000_0010_8000_00AA00389B71);
+    GUID::from_u128(0x0000_0003_0000_0010_8000_00AA_0038_9B71);
 
 // mmdeviceapi.h. Sin esta máscara, `EnumAudioEndpoints` también devolvería
 // los dispositivos deshabilitados o desconectados.
