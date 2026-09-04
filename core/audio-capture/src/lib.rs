@@ -20,6 +20,9 @@ pub mod pipewire_src;
 #[cfg(target_os = "windows")]
 pub mod wasapi_src;
 
+#[cfg(target_os = "android")]
+pub mod aaudio_src;
+
 #[cfg(target_os = "linux")]
 pub mod reproductor;
 
@@ -174,7 +177,12 @@ pub fn iniciar(cfg: CaptureConfig) -> Result<(Receiver<AudioFrame>, Box<dyn Capt
         wasapi_src::iniciar(cfg)
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "android")]
+    {
+        aaudio_src::iniciar(cfg)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "android")))]
     {
         let _ = cfg;
         Err(AudioError::NoSoportada)
@@ -193,7 +201,12 @@ pub fn dispositivos() -> Result<Vec<DeviceInfo>> {
         wasapi_src::dispositivos()
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "android")]
+    {
+        aaudio_src::dispositivos()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "android")))]
     {
         Err(AudioError::NoSoportada)
     }
@@ -406,15 +419,15 @@ mod tests {
     // mismo criterio que
     // `fuera_de_linux_reproducir_avisa_en_vez_de_no_compilar`, arriba.
     //
-    // Con la matriz de CI actual (jobs solo para Linux y Windows) esta
-    // rama no compila en ningún job existente, así que este test tampoco
-    // corre hoy -- ninguna prueba automatizada puede ejercitarla sin
+    // Con la matriz de CI actual (jobs solo para Linux y Windows, más el
+    // cruce a Android que compila pero no ejecuta) esta rama no compila en
+    // ningún job existente, así que este test tampoco corre hoy -- ninguna prueba automatizada puede ejercitarla sin
     // compilar para una tercera plataforma. Sigue siendo mejor que la
     // réplica: en cuanto exista un job así, protege de verdad; la réplica
     // nunca lo habría hecho.
     #[test]
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-    fn fuera_de_windows_y_linux_iniciar_devuelve_no_soportada() {
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "android")))]
+    fn fuera_de_windows_linux_y_android_iniciar_devuelve_no_soportada() {
         let err = iniciar(CaptureConfig::default()).unwrap_err();
         assert!(matches!(err, AudioError::NoSoportada));
     }
@@ -424,8 +437,8 @@ mod tests {
     /// `iniciar()` y `dispositivos()`, así que esta prueba cubre la que
     /// aquella dejaba fuera.
     #[test]
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-    fn fuera_de_windows_y_linux_dispositivos_devuelve_no_soportada() {
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "android")))]
+    fn fuera_de_windows_linux_y_android_dispositivos_devuelve_no_soportada() {
         let err = dispositivos().unwrap_err();
         assert!(matches!(err, AudioError::NoSoportada));
     }

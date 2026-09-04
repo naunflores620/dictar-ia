@@ -1,12 +1,20 @@
-//! Lógica pura de la captura WASAPI: sin COM, sin hilos, sin `#[cfg]`.
+//! Lógica pura de la captura: sin COM, sin AAudio, sin hilos, sin `#[cfg]`.
 //!
 //! Existe como archivo aparte por una razón muy concreta, no por estética: es
-//! lo único de esta HU que se puede compilar y ejecutar en el CI de Linux. Un
+//! lo único de estas HU que se puede compilar y ejecutar en el CI de Linux. Un
 //! `wasapi_src.rs` gateado a `cfg(windows)` no compila allí, y en el job de
-//! Windows el CI solo hacía `cargo check` hasta esta HU (ver
-//! `.github/workflows/ci.yml`), que tipa-chequea pero no ejecuta nada. Sin
-//! este módulo, ninguna prueba de esta historia correría de verdad en ningún
-//! sitio.
+//! Windows el CI solo hacía `cargo check` hasta HU-01 (ver
+//! `.github/workflows/ci.yml`), que tipa-chequea pero no ejecuta nada. Lo
+//! mismo, y peor, le pasa a `aaudio_src.rs`: ningún job ejecuta nada en
+//! Android. Sin este módulo, ninguna prueba de esas historias correría de
+//! verdad en ningún sitio.
+//!
+//! Nació con HU-01 como «lógica pura de WASAPI», y HU-02 lo reutilizó tal
+//! cual: normalizar el formato nativo, calcular el relleno y decidir con qué
+//! pistas se sigue no tienen nada de Windows. Ese fue el cobro de haberlo
+//! separado. Lo único que se añadió para Android es lo que sí le es propio
+//! —[`formato_desde_aaudio`] y [`pistas_en_android`]— y por el mismo motivo:
+//! poder probarlo sin un móvil delante.
 //!
 //! ## El reloj y el silencio
 //!
@@ -130,14 +138,71 @@ pub fn alguna_pista_sigue_viva(microfono_vivo: bool, sistema_vivo: bool) -> bool
     microfono_vivo || sistema_vivo
 }
 
+/// Bytes que ocupa una muestra en el formato nativo del dispositivo.
+///
+/// Hace falta para convertir las *tramas* que cuenta AAudio —una por canal y
+/// punto temporal— a los bytes que hay que leer del búfer. Equivale al
+/// `nBlockAlign` que WASAPI entrega ya calculado en su `WAVEFORMATEX`;
+/// AAudio no da ese dato, así que se deriva del formato y del número de
+/// canales.
+pub fn bytes_por_muestra(formato: FormatoNativo) -> usize {
+    match formato {
+        FormatoNativo::I16 => 2,
+        FormatoNativo::I32 | FormatoNativo::F32 => 4,
+    }
+}
+
+/// Traduce el código de formato que devuelve `AAudioStream_getFormat`.
+///
+/// Se consulta el formato **real del flujo ya abierto**, nunca el que se
+/// pidió: `AAudioStreamBuilder_setFormat` es una preferencia, y AAudio abre
+/// con lo que el dispositivo tenga sin avisar de que cambió de opinión. Dar
+/// por bueno lo pedido interpretaría `i16` como `f32` y grabaría ruido
+/// blanco a todo volumen durante la clase entera.
+///
+/// `AAUDIO_FORMAT_PCM_I24_PACKED` (3) existe y no se soporta: son tres bytes
+/// por muestra y [`normalizar_a_f32`] trabaja con anchos de 2 y 4. Se
+/// rechaza en voz alta en vez de leerlo desalineado.
+pub fn formato_desde_aaudio(codigo: i32) -> Result<FormatoNativo> {
+    match codigo {
+        1 => Ok(FormatoNativo::I16),
+        2 => Ok(FormatoNativo::F32),
+        4 => Ok(FormatoNativo::I32),
+        otro => Err(AudioError::Inicio(format!(
+            "AAudio abrió el flujo con un formato que no se sabe leer (código {otro})"
+        ))),
+    }
+}
+
+/// Qué pistas se graban en Android, a partir de lo que pide la configuración.
+///
+/// **En Android no hay pista de sistema y no la va a haber.** No es una
+/// carencia de esta implementación: Android no deja capturar el audio de una
+/// videollamada ajena, a propósito y a nivel de sistema operativo. El caso de
+/// uso aquí es la reunión presencial.
+///
+/// Por eso `capturar_sistema` se ignora en vez de fallar. Quien llama suele
+/// reutilizar la misma [`crate::CaptureConfig`] que en el escritorio, donde
+/// viene en `true` por defecto: devolver un error ahí dejaría al usuario sin
+/// grabar la reunión por pedir de más, que es el peor desenlace posible de
+/// los tres. Se registra en el log y se sigue con el micrófono.
+pub fn pistas_en_android(capturar_microfono: bool, capturar_sistema: bool) -> Result<Vec<Track>> {
+    if capturar_sistema {
+        tracing::warn!(
+            "se pidió capturar el audio del sistema, pero Android no lo permite:              se graba solo el micrófono"
+        );
+    }
+    pistas_a_grabar(capturar_microfono, false)
+}
+
 /// Pipeline completo de una pista: de bytes nativos del dispositivo a un
 /// [`AudioFrame`] listo para escribir.
 ///
 /// Agrupa aquí, y no en `wasapi_src`, todo lo que no toca COM: así el bucle
 /// de captura queda reducido a leer bytes y llamar a
-/// [`PistaWasapi::procesar_paquete`], que es lo único de esta pieza que un
+/// [`PistaCapturada::procesar_paquete`], que es lo único de esta pieza que un
 /// test puede ejercitar sin tarjeta de sonido.
-pub struct PistaWasapi {
+pub struct PistaCapturada {
     track: Track,
     canales: usize,
     formato: FormatoNativo,
@@ -145,7 +210,7 @@ pub struct PistaWasapi {
     muestras_emitidas: u64,
 }
 
-impl PistaWasapi {
+impl PistaCapturada {
     pub fn nueva(
         track: Track,
         canales: usize,
@@ -271,7 +336,7 @@ mod tests {
         // silencio de relleno, y una mutación que invirtiera el orden
         // (audio real antes, silencio después) daba el mismo `pcm` byte a
         // byte sin que ningún assert lo notara.
-        let mut pista = PistaWasapi::nueva(Track::System, 1, FormatoNativo::F32, SAMPLE_RATE)
+        let mut pista = PistaCapturada::nueva(Track::System, 1, FormatoNativo::F32, SAMPLE_RATE)
             .expect("remuestreador a la misma frecuencia no falla");
 
         // Primer paquete: 100 ms de audio real (1600 muestras a 16 kHz),
@@ -344,7 +409,7 @@ mod tests {
         // un silencio se contaba dos veces (como relleno y como audio real),
         // 100 ms de más en cada transición silencio→audio del loopback. Ver
         // `un_silencio_en_loopback_no_adelanta_lo_que_viene_despues` para el
-        // caso completo a través de `PistaWasapi`; esta prueba aísla la
+        // caso completo a través de `PistaCapturada`; esta prueba aísla la
         // función pura con números simples.
         assert_eq!(muestras_de_relleno(2_000, 1_600, 1_600), 32_000 - 1_600 - 1_600);
     }
@@ -436,24 +501,30 @@ mod tests {
 
     #[test]
     fn una_sesion_de_una_sola_pista_termina_si_esa_pista_muere() {
-        // Distinto del caso anterior en el origen, aunque los booleanos de
-        // entrada coincidan: aquí `sistema` nunca estuvo vivo porque no se
-        // pidió al arrancar (`pistas_a_grabar(true, false)` deja la sesión
-        // solo con el micrófono), no porque fallara a mitad de grabación.
-        // Aun así, cuando la única pista que había muere, no queda ninguna,
-        // y el resultado tiene que ser el mismo que si hubieran fallado las
-        // dos.
-        let pistas_al_arrancar = pistas_a_grabar(true, false).unwrap();
-        assert_eq!(pistas_al_arrancar, vec![Track::Mic]);
+        // Antes arrancaba con `pistas_a_grabar(true, false)`, el mismo par
+        // que ya fija `sin_dispositivo_de_salida_se_graba_solo_el_microfono`.
+        // Medido por mutación (verificador-pruebas, T-15/T-16), ese
+        // `assert_eq!` deja `pistas_al_arrancar` en exactamente `[Mic]`, así
+        // que `.contains(&Track::System)` no podía dar otra cosa que
+        // `false`: ninguna mutación pasaba ese `assert_eq!` y a la vez movía
+        // el resultado. La prueba entera quedaba 100% redundante con esa otra
+        // y con `sin_ninguna_pista_viva_el_bucle_termina`.
+        //
+        // Arrancar aquí con el sistema en vez del micrófono no es cosmético:
+        // ninguna otra prueba del archivo fija el resultado exacto de la
+        // rama `if sistema_abierto` en solitario, así que un
+        // `pistas.push(Track::Mic)` por error ahí —en vez de
+        // `Track::System`— pasaría todas las demás pruebas en verde y solo
+        // esta lo detectaría.
+        let pistas_al_arrancar = pistas_a_grabar(false, true).unwrap();
+        assert_eq!(pistas_al_arrancar, vec![Track::System]);
 
-        // `sistema_vivo` se deriva de lo que devolvió `pistas_a_grabar`, no
-        // se escribe a mano: así el encadenamiento es real y, si algún día
-        // `pistas_a_grabar(true, false)` empezara a incluir `System` por
-        // error, esta prueba lo notaría. Escrito como literal, las dos
-        // mitades quedaban sueltas y no aportaban nada que no dieran ya las
-        // otras dos pruebas por separado.
-        let sistema_vivo = pistas_al_arrancar.contains(&Track::System);
-        let microfono_vivo = false; // la única pista pedida, y murió
+        // `microfono_vivo` se deriva de lo que devolvió `pistas_a_grabar`, no
+        // se escribe a mano: si algún día `pistas_a_grabar(false, true)`
+        // empezara a incluir `Mic` por error, esta prueba lo notaría también
+        // por este lado.
+        let microfono_vivo = pistas_al_arrancar.contains(&Track::Mic);
+        let sistema_vivo = false; // la única pista pedida, y murió
 
         assert!(!alguna_pista_sigue_viva(microfono_vivo, sistema_vivo));
     }
@@ -466,4 +537,91 @@ mod tests {
     // llamaba a un enum `Plataforma` escrito a mano en este archivo, sin
     // ninguna conexión con el `#[cfg]` real: seguía en verde aunque el
     // enrutado de `lib.rs` se rompiera.
+
+    // -- Android: formato y pistas ----------------------------------------
+
+    #[test]
+    fn el_formato_real_del_flujo_manda_sobre_el_que_se_pidio() {
+        // `abrir_microfono` pide siempre PCM_FLOAT, pero AAudio abre con lo
+        // que el dispositivo tenga y no avisa. Si esta traducción devolviera
+        // el formato pedido en vez del recibido, un dispositivo que entrega
+        // i16 se leería como f32: cuatro bytes interpretados como uno, ruido
+        // blanco a todo volumen durante la reunión entera.
+        assert_eq!(formato_desde_aaudio(1).unwrap(), FormatoNativo::I16);
+        assert_eq!(formato_desde_aaudio(2).unwrap(), FormatoNativo::F32);
+        assert_eq!(formato_desde_aaudio(4).unwrap(), FormatoNativo::I32);
+    }
+
+    #[test]
+    fn un_formato_de_aaudio_que_no_se_sabe_leer_se_rechaza_en_voz_alta() {
+        // PCM_I24_PACKED (3) son tres bytes por muestra y `normalizar_a_f32`
+        // solo sabe de 2 y 4. Tratarlo como cualquiera de los dos leería el
+        // búfer desalineado, y eso no suena a error: suena a ruido.
+        assert!(formato_desde_aaudio(3).is_err());
+        assert!(formato_desde_aaudio(0).is_err());
+    }
+
+    #[test]
+    fn el_ancho_de_muestra_corresponde_a_cada_formato() {
+        // De esto sale `bloque_bytes`, y con él cuántos bytes se leen del
+        // búfer por trama. Equivocarlo desalinea todas las muestras.
+        assert_eq!(bytes_por_muestra(FormatoNativo::I16), 2);
+        assert_eq!(bytes_por_muestra(FormatoNativo::I32), 4);
+        assert_eq!(bytes_por_muestra(FormatoNativo::F32), 4);
+    }
+
+    #[test]
+    fn una_sesion_de_android_graba_solo_el_microfono() {
+        // Android no permite capturar el audio de una videollamada ajena. Si
+        // esta política incluyera `Track::System`, `aaudio_src` abriría una
+        // pista que nunca recibe nada y la sesión acabaría con un
+        // `system.wav` vacío que la mezcla suma como silencio.
+        let pistas = pistas_en_android(true, false).unwrap();
+        assert_eq!(pistas, vec![Track::Mic]);
+    }
+
+    #[test]
+    fn pedir_capturar_el_sistema_en_android_no_impide_grabar() {
+        // `CaptureConfig::default()` trae `capturar_sistema: true`, y la
+        // interfaz reutiliza la misma configuración que en el escritorio.
+        // Fallar aquí dejaría al usuario sin grabar la reunión por haber
+        // pedido de más: se ignora esa pista y se graba el micrófono.
+        let pistas = pistas_en_android(true, true).unwrap();
+        assert_eq!(pistas, vec![Track::Mic]);
+    }
+
+    #[test]
+    fn sin_microfono_no_hay_sesion_de_android_que_valga() {
+        // El otro lado de la moneda: ignorar la pista de sistema no puede
+        // llegar al extremo de aceptar una sesión que no graba nada. Pedir
+        // solo sistema en Android es pedir lo imposible.
+        assert!(pistas_en_android(false, true).is_err());
+        assert!(pistas_en_android(false, false).is_err());
+    }
+
+    #[test]
+    fn un_microfono_a_44100_se_remuestrea_a_16000() {
+        // AAudio entrega la frecuencia nativa del dispositivo, no la pedida.
+        // Sin remuestrear, el WAV sale a casi el triple de velocidad y
+        // Whisper transcribe ardillas.
+        let mut pista = PistaCapturada::nueva(Track::Mic, 1, FormatoNativo::F32, 44_100)
+            .expect("44100 es una frecuencia de entrada válida");
+
+        // Un segundo de audio real a 44,1 kHz.
+        let un_segundo: Vec<u8> = (0..44_100).flat_map(|_| 0.5_f32.to_le_bytes()).collect();
+        let frame = pista
+            .procesar_paquete(1000, &un_segundo)
+            .unwrap()
+            .expect("un segundo de audio produce muestras");
+
+        // El remuestreador trabaja por bloques y deja una cola sin emitir, así
+        // que no salen exactamente 16 000; lo que no puede pasar es que salgan
+        // las 44 100 de entrada.
+        let emitidas = frame.pcm.len();
+        assert!(
+            (15_000..=16_100).contains(&emitidas),
+            "un segundo a 44,1 kHz debe salir como ~16 000 muestras, salieron {emitidas}"
+        );
+    }
+
 }

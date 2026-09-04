@@ -102,7 +102,15 @@ android {
 
     defaultConfig {
         applicationId = "com.dictaria.dictar_ia"
-        minSdk = flutter.minSdkVersion
+        // 26 y no `flutter.minSdkVersion`: AAudio, con el que
+        // `core/audio-capture` graba en Android, existe desde API 26. Con el
+        // mínimo de la plantilla de Flutter el APK se instalaría en teléfonos
+        // donde `libaaudio.so` no existe, y la aplicación caería al abrir la
+        // grabación en vez de al instalarse — el peor momento posible.
+        //
+        // API 26 es Android 8, de 2017: por debajo de eso no queda
+        // prácticamente ningún teléfono en uso.
+        minSdk = 26
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

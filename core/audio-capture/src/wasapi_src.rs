@@ -19,7 +19,7 @@
 //! Windows. Un sondeo corto y regular es más código, pero no depende de esa
 //! garantía.
 
-use crate::sincronia::{FormatoNativo, PistaWasapi};
+use crate::sincronia::{FormatoNativo, PistaCapturada};
 use crate::{AudioError, AudioFrame, CaptureConfig, CaptureSession, DeviceInfo, Result};
 use dictar_domain::Track;
 use std::ffi::c_void;
@@ -143,12 +143,12 @@ impl Drop for SesionWasapi {
 }
 
 /// Un `IAudioClient` ya inicializado, con su `IAudioCaptureClient` y el
-/// estado puro (`sincronia::PistaWasapi`) que convierte lo que entrega en
+/// estado puro (`sincronia::PistaCapturada`) que convierte lo que entrega en
 /// `AudioFrame`.
 struct CapturaAbierta {
     cliente: IAudioClient,
     captura: IAudioCaptureClient,
-    pista: PistaWasapi,
+    pista: PistaCapturada,
     /// `WAVEFORMATEX::nBlockAlign`: bytes de una trama (todos los canales) en
     /// el formato negociado. Convierte `num_frames` de `GetBuffer` a bytes
     /// sin recalcular canales × bytes-por-muestra por separado.
@@ -339,7 +339,7 @@ fn cerrar_pista(c: &mut CapturaAbierta, fin_ms: i64, tx: &Sender<AudioFrame>) {
 }
 
 /// Drena todos los paquetes disponibles de una pista y envía lo que
-/// `sincronia::PistaWasapi` vaya devolviendo. Devuelve `true` si había algo
+/// `sincronia::PistaCapturada` vaya devolviendo. Devuelve `true` si había algo
 /// que leer, para que el bucle solo duerma cuando de verdad no hay trabajo.
 fn procesar_paquetes(
     c: &mut CapturaAbierta,
@@ -437,7 +437,7 @@ unsafe fn abrir_cliente(
     resultado_init.map_err(err)?;
 
     let captura: IAudioCaptureClient = unsafe { cliente.GetService() }.map_err(err)?;
-    let pista = PistaWasapi::nueva(track, canales, formato_nativo, frecuencia)?;
+    let pista = PistaCapturada::nueva(track, canales, formato_nativo, frecuencia)?;
 
     Ok(CapturaAbierta {
         cliente,

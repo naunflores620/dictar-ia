@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../datos/repositorio.dart';
 import '../datos/repositorio_rust.dart';
 import '../modelos/dominio.dart';
+import '../plataforma/android.dart';
 import '../ventana.dart';
 import 'region.dart';
 import 'proceso.dart';
@@ -64,6 +65,14 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
       return;
     }
 
+    // En Android no se puede grabar sin permiso, y pedirlo a bocajarro —el
+    // diálogo del sistema, sin contexto, nada más pulsar «Grabar»— es la
+    // forma más rápida de que lo denieguen. Fuera de Android esto no hace
+    // nada y devuelve `true`.
+    if (!await _asegurarPermisos()) {
+      return;
+    }
+
     setState(() => _iniciando = true);
 
     _subFrases = widget.repo.fraseEnVivo.listen((f) {
@@ -82,12 +91,78 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
       capturarPantalla: _capturarPantalla,
     );
 
+    // El servicio en primer plano de Android, que es lo que impide que el
+    // sistema corte la captura al apagar la pantalla. Va *después* de que la
+    // grabación haya arrancado de verdad: si `iniciarGrabacion` falla, no
+    // tiene sentido dejar una notificación diciendo que se está grabando.
+    await Android.iniciarServicio();
+
     // La ventana se encoge sola y se pone encima: durante la clase esto vive
     // en una esquina sobre Meet, y pedirle al usuario que la ajuste a mano
     // cada vez sería pedirle que haga el trabajo de la aplicación.
     await Ventana.modoGrabacion();
 
     if (mounted) setState(() => _iniciando = false);
+  }
+
+  /// Se asegura de tener permiso de micrófono, explicándolo antes de pedirlo.
+  ///
+  /// Criterios 3 y 4 de HU-02. Los tres desenlaces posibles terminan en algo
+  /// que el usuario entiende; ninguno deja la pantalla muerta:
+  ///
+  /// - Ya concedido: sigue sin molestar.
+  /// - Lo concede ahora: sigue.
+  /// - Lo deniega: se dice qué se ha perdido y cómo revertirlo, y se vuelve
+  ///   al estado anterior en vez de quedarse en una pantalla que no graba sin
+  ///   decir por qué.
+  Future<bool> _asegurarPermisos() async {
+    if (await Android.tienePermisos()) return true;
+    if (!mounted) return false;
+
+    // El diálogo del sistema no dice para qué se quiere el micrófono, solo
+    // que se quiere. Esta explicación va antes, y es lo que distingue una
+    // petición razonable de una que se deniega por reflejo.
+    final seguir = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Permiso para grabar'),
+        content: const Text(
+          'dictar_ia necesita el micrófono para grabar la reunión y '
+          'transcribirla.\n\n'
+          'El audio se queda en este teléfono: se transcribe aquí mismo y no '
+          'se envía a ningún servidor.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Ahora no'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Continuar'),
+          ),
+        ],
+      ),
+    );
+
+    if (seguir != true) return false;
+
+    if (await Android.pedirPermisos()) return true;
+    if (!mounted) return false;
+
+    // Denegado. Decirlo y decir cómo se arregla: desde el segundo rechazo
+    // Android ya no vuelve a mostrar el diálogo, y sin esta indicación el
+    // usuario se queda pulsando «Grabar» sin que ocurra nada.
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Sin permiso de micrófono no se puede grabar. Se activa en '
+          'Ajustes del teléfono › Aplicaciones › dictar_ia › Permisos.',
+        ),
+        duration: Duration(seconds: 6),
+      ),
+    );
+    return false;
   }
 
   /// Crea una asignatura o cliente sin salir de la pantalla.
@@ -234,6 +309,7 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
   /// grabadas y sin apuntes, que es tener el trabajo hecho a medias.
   Future<void> _detener() async {
     await widget.repo.detenerGrabacion();
+    await Android.detenerServicio();
     await Ventana.modoNormal();
     await _subFrases?.cancel();
     await _subEstado?.cancel();

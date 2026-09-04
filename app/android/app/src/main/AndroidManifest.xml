@@ -9,8 +9,7 @@
          una hora se queda en tres minutos. La notificación permanente es el
          precio, y es obligatoria desde Android 9.
 
-         Falta todavía la clase del servicio: estos permisos son la mitad
-         declarativa del trabajo, no el trabajo entero. -->
+         El servicio es `ServicioGrabacion`, declarado más abajo. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
 
@@ -44,6 +43,18 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Sostiene la grabación con la pantalla apagada y la aplicación en
+             segundo plano. `foregroundServiceType` tiene que coincidir con el
+             permiso FOREGROUND_SERVICE_MICROPHONE de arriba: desde Android 14
+             el sistema rechaza el servicio si no coinciden.
+
+             `exported="false"`: no lo arranca nadie de fuera de la
+             aplicación. -->
+        <service
+            android:name=".ServicioGrabacion"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
