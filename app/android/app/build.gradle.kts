@@ -54,6 +54,13 @@ val compilarNucleo by tasks.registering(Exec::class) {
             add("cargo")
             add("ndk")
             abisRust.forEach { abi -> add("-t"); add(abi) }
+            // El mismo 26 que `minSdk`, y por el mismo motivo: `cargo ndk`
+            // usa el nivel 21 por defecto y `libaaudio.so` no existe en el
+            // sysroot del NDK por debajo del 26, así que `aaudio_src.rs` no
+            // enlaza. Si estos dos números se separan, el APK se genera para
+            // un nivel en el que el núcleo no puede grabar.
+            add("--platform")
+            add("26")
             add("-o")
             add(destino.absolutePath)
             // bindgen necesita el sysroot del NDK para generar los bindings de

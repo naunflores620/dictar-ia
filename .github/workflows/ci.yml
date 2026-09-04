@@ -165,10 +165,16 @@ jobs:
       - name: apuntar al NDK
         run: echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
 
+      # `--platform 26` no es decorativo: `cargo ndk` usa el nivel 21 por
+      # defecto, y `libaaudio.so` **no existe** en el sysroot del NDK por
+      # debajo del 26 — el enlazado falla con «cannot find -laaudio». Tiene
+      # que coincidir con el `minSdk` de `app/android/app/build.gradle.kts`,
+      # que está en 26 por este mismo motivo.
+      #
       # Paso propio, antes del APK, para que el fallo diga si fue el núcleo o
       # el empaquetado. Es el criterio 2 de HU-12.
       - name: cruzar el núcleo a Android
-        run: cargo ndk -t arm64-v8a build --release -p dictar-api
+        run: cargo ndk -t arm64-v8a --platform 26 build --release -p dictar-api
 
       - uses: actions/setup-java@v4
         with:
