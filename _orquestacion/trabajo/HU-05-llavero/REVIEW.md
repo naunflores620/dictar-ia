@@ -232,3 +232,74 @@ Dos patrones atraviesan esta vuelta y conviene nombrarlos, porque se repiten:
    En ambos casos el `HANDOFF` los da por cerrados.
 
 Orquestador · 2026-09-03
+
+---
+
+# Cuarta vuelta — 2026-09-04
+
+**La primera vuelta con evidencia ejecutada.** `cargo` estaba instalado pero fuera del `PATH` de
+la shell; con `source entorno-msvc.sh` los tres revisores pudieron ejecutar por fin.
+
+## Lo que quedó demostrado, no razonado
+
+- **`cargo test -p dictar-providers`: 87 pasan, 0 fallan**, incluidas las seis pruebas nuevas.
+  Confirmado por separado por los tres revisores y por el orquestador.
+- **`cargo clippy --all-targets -- -D warnings`: limpio.**
+- **Los seis hallazgos de la tercera vuelta, correctos.** H4-ter, H2-ter, P1, V1, V2 y M1.
+- **V1 queda cerrado mejor de lo que pedía el hallazgo.** El `verificador-pruebas` intercambió
+  `ResolverDeEntorno`/`ResolverDeLlavero` a propósito: no pone una prueba en rojo, **impide
+  compilar**. Una garantía del compilador es más fuerte que cualquier test, porque no depende de
+  que alguien lo ejecute.
+- **Android excluido por construcción, ahora probado.** `cargo tree` por target, con resolución
+  real de dependencias, confirma que `keyring` no entra en el grafo de Android y sí en Windows y
+  Linux con su backend correcto. Y `rustc --print cfg --target` confirma que `#[cfg(unix)]`
+  incluye Android y excluye Windows. Tres vueltas afirmándolo por lectura, por fin verificado.
+- **El truco del `.env`-como-directorio no pasa por accidente.** El `verificador-pruebas`
+  instrumentó las dos ramas de error y confirmó que dispara específicamente el `rename`, con
+  `Os { code: 5, kind: PermissionDenied }`.
+
+## Hallazgos
+
+| # | Hallazgo | Origen | Severidad | Estado |
+|---|---|---|---|---|
+| B1 | **`guardar_clave_en` (`secretos.rs:770`) pierde las claves de los demás proveedores.** Usa `read_to_string(&ruta).unwrap_or_default()`: cualquier error de lectura que no sea «no existe» —UTF-8 inválido, un bloqueo transitorio— se trata como archivo vacío, y reescribe el `.env` **con solo la clave que se está guardando**, informando éxito. No es deducción: el revisor lo demostró con un test de integración desechable —`.env` con dos claves, corrompido a bytes no UTF-8, `Ok` devuelto y una sola clave en el archivo final—. **Preexistente del commit `c08abdf`: lleva tres vueltas de revisión sin que nadie lo viera** | `revisor-codigo` | **Bloqueante** | Quinta vuelta |
+| B2 | `cargo fmt --all -- --check` **falla** en dos de las seis pruebas nuevas (`secretos.rs:1112` y `:1131`). Rompe el primer paso del CI, que es anterior a compilar | `revisor-codigo` | **Importante** | Quinta vuelta |
+| B3 | TOCTOU de baja explotabilidad en `escribir_temporal_restringido`: falta `create_new` | `revisor-codigo` | **Menor** | Quinta vuelta |
+| B4 | La deuda que el `HANDOFF` declara imposible —probar el fallo de **escritura** del temporal— **sí tiene vía**, y el propio archivo la usa ya dos veces: `purgar_del_env_con` y `guardar_clave_orquestada` reciben su paso falible como parámetro inyectable. Aplicar ese patrón a `guardar_clave_en` permitiría inyectar un fallo en cualquier plataforma. La razón declarada es más débil de lo que dice | `verificador-pruebas` | **Nota** | Quinta vuelta |
+| B5 | `resolver_por_defecto_no_entra_en_panico` **no** protege el intercambio interno de `cadena_con`: solo protege el pánico, tal como declara su comentario. Quien lo protege es `cadena_con_no_intercambia_el_archivo_con_el_llavero`. Verificado con una quinta mutación de contraste | `verificador-pruebas` | **Nota** | Correcto como está |
+
+## El incidente de proceso, y es lo que más deja esta vuelta
+
+Durante la revisión, `secretos.rs` **se modificó solo, varias veces**: una mutación de
+`linea_declara`, dos `eprintln!` de diagnóstico y un intercambio de argumentos en `cadena_con`.
+Era el `verificador-pruebas` haciendo su trabajo —mutar, ejecutar, revertir— **sobre el árbol
+compartido, sin worktree**.
+
+El **orquestador** corrió `cargo test` en ese intervalo, capturó el intercambio, lo tomó por un
+defecto del implementador y **lo comunicó a los tres revisores como hallazgo Bloqueante**, con la
+salida del compilador pegada. Era una mutación ajena en curso.
+
+Lo que impidió que ese hallazgo fantasma entrara en tres informes fue que a los tres se les había
+dicho **«confirmalo vos en vez de citarme»**:
+
+- El `auditor-plataforma` leyó el archivo, comparó contra el commit base, verificó hash y `mtime`
+  y corrió `cargo check` cinco veces antes de contradecir por escrito.
+- El `revisor-codigo` documentó las tres mutaciones con hashes y diffs y dedujo la causa.
+- El `verificador-pruebas` reconoció que el error citado era «casi idéntico» al que él mismo
+  había generado, y lo comprobó cinco veces más.
+
+Ninguno lo dio por bueno. La regla escrita contra los implementadores acabó protegiendo al
+proyecto **del propio orquestador**, que es exactamente para lo que servía. Queda como regla en
+`protocolo.md`: «Mutar sin aislamiento envenena a todo el que lea».
+
+## Veredicto
+
+**VUELVE A IMPLEMENTACIÓN.** Quinta vuelta, por B1 y B2.
+
+B1 lo decide solo, y su historia es la lección de todo el proyecto: **es preexistente, del commit
+`c08abdf`, y sobrevivió tres vueltas completas de revisión estática.** Solo apareció cuando
+alguien pudo *ejecutar* — y ni siquiera con las pruebas del proyecto, sino con un test de
+integración escrito a propósito para atacarlo. Ninguna cantidad de lectura cuidadosa lo habría
+encontrado.
+
+Orquestador · 2026-09-04

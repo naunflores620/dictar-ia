@@ -73,19 +73,14 @@ class _PantallaAjustesState extends State<PantallaAjustes> {
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
                 child: Text(
                   'Proveedores de IA',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w700),
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
               const _Explicacion(),
               for (final p in l)
-                _FilaProveedor(
-                  info: p,
-                  repo: widget.repo,
-                  onCambio: _recargar,
-                ),
+                _FilaProveedor(info: p, repo: widget.repo, onCambio: _recargar),
             ],
           );
         },
@@ -112,7 +107,9 @@ class _Explicacion extends StatelessWidget {
         children: [
           Text(
             'No hace falta poner todas',
-            style: t.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+            style: t.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
           ),
           const SizedBox(height: 6),
           Text(
@@ -121,8 +118,10 @@ class _Explicacion extends StatelessWidget {
             'Los apuntes de una sesión cuestan unas dos décimas de céntimo, así '
             'que un semestre entero sale por menos de un café. La '
             'transcripción es local y gratuita.',
-            style: t.textTheme.bodySmall
-                ?.copyWith(color: t.colorScheme.outline, height: 1.5),
+            style: t.textTheme.bodySmall?.copyWith(
+              color: t.colorScheme.outline,
+              height: 1.5,
+            ),
           ),
         ],
       ),
@@ -162,20 +161,32 @@ class _FilaProveedorState extends State<_FilaProveedor> {
     final r = widget.repo;
     if (r is! RepositorioRust) return;
 
-    final ruta = await r.guardarClave(widget.info.id, _campo.text);
-    if (!mounted) return;
+    try {
+      final ruta = await r.guardarClave(widget.info.id, _campo.text);
+      if (!mounted) return;
 
-    setState(() {
-      _editando = false;
-      _campo.clear();
-    });
-    widget.onCambio();
+      setState(() {
+        _editando = false;
+        _campo.clear();
+      });
+      widget.onCambio();
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      // Se dice el archivo: si algún día algo no cuadra, saber dónde está la
-      // clave ahorra la búsqueda.
-      SnackBar(content: Text('Guardada en $ruta')),
-    );
+      ScaffoldMessenger.of(context).showSnackBar(
+        // Se dice el archivo: si algún día algo no cuadra, saber dónde está la
+        // clave ahorra la búsqueda.
+        SnackBar(content: Text('Guardada en $ruta')),
+      );
+    } catch (e) {
+      // purgar_del_env (HU-05) dejó de tragarse el error de reescribir el
+      // .env: ahora lo propaga. Sin este catch, un fallo aquí no llegaba a
+      // ninguna parte y la pantalla se quedaba tal cual, sin decir que la
+      // clave no se guardó.
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('No se pudo guardar: $e')));
+      }
+    }
   }
 
   Future<void> _probar() async {
@@ -226,8 +237,8 @@ class _FilaProveedorState extends State<_FilaProveedor> {
                   p.esLocal
                       ? Icons.computer
                       : tieneClave
-                          ? Icons.check_circle
-                          : Icons.key_off_outlined,
+                      ? Icons.check_circle
+                      : Icons.key_off_outlined,
                   size: 20,
                   color: p.esLocal || tieneClave
                       ? t.colorScheme.primary
@@ -263,8 +274,9 @@ class _FilaProveedorState extends State<_FilaProveedor> {
               Text(
                 'En local: no necesita clave. Es el respaldo que funciona sin '
                 'conexión.',
-                style: t.textTheme.bodySmall
-                    ?.copyWith(color: t.colorScheme.outline),
+                style: t.textTheme.bodySmall?.copyWith(
+                  color: t.colorScheme.outline,
+                ),
               )
             else if (tieneClave && !_editando)
               Row(
@@ -272,8 +284,9 @@ class _FilaProveedorState extends State<_FilaProveedor> {
                   Expanded(
                     child: Text(
                       'Clave configurada · ${p.origenClave}',
-                      style: t.textTheme.bodySmall
-                          ?.copyWith(color: t.colorScheme.outline),
+                      style: t.textTheme.bodySmall?.copyWith(
+                        color: t.colorScheme.outline,
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
@@ -354,20 +367,20 @@ class _FilaProveedorState extends State<_FilaProveedor> {
   }
 
   static String _pista(String id) => switch (id) {
-        'gemini-flash' => 'AIza…',
-        'deepseek' => 'sk-…',
-        'openai' => 'sk-proj-…',
-        _ => '',
-      };
+    'gemini-flash' => 'AIza…',
+    'deepseek' => 'sk-…',
+    'openai' => 'sk-proj-…',
+    _ => '',
+  };
 
   /// Dónde se saca la clave. Sin esto, configurar el primer proveedor implica
   /// buscar en Google dónde está la página de claves de cada uno.
   static String _donde(String id) => switch (id) {
-        'gemini-flash' => 'aistudio.google.com/apikey',
-        'deepseek' => 'platform.deepseek.com/api_keys',
-        'openai' => 'platform.openai.com/api-keys',
-        _ => '',
-      };
+    'gemini-flash' => 'aistudio.google.com/apikey',
+    'deepseek' => 'platform.deepseek.com/api_keys',
+    'openai' => 'platform.openai.com/api-keys',
+    _ => '',
+  };
 }
 
 class _SinNucleo extends StatelessWidget {
@@ -437,7 +450,8 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
     setState(() {
       _campo.text = a.carpetaApuntes ?? '';
       _efectiva = a.carpetaEfectiva;
-      _esPorDefecto = a.carpetaApuntes == null || a.carpetaApuntes!.trim().isEmpty;
+      _esPorDefecto =
+          a.carpetaApuntes == null || a.carpetaApuntes!.trim().isEmpty;
       _sugeridas = s;
     });
   }
@@ -453,11 +467,13 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
 
     try {
       final a = await r.ajustes();
-      await r.guardarAjustes(AjustesApp(
-        carpetaApuntes: ruta,
-        modelo: a.modelo,
-        capturarDiapositivas: a.capturarDiapositivas,
-      ));
+      await r.guardarAjustes(
+        AjustesApp(
+          carpetaApuntes: ruta,
+          modelo: a.modelo,
+          capturarDiapositivas: a.capturarDiapositivas,
+        ),
+      );
       if (mounted) {
         setState(() => _guardado = true);
         await _cargar();
@@ -481,15 +497,19 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
         children: [
           Text(
             'Carpeta de apuntes',
-            style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+            style: t.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
           ),
           const SizedBox(height: 6),
           Text(
             'Al terminar cada sesión se guarda ahí el Markdown, en una '
             'subcarpeta por asignatura. Si eliges una carpeta de OneDrive o '
             'Drive, los apuntes te llegan al móvil solos.',
-            style: t.textTheme.bodySmall
-                ?.copyWith(color: t.colorScheme.outline, height: 1.45),
+            style: t.textTheme.bodySmall?.copyWith(
+              color: t.colorScheme.outline,
+              height: 1.45,
+            ),
           ),
           const SizedBox(height: 12),
 
@@ -507,16 +527,23 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
               ),
               child: Row(
                 children: [
-                  Icon(Icons.folder_open, size: 18, color: t.colorScheme.primary),
+                  Icon(
+                    Icons.folder_open,
+                    size: 18,
+                    color: t.colorScheme.primary,
+                  ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          _esPorDefecto ? 'Guardando en (por defecto)' : 'Guardando en',
-                          style: t.textTheme.labelSmall
-                              ?.copyWith(color: t.colorScheme.outline),
+                          _esPorDefecto
+                              ? 'Guardando en (por defecto)'
+                              : 'Guardando en',
+                          style: t.textTheme.labelSmall?.copyWith(
+                            color: t.colorScheme.outline,
+                          ),
                         ),
                         Text(_efectiva!, style: t.textTheme.bodyMedium),
                       ],
@@ -554,11 +581,13 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
                     final r = widget.repo;
                     if (r is! RepositorioRust) return;
                     final a = await r.ajustes();
-                    await r.guardarAjustes(AjustesApp(
-                      carpetaApuntes: null,
-                      modelo: a.modelo,
-                      capturarDiapositivas: a.capturarDiapositivas,
-                    ));
+                    await r.guardarAjustes(
+                      AjustesApp(
+                        carpetaApuntes: null,
+                        modelo: a.modelo,
+                        capturarDiapositivas: a.capturarDiapositivas,
+                      ),
+                    );
                     if (mounted) {
                       _campo.clear();
                       await _cargar();
@@ -635,7 +664,9 @@ class _AreaCapturaState extends State<_AreaCaptura> {
         children: [
           Text(
             'Área de la diapositiva',
-            style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+            style: t.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
           ),
           const SizedBox(height: 6),
           Text(
@@ -643,8 +674,10 @@ class _AreaCapturaState extends State<_AreaCaptura> {
             'cámaras y los nombres de todos los participantes, tus pestañas y '
             'la barra de tareas. Eligiendo el área una vez, solo se guarda la '
             'diapositiva.',
-            style: t.textTheme.bodySmall
-                ?.copyWith(color: t.colorScheme.outline, height: 1.45),
+            style: t.textTheme.bodySmall?.copyWith(
+              color: t.colorScheme.outline,
+              height: 1.45,
+            ),
           ),
           const SizedBox(height: 12),
           Row(

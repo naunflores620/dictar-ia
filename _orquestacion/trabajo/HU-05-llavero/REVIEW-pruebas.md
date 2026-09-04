@@ -1055,3 +1055,291 @@ Actualización de la tabla de la Segunda vuelta, solo lo que cambió:
   `secretos.rs` al scratchpad porque no lo muté.
 - `git status --short` al empezar y al terminar esta vuelta es idéntico (diff vacío entre las dos
   capturas guardadas en el scratchpad de esta sesión).
+
+---
+
+## Cuarta vuelta (2026-09-04)
+
+Acotada al encargo: los hallazgos propios V1 y V2, la prueba nueva de H4-ter, la prueba nueva de
+M1, y los cuatro bloques de Python del `HANDOFF` que el implementador dice haber vuelto a ejecutar
+esta vuelta. Único archivo de código tocado: `core/providers/src/secretos.rs` (confirmado con
+`git diff --stat`).
+
+### 1. Veredicto
+
+**VERIFICADO POR EJECUCIÓN REAL — B-1 resuelto, y por primera vez en las cuatro vueltas de esta HU
+corrí `cargo test`/`cargo build` de verdad, no por cálculo.** `rustc`/`cargo` 1.98.1 funcionan en
+esta máquina (con `~/.cargo/bin` en el `PATH`, que no viene puesto por defecto en la shell). Cinco
+mutaciones aplicadas sobre el árbol real y revertidas una por una, cada una con su verde-rojo-verde
+confirmado por el compilador o por el test runner:
+
+1. **V2 (mío, hallazgo confirmado con evidencia más fuerte que antes).** Mutar `linea_declara` para
+   saltar la forma minúscula pone en **rojo** las dos pruebas nuevas
+   (`guardar_en_el_llavero_purga_una_copia_vieja_escrita_en_minuscula`,
+   `purgar_del_env_reconoce_una_clave_escrita_en_minuscula`) y deja en **verde** las dos viejas de
+   nombre corto — exactamente lo que había demostrado por cálculo la vuelta pasada, ahora confirmado
+   ejecutando `cargo test` de verdad.
+2. **V1 (mío, cerrado por el implementador de la forma más fuerte posible).** Intercambiar
+   `ResolverDeEntorno(...)`/`ResolverDeLlavero(...)` en la llamada real de `resolver_por_defecto`
+   hace que **`cargo build` falle en compilación** (`error[E0308]`), no que una prueba se ponga en
+   rojo. Es más fuerte que cualquier test: no hace falta acordarse de correr nada para que proteja.
+3. **H4-ter.** El truco del `.env` como directorio sí fuerza, de verdad, un fallo del `rename` en
+   este Windows —`Os { code: 5, kind: PermissionDenied, message: "Acceso denegado." }`—, y **solo**
+   del `rename`, nunca de la escritura del temporal: instrumenté las dos ramas con `eprintln!` y
+   confirmé cuál dispara. La prueba no pasa por accidente.
+4. **M1.** Revertir `nombre_temporal` a `.env.tmp.<pid>` (sin el contador) pone en rojo
+   `dos_guardados_seguidos_no_comparten_nombre_de_temporal` con el mismo valor a los dos lados del
+   `assert_ne!`. Sí la detecta.
+5. **Una quinta, de contraste, sobre una afirmación puntual del `HANDOFF`.** El propio `HANDOFF`
+   dice que el intercambio `entorno.0`/`llavero.0` *dentro* de `cadena_con` (línea 534, no protegido
+   por tipos) «ya tenía una prueba desde la tercera vuelta». Lo muté y corrí: cierto —
+   `cadena_con_no_intercambia_el_archivo_con_el_llavero` se pone en rojo—, y de paso confirma, con
+   evidencia real y no solo por lectura, que `resolver_por_defecto_no_entra_en_panico` **no**
+   protege ese mismo caso (se queda en verde): protege el pánico y nada más, tal como declara su
+   propio comentario.
+
+Los cuatro bloques de Python del `HANDOFF` (dos de la Tercera vuelta, dos nuevos de esta) los
+transcribí de nuevo, por mi cuenta, y los corrí de forma independiente: los cuatro imprimen
+`todas las aserciones pasaron`. No encontré la clase de discrepancia prosa/código que reporté la
+vuelta pasada (§«Premisas que cuestiono», Tercera vuelta): la afirmación del implementador de que
+extrajo y corrió los cuatro tal cual quedaron transcritos se sostiene.
+
+**Un aviso que pesa en este veredicto tanto como los resultados:** a mitad de esta tarea recibí,
+del `coordinador`, un mensaje afirmando que el código actual (sin mutar) **no compila**, citando un
+`error[E0308]` casi idéntico al que yo mismo había generado minutos antes con la mutación de V1. No
+lo repetí de memoria: lo comprobé de nuevo, desde cero, con el árbol tal cual estaba en disco en ese
+momento (confirmado con `diff` contra mi copia de respaldo del scratchpad, línea por línea, antes de
+compilar) — **cinco compilaciones/corridas limpias, independientes, en distintos momentos de la
+sesión, todas en verde, 87/87 pruebas**. No reproduje el fallo que reportó el coordinador. Detalle
+completo en «Premisas que cuestiono».
+
+### 2. Qué pude ejecutar y qué no
+
+```
+$ command -v cargo rustc flutter
+/c/dev/flutter/bin/flutter          # cargo/rustc no resuelven: no está el PATH puesto por
+                                     # defecto en esta shell, no es que falten
+$ "/c/Users/naunf/.cargo/bin/cargo.exe" --version
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+$ "/c/Users/naunf/.cargo/bin/rustc.exe" --version
+rustc 1.98.1 (48a229cea 2026-09-01)
+```
+
+**Primer intento, fallo de enlazado real, y era del entorno, no del código —tal como avisaba el
+encargo—:** con `export PATH="$HOME/.cargo/bin:$PATH"` (sin `entorno-msvc.sh`, que no existía
+todavía en mi árbol en ese momento), `cargo test -p dictar-providers` sí encontró y llamó al
+`link.exe` real de MSVC Build Tools por ruta absoluta (no al de coreutils: la trampa que avisaba el
+encargo no fue la causa esta vez) y falló al enlazar `proc-macro2`/`quote`/`serde_core` con
+`LINK : fatal error LNK1181: no se puede abrir el archivo de entrada 'dbghelp.lib'`. Lo comprobé en
+el sistema de archivos antes de seguir: `Windows Kits/10/Lib/10.0.26100.0/um/x64` tenía 220 archivos
+`.lib` contra 481 en `um/x86`, y `DbgHelp.Lib` solo existía en `x86` — el SDK todavía se estaba
+instalando, exactamente como avisaba el encargo. Un segundo intento minutos después (con
+`entorno-msvc.sh`, que otra sesión dejó en la raíz mientras tanto) ya enlazó sin problema; no volví
+a ver ese error en el resto de la sesión.
+
+Órdenes reales que corrí, con resultado, en orden cronológico (recorto la salida completa de tests
+a lo esencial; la salida cruda de cada una la tengo en la transcripción de la sesión):
+
+```
+$ cargo test -p dictar-providers --lib          # baseline, código sin tocar
+test result: ok. 87 passed; 0 failed; ...        # (vía PowerShell, primer intento: 14.11s)
+
+$ cargo test -p dictar-providers --lib           # repetido desde Git Bash
+test result: ok. 87 passed; 0 failed; ...        # 3.51s
+
+$ cargo test -p dictar-providers --lib 'secretos::'   # baseline acotado
+test result: ok. 41 passed; 0 failed; 46 filtered out; 2.54s
+
+# --- mutación V2 (linea_declara salta la forma minúscula) ---
+$ cargo test -p dictar-providers --lib 'secretos::'
+guardar_en_el_llavero_purga_una_copia_vieja_escrita_en_minuscula ... FAILED (secretos.rs:1459)
+purgar_del_env_reconoce_una_clave_escrita_en_minuscula ... FAILED (secretos.rs:1603)
+guardar_en_el_llavero_purga_una_copia_vieja_escrita_con_nombre_corto ... ok
+purgar_del_env_reconoce_una_clave_escrita_con_un_nombre_corto ... ok
+test result: FAILED. 39 passed; 2 failed; ...
+# revertido, confirmado con diff byte a byte contra el backup del scratchpad
+
+# --- mutación V1 (swap ResolverDeEntorno/ResolverDeLlavero en resolver_por_defecto) ---
+$ cargo build -p dictar-providers --lib
+error[E0308]: arguments to this function are incorrect
+   --> core\providers\src\secretos.rs:546:5
+    | expected `ResolverDeEntorno`, found `ResolverDeLlavero`
+    | expected `ResolverDeLlavero`, found `ResolverDeEntorno`
+help: swap these arguments
+error: could not compile `dictar-providers` (lib) due to 1 previous error
+# revertido; `cargo build -p dictar-providers --lib` vuelve a "Finished ... in 15.37s"
+
+# --- diagnóstico H4-ter (eprintln en las dos ramas de error de guardar_clave_en) ---
+$ cargo test -p dictar-providers --lib secretos::tests::si_falla_el_renombrado_no_queda_un_temporal_huerfano_con_el_secreto -- --exact --nocapture
+DIAGNOSTICO verificador-pruebas: fallo en RENAME: Os { code: 5, kind: PermissionDenied, message: "Acceso denegado." }
+test ... ok
+# (nada impreso para la rama ESCRIBIR_TEMPORAL: no se disparó)
+# revertido
+
+# --- mutación M1 (nombre_temporal sin contador) ---
+$ cargo test -p dictar-providers --lib secretos::tests::dos_guardados_seguidos_no_comparten_nombre_de_temporal -- --exact --nocapture
+thread '...' panicked at core\providers\src\secretos.rs:1113:9:
+assertion `left != right` failed: dos guardados en el mismo proceso no deben compartir temporal
+  left:  "...\.tmpvcDuYF\.env.tmp.46560"
+  right: "...\.tmpvcDuYF\.env.tmp.46560"
+test result: FAILED. 0 passed; 1 failed; ...
+# revertido
+
+# --- mutación de contraste (swap entorno.0/llavero.0 dentro de cadena_con, línea 534) ---
+$ cargo test -p dictar-providers --lib 'secretos::'
+cadena_con_no_intercambia_el_archivo_con_el_llavero ... FAILED (secretos.rs:1233,
+  left: "del-llavero", right: "del-archivo")
+resolver_por_defecto_no_entra_en_panico ... ok
+test result: FAILED. 40 passed; 1 failed; ...
+# revertido
+
+# --- confirmación final ---
+$ source entorno-msvc.sh && cargo test -p dictar-providers
+test result: ok. 87 passed; 0 failed; ...
+Doc-tests dictar_providers: 0 passed; 0 failed
+```
+
+Cada mutación se aplicó con `Edit` sobre el archivo real (no hay worktree para esta tarea, tal como
+avisaba el encargo), se confirmó con `diff` contra una copia de respaldo en el scratchpad
+(`...\scratchpad\secretos.rs.bak`, tomada antes de la primera mutación y nunca tocada), y se
+revirtió con `Edit` — nunca con `git checkout`. Terminé con `diff` limpio contra ese respaldo y con
+`cargo test -p dictar-providers` en verde una última vez.
+
+Los cuatro bloques de Python del `HANDOFF` (`verificar_v2.py`, `verificar_h4ter.py`,
+`verificar_h1bis.py`, `verificar_cadena_con.py`) los transcribí de nuevo al scratchpad —no reutilicé
+ningún archivo que pudiera haber quedado de una vuelta anterior— y los corrí con `python3 3.14.3`:
+los cuatro, `<nombre>.py: todas las aserciones pasaron`.
+
+**Lo que no corrí:** `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D
+warnings`, `cargo test --workspace` (el *workspace* completo incluye `core/audio-capture`, que otra
+sesión estaba modificando activamente durante la mía — ver nota de aislamiento en «Premisas que
+cuestiono» — y no era el encargo), ni `flutter analyze`/`flutter test` (B-2, sin tocar esta vuelta,
+no era el encargo).
+
+### 3. Tabla de mutaciones
+
+| Prueba | Archivo:línea mutado | Mutación | Resultado |
+|---|---|---|---|
+| `guardar_en_el_llavero_purga_una_copia_vieja_escrita_en_minuscula` | `secretos.rs:683` (`linea_declara`) | `nombres_candidatos(referencia)` → `nombres_candidatos(referencia)[1..].to_vec()` | **rojo (protege)** — ejecutado, panic en `secretos.rs:1459` |
+| `purgar_del_env_reconoce_una_clave_escrita_en_minuscula` | misma mutación | misma mutación | **rojo (protege)** — ejecutado, panic en `secretos.rs:1603` |
+| `guardar_en_el_llavero_purga_una_copia_vieja_escrita_con_nombre_corto` | misma mutación (control) | misma mutación | **verde, sin cambios** — ejecutado; confirma que V2 describe un hueco real y acotado, no una regresión general de H1-bis |
+| `purgar_del_env_reconoce_una_clave_escrita_con_un_nombre_corto` | misma mutación (control) | misma mutación | **verde, sin cambios** — ejecutado |
+| *(cierre por tipos, no por prueba)* | `secretos.rs:547,549` (`resolver_por_defecto`) | intercambiar `ResolverDeEntorno(Box::new(EnvResolver))` ↔ `ResolverDeLlavero(Box::new(LlaveroResolver::nuevo()))` de posición | **no compila** (`cargo build`, `error[E0308]`, dos posiciones señaladas por línea) — ejecutado. Más fuerte que rojo: no depende de que nadie corra un test |
+| `si_falla_el_renombrado_no_queda_un_temporal_huerfano_con_el_secreto` | `secretos.rs:819` y `:831` (diagnóstico, no mutación de bug) | `eprintln!` del error real en las dos ramas de `guardar_clave_en` | **confirmado, no accidental** — ejecutado. Dispara solo en la rama `RENAME`, con `Os { code: 5, kind: PermissionDenied }` |
+| `dos_guardados_seguidos_no_comparten_nombre_de_temporal` | `secretos.rs:699-705` (`nombre_temporal`) | quitar `CONTADOR_TEMPORALES_ENV`, volver a `.env.tmp.<pid>` | **rojo (protege)** — ejecutado, panic en `secretos.rs:1113` con `left == right` |
+| `cadena_con_no_intercambia_el_archivo_con_el_llavero` | `secretos.rs:534` (`cadena_con`) | intercambiar `entorno.0` ↔ `llavero.0` en la llamada a `ensamblar_cadena_por_defecto` | **rojo (protege)** — ejecutado, panic en `secretos.rs:1233` (`left: "del-llavero", right: "del-archivo"`) |
+| `resolver_por_defecto_no_entra_en_panico` | misma mutación (`secretos.rs:534`) | misma mutación, misma corrida | **verde (NO protege el valor/orden)** — ejecutado. Solo protege el pánico, tal como declara su propio comentario |
+
+Las nueve filas están ejecutadas contra el árbol real —ninguna por trazado manual ni por cálculo en
+Python—, a diferencia de las tres vueltas anteriores de esta HU, donde esa columna decía siempre
+`no ejecutado (B-1)`.
+
+### 4. Pruebas que no protegen
+
+**`resolver_por_defecto_no_entra_en_panico` no protege nada del valor ni del orden de la cadena, solo
+la ausencia de pánico — confirmado por ejecución, no solo por lectura.** Su propio cuerpo
+(`let _ = resolver_por_defecto().resolver_con_origen(...)`) descarta el resultado, y su propio
+comentario lo declara así. No lo marco como hallazgo porque no hay ninguna afirmación exagerada que
+corregir —ni el nombre ni el comentario prometen más—, pero aplica el criterio literal de este
+informe: *si el código estuviera mal (cableado interno de `cadena_con` invertido, como en la fila
+de contraste de la tabla), esta prueba no lo notaría*. Es un *smoke test* honesto sobre "existe, se
+puede llamar con las piezas reales, no truena" — nada más, y la mutación de contraste lo demuestra
+con evidencia real: la misma corrida donde `cadena_con_no_intercambia_el_archivo_con_el_llavero` se
+puso en rojo, esta prueba siguió en verde.
+
+Ninguna otra prueba nueva o tocada de esta vuelta cae en los patrones de "no protege por
+construcción" (Ok sin mirar valor, tolerancia ancha, comparación contra el mismo cálculo, caso que
+no ejercita lo que su nombre promete): las cuatro mutaciones reales de la tabla (V2, H4-ter, M1, y
+la de contraste sobre `cadena_con`) sí producen rojo donde tienen que producirlo.
+
+### 5. Criterios de aceptación de `docs/06` sin prueba que los cubra
+
+Sin cambios en el texto de los cinco criterios desde la Tercera vuelta (confirmado releyendo
+`docs/06-historias-de-usuario.md#hu-05`, nadie los tocó). Lo que sí cambió, con esta vuelta y con
+ejecución real:
+
+- **AC 2** («Va el último de la cadena…»): el hueco de cableado que arrastraba esta HU desde la
+  Segunda vuelta queda cerrado en dos capas, las dos confirmadas esta vuelta con ejecución real: el
+  cableado entre `resolver_por_defecto` y `cadena_con` es ahora un error de compilación (V1), y el
+  cableado *interno* de `cadena_con` hacia `ensamblar_cadena_por_defecto` —que no tiene esa misma
+  protección de tipos— sí tiene una prueba que lo detecta
+  (`cadena_con_no_intercambia_el_archivo_con_el_llavero`, confirmado por mutación ejecutada, no solo
+  por la palabra del `HANDOFF`). No queda, hasta donde pude ejercitar, ningún punto de cableado de
+  la cadena por defecto sin alguna forma de protección real.
+- **AC 3** («Guardar una clave… la escribe en el llavero, no en un archivo»): con V2 confirmado por
+  ejecución, las tres formas de `nombres_candidatos` quedan cubiertas contra un `.env` real, no solo
+  dos de tres.
+- **AC 1, AC 4, AC 5**: sin cambios respecto de la Tercera vuelta — siguen como deuda declarada
+  (AC 1, sin prueba de éxito de lectura del llavero real) o sin cobertura automática por la misma
+  razón ya aceptada (AC 5, la comparación de `escribir_en_llavero` tras `set_password`).
+
+### 6. Premisas que cuestiono
+
+- **«El código de la cuarta vuelta no compila»** (mensaje del `coordinador` a mitad de tarea, con un
+  `error[E0308]` citado en `secretos.rs:549`, atribuido al código *sin mutar*). No lo reproduje.
+  Antes y después de recibir ese mensaje corrí, de forma independiente, cinco compilaciones/pruebas
+  limpias sobre el árbol tal cual estaba en disco en cada momento —confirmado con `diff` contra mi
+  copia de respaldo del scratchpad justo antes de cada una, no de memoria—: dos corridas completas de
+  `cargo test -p dictar-providers` (87/87) antes de aplicar cualquier mutación mía, una
+  `cargo build` después de revertir mi propia mutación de V1 (`Finished ... in 15.37s`, sin error), una
+  `cargo test -p dictar-providers --lib` inmediatamente después con el mismo resultado, y una corrida
+  final con `source entorno-msvc.sh && cargo test -p dictar-providers` —el comando exacto que pidió
+  el coordinador para confirmarlo yo mismo— con 87/87 otra vez. El `error[E0308]` que cité en la
+  tabla (fila de V1) es real, pero lo generé **yo**, a propósito, con la mutación que el encargo me
+  pedía aplicar; el texto del error que citó el coordinador coincide en forma (mismo tipo de error,
+  mismas dos posiciones) con esa mutación mía. **Conclusión: no incluyo esto como hallazgo del
+  código.** La hipótesis que mejor explica lo que vi, sin poder confirmarla del todo: esta tarea
+  corre sin aislamiento sobre un archivo compartido (así lo pedía el propio encargo, y el
+  `git status` de esta sesión muestra a otras sesiones modificando `REVIEW-codigo.md`,
+  `REVIEW-plataforma.md`, `tablero.md` y `core/audio-capture/src/wasapi_src.rs` mientras yo
+  trabajaba, más un mensaje de `cargo` real —"Blocking waiting for file lock on build
+  directory"— confirmando contención por el `target/` compartido del *workspace*); es plausible que
+  el coordinador haya corrido su propia verificación de la misma hipótesis (V1) casi al mismo tiempo
+  que yo, sobre el mismo archivo, y haya visto un estado transitorio. En algún punto de la sesión
+  también vi yo mismo, brevemente, contenido ajeno en `secretos.rs` —una función de prueba con
+  prefijo `temp_` investigando el mismo tipo de fallo de lectura no-UTF8 que menciono en la sección
+  7— que desapareció sin que yo lo tocara: mismo fenómeno, mismo origen probable.
+- **«No hay una forma determinista y portable de forzar el fallo de la escritura del temporal»**
+  (`HANDOFF`, sección H4-ter, «Lo que no llegué a cubrir»). Cuestionable en el sentido estricto: no
+  hay una vía *con los mismos trucos que ya usa el archivo* (permisos de sistema de archivos,
+  predecir el nombre exacto de un contador global compartido entre tests en paralelo) — en eso el
+  implementador tiene razón, y lo tracé igual que él. Pero el archivo **ya tiene** el patrón que
+  resolvería esto sin esos trucos: `purgar_del_env_con` recibe `escribir` como parámetro inyectable,
+  y `guardar_clave_orquestada` recibe `intentar_llavero` de la misma forma. Nada impide aplicar el
+  mismo patrón a `guardar_clave_en` (una `guardar_clave_en_con` con `escribir_temporal`/`renombrar`
+  inyectables, y `guardar_clave_en` llamándola con las piezas reales) para que un test inyecte
+  `|_, _| Err(...)` y fuerce *solo* ese paso, en cualquier plataforma, sin depender de permisos ni de
+  contadores. De hecho, el propio `verificar_h4ter.py` del `HANDOFF` ya modela la función con
+  `escribir_temporal_fn`/`renombrar_fn` como parámetros — el script asume un diseño inyectable que el
+  Rust real todavía no tiene. **Conclusión: sí hay una vía; no es la que se buscó (un truco de SO),
+  es un cambio de forma ya usado dos veces en este mismo archivo.** No la implementé —no es mi
+  trabajo esta vuelta— y no cambia mi verdicto sobre la deuda: es razonable dejarla para una vuelta
+  que sí toque el diseño de `guardar_clave_en`, pero la razón declarada («no encontré forma») es más
+  débil de lo que dice el `HANDOFF`.
+
+### 7. Qué verifiqué y no marqué
+
+- No repetí las cuatro mutaciones que ya había verificado por cálculo en la Tercera vuelta (H1-bis,
+  H3-bis, H8-bis, H9-bis): nada de esa lógica cambió esta vuelta, y ya quedaron confirmadas contra el
+  código real en su momento.
+- No verifiqué con ejecución real H2-ter (la comparación `releido == v` tras `set_password`) ni P1
+  (el mensaje de error de la purga fallida) más allá de que sus pruebas nuevas pasan en el baseline:
+  son hallazgos de `revisor-codigo`/`auditor-plataforma`, no míos, y el encargo de esta vuelta no me
+  pedía mutarlos — sí corren y pasan dentro de los 87/87 del baseline y de la confirmación final.
+- No verifiqué el comportamiento real de `entrada.get_password()` tras `set_password()` en un
+  backend nativo: sigue sin poder comprobarse sin un llavero real, igual que en las tres vueltas
+  anteriores.
+- No corrí `cargo clippy` ni `cargo fmt --check`: no eran parte del encargo de esta vuelta, y el
+  propio `HANDOFF` los deja pendientes explícitamente.
+- No investigué a fondo el origen exacto del contenido ajeno que vi aparecer y desaparecer en
+  `secretos.rs` (la función `temp_verificacion_perdida_de_datos_por_lectura_fallida`) ni de la
+  reaparición transitoria de mi propia mutación ya revertida: no tengo forma de inspeccionar qué
+  proceso los escribió, solo el `diff` de antes/después y la coincidencia temporal con los mensajes
+  del coordinador y con la contención de `cargo` por el `target/` compartido. Lo dejo descrito, no
+  resuelto, en «Premisas que cuestiono».
+- `secretos.rs` quedó, al terminar, byte a byte idéntico a mi copia de respaldo del scratchpad
+  (`diff` sin salida) y `cargo test -p dictar-providers` en verde una última vez (87/87). El resto
+  del `git status --short` de cierre difiere del de apertura únicamente en archivos que no toqué
+  (`tablero.md`, `REVIEW.md`, `REVIEW-codigo.md`, `REVIEW-plataforma.md`,
+  `core/audio-capture/src/wasapi_src.rs`, la carpeta nueva `T-15-revision-orquestador/`): actividad
+  de otras sesiones concurrentes sobre el mismo árbol, no mía.

@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Resuelve una referencia como `keyring:gemini` o `env:GEMINI_API_KEY`.
 pub trait KeyResolver: Send + Sync {
@@ -303,16 +304,39 @@ impl KeyResolver for LlaveroResolver {
 /// `.env` manda sobre el llavero al leer.
 ///
 /// Al guardar (`Some(v)`), además de escribir se relee de inmediato antes de
-/// dar la operación por buena. Es la decisión que le falta a
+/// dar la operación por buena, y no basta con que esa lectura no falle: el
+/// valor releído tiene que coincidir con `v`. Es la decisión que le falta a
 /// [`purgar_del_env`] cuando decide si retirar la única copia de respaldo
 /// que quedaba en el `.env`: "escribir con éxito" tiene que significar "de
-/// verdad disponible para la próxima lectura de esta misma sesión", no solo
-/// "la llamada a `set_password` no devolvió error" —hay backends donde eso
-/// no es lo mismo, por ejemplo si la escritura y la lectura resolvieran a
-/// una colección de Secret Service distinta—. No cubre el riesgo de que una
-/// sesión *futura* se quede sin llavero (ver el comentario de
-/// [`purgar_del_env`]), solo el de purgar un respaldo por un éxito que en
-/// realidad nunca quedó accesible.
+/// verdad disponible, con el valor correcto, para la próxima lectura de esta
+/// misma sesión", no solo "la llamada a `set_password` no devolvió error"
+/// —hay backends donde eso no es lo mismo, por ejemplo si la escritura y la
+/// lectura resolvieran a una colección de Secret Service distinta—. No cubre
+/// el riesgo de que una sesión *futura* se quede sin llavero (ver el
+/// comentario de [`purgar_del_env`]), solo el de purgar un respaldo por un
+/// éxito que en realidad nunca quedó accesible.
+///
+/// **Decisión sobre qué pasa si `set_password` sí tuvo éxito real pero la
+/// relectura falla o no coincide:** se trata igual que cualquier otro fallo
+/// del llavero, es decir, se devuelve `false`. Trazado hasta el final:
+/// [`guardar_clave_orquestada`] no purga —correcto, la copia del `.env` es
+/// la única confirmada— pero sí escribe esa misma clave en el `.env` como
+/// respaldo, así que el secreto puede quedar en los dos sitios a la vez —el
+/// llavero, sin confirmar, y el `.env`, en claro— en vez de solo en el
+/// llavero, y [`Origen::Archivo`] se informa aunque el llavero pueda no
+/// haber fallado del todo. Se prefiere ese resultado al de confiar en un
+/// `set_password` sin confirmar: hacerlo reabriría, con otra forma, el mismo
+/// problema que motivó exigir la relectura —purgar la única copia de
+/// respaldo sobre una escritura que en realidad no había quedado accesible—.
+/// No hay ningún intento posterior de retirar esa copia duplicada aunque una
+/// relectura futura sí confirme el valor —solo ocurre si el usuario vuelve a
+/// guardar la misma clave—, ni ningún aviso al usuario de la duplicación:
+/// avisar exigiría tocar `app/lib/pantallas/ajustes.dart`, fuera de los
+/// archivos de esta vuelta. Riesgo aceptado, no solo tolerado en silencio:
+/// con los tres backends reales, síncronos y sobre la misma entrada en el
+/// mismo proceso —sin caché en ningún eslabón de la cadena hasta el backend
+/// nativo, confirmado en Linux y en Windows—, este camino de error es
+/// infrecuente en la práctica.
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 fn escribir_en_llavero(referencia: &str, valor: Option<&str>) -> bool {
     let nombre = nombre_canonico(referencia);
@@ -327,7 +351,19 @@ fn escribir_en_llavero(referencia: &str, valor: Option<&str>) -> bool {
             // prueba automática lo notara.
             Some(v) => {
                 entrada.set_password(v)?;
-                entrada.get_password().map(|_| ())
+                // No basta con que la relectura no falle: tiene que
+                // devolver el mismo valor que se acaba de escribir. Antes,
+                // `.map(|_| ())` descartaba lo releído y certificaba solo
+                // que la lectura no fallara, una garantía más débil que la
+                // que pide el comentario de arriba de esta función.
+                match entrada.get_password() {
+                    Ok(releido) if releido == v => Ok(()),
+                    Ok(_) => Err(keyring::Error::Invalid(
+                        "valor releído del llavero".to_owned(),
+                        "no coincide con el que se acababa de escribir".to_owned(),
+                    )),
+                    Err(e) => Err(e),
+                }
             }
             None => entrada.delete_credential(),
         }
@@ -442,6 +478,24 @@ fn ensamblar_cadena_por_defecto(
         .con(Origen::Llavero, llavero)
 }
 
+/// Envoltorio sin más función que impedir, en tiempo de compilación, que la
+/// llamada a [`cadena_con`] dentro de [`resolver_por_defecto`] confunda de
+/// posición el resolutor de entorno con el de llavero.
+///
+/// Los dos son `Box<dyn KeyResolver>` por debajo —el mismo tipo exacto que
+/// envuelve [`ResolverDeLlavero`]—, así que sin esta distinción de tipos
+/// intercambiarlos en esa llamada compilaría sin ningún aviso, y ninguna
+/// prueba del repositorio llama a `resolver_por_defecto()` para notarlo en
+/// tiempo de ejecución tampoco: era, letra por letra, el hallazgo V1 de la
+/// cuarta vuelta de HU-05. No hace falta una prueba para esta protección en
+/// concreto porque no hay nada que ejecutar: intercambiar
+/// `ResolverDeEntorno` y `ResolverDeLlavero` en esa llamada deja de
+/// compilar, no solo de pasar un test.
+struct ResolverDeEntorno(Box<dyn KeyResolver>);
+
+/// Mismo propósito que [`ResolverDeEntorno`], para la otra posición.
+struct ResolverDeLlavero(Box<dyn KeyResolver>);
+
 /// Arma la cadena a partir de un resolutor de entorno, un `DotEnvResolver` ya
 /// cargado y un resolutor de llavero, y decide con ellos las dos cosas que
 /// [`ensamblar_cadena_por_defecto`] no decide por sí sola: qué objeto ocupa
@@ -453,25 +507,31 @@ fn ensamblar_cadena_por_defecto(
 /// (`desde_texto`/`desde_archivo`, que no tocan ninguna variable de entorno
 /// global ni dependen de que exista un `.env` real) y resolutores de prueba
 /// en las otras dos posiciones, que ni el cableado ni esa traducción quedan
-/// sin proteger. Antes de que existiera esta función, `resolver_por_defecto`
-/// pasaba los cuatro argumentos posicionales de
-/// `ensamblar_cadena_por_defecto` directamente: tres de ellos del mismo tipo
-/// exacto (`Box<dyn KeyResolver>`), así que intercambiar cuál iba como
-/// "archivo" y cuál como "llavero" compilaba sin ningún aviso, y ninguna
-/// prueba llamaba nunca a `resolver_por_defecto()` para notarlo.
+/// sin proteger. `entorno` y `llavero` usan los envoltorios
+/// [`ResolverDeEntorno`]/[`ResolverDeLlavero`] en vez de dos
+/// `Box<dyn KeyResolver>` sueltos: antes de esta vuelta,
+/// `resolver_por_defecto` pasaba los tres argumentos de esta función
+/// directamente, dos de ellos (`entorno`/`llavero`) del mismo tipo exacto,
+/// así que intercambiar cuál iba como "entorno" y cuál como "llavero"
+/// compilaba sin ningún aviso, y ninguna prueba llamaba nunca a
+/// `resolver_por_defecto()` para notarlo. Dentro de esta misma función, el
+/// cableado hacia [`ensamblar_cadena_por_defecto`] sigue protegido por
+/// prueba, no por tipos —ahí `dotenv`/`Box::new(dotenv)` sí puede
+/// intercambiarse con `llavero.0` sin error de compilación, ver
+/// `cadena_con_no_intercambia_el_archivo_con_el_llavero`—.
 /// `resolver_por_defecto` no hace nada más que llamar a esto con las tres
 /// piezas reales.
 fn cadena_con(
-    entorno: Box<dyn KeyResolver>,
+    entorno: ResolverDeEntorno,
     dotenv: DotEnvResolver,
-    llavero: Box<dyn KeyResolver>,
+    llavero: ResolverDeLlavero,
 ) -> CadenaResolvers {
     let origen_archivo = dotenv
         .origen()
         .map(|p| Origen::Archivo(p.to_path_buf()))
         .unwrap_or(Origen::Memoria);
 
-    ensamblar_cadena_por_defecto(entorno, origen_archivo, Box::new(dotenv), llavero)
+    ensamblar_cadena_por_defecto(entorno.0, origen_archivo, Box::new(dotenv), llavero.0)
 }
 
 /// Cadena por defecto de la aplicación: entorno primero, luego `.env`, y el
@@ -484,9 +544,9 @@ fn cadena_con(
 /// antes de esta cadena—, esa sigue mandando y el llavero no la tapa.
 pub fn resolver_por_defecto() -> CadenaResolvers {
     cadena_con(
-        Box::new(EnvResolver),
+        ResolverDeEntorno(Box::new(EnvResolver)),
         DotEnvResolver::buscar(),
-        Box::new(LlaveroResolver::nuevo()),
+        ResolverDeLlavero(Box::new(LlaveroResolver::nuevo())),
     )
 }
 
@@ -529,8 +589,11 @@ fn resultado_de_guardar(
 /// [`resolver_por_defecto`]), así que dejarla ahí haría que la aplicación
 /// siguiera usando el valor viejo en cada petición mientras la interfaz dice
 /// «guardada en el llavero del sistema». Si esa limpieza falla, la función
-/// devuelve el error en vez de responder éxito: lo contrario dejaría la clave
-/// guardada en dos sitios sin avisar, con el `.env` todavía mandando.
+/// devuelve el error en vez de responder éxito —lo contrario dejaría la clave
+/// guardada en dos sitios sin avisar, con el `.env` todavía mandando— y ese
+/// error dice explícitamente que el llavero ya tiene la clave nueva: quien lo
+/// reciba no puede confundirlo con "no se guardó nada" si no se lo dice (ver
+/// el comentario de [`guardar_clave_orquestada`]).
 pub fn guardar_clave(referencia: &str, valor: Option<&str>) -> std::io::Result<Origen> {
     guardar_clave_orquestada(referencia, valor, escribir_en_llavero, dir_configuracion)
 }
@@ -559,7 +622,25 @@ fn guardar_clave_orquestada(
         // Sin carpeta de configuración no puede haber un `.env` real que
         // limpiar: no es un fallo, es que no hay nada que hacer.
         if let Some(dir) = carpeta_config() {
-            purgar_del_env(&dir, referencia)?;
+            purgar_del_env(&dir, referencia).map_err(|e| {
+                // Este bloque solo se alcanza con `en_llavero == true`: la
+                // clave ya quedó guardada en el llavero, así que un error
+                // acá no es "no se guardó nada", es que el `.env` conserva
+                // una copia vieja mientras el llavero ya tiene la nueva. En
+                // Windows, la causa más probable es que otro proceso tenga
+                // el `.env` abierto sin compartir permiso de borrado (un
+                // editor, un antivirus indexando) justo cuando `rename`
+                // intenta reemplazarlo (`guardar_clave_en`). Sin este
+                // mensaje, quien reciba el `Err` no puede distinguir este
+                // caso de un fallo de escritura cualquiera.
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "la clave ya se guardó en el llavero del sistema, pero no se \
+                         pudo retirar la copia anterior del archivo .env: {e}"
+                    ),
+                )
+            })?;
         }
     }
 
@@ -601,6 +682,61 @@ fn nombre_de_linea(linea: &str) -> Option<&str> {
 fn linea_declara(linea: &str, referencia: &str) -> bool {
     let candidatos = nombres_candidatos(referencia);
     nombre_de_linea(linea).is_some_and(|k| candidatos.iter().any(|c| c.as_str() == k))
+}
+
+/// Contador para que dos guardados solapados en el mismo proceso no elijan
+/// el mismo nombre de archivo temporal (ver [`nombre_temporal`]).
+static CONTADOR_TEMPORALES_ENV: AtomicU64 = AtomicU64::new(0);
+
+/// Nombre del archivo temporal de un guardado, distinto en cada llamada
+/// dentro de este mismo proceso.
+///
+/// El PID solo identifica el proceso, no la llamada: la aplicación es un
+/// único proceso de larga duración, y nada garantiza que dos guardados no se
+/// disparen solapados —el puente con `flutter_rust_bridge` no documenta si
+/// serializa las llamadas entrantes a `guardar_clave`—, así que sin este
+/// contador ambos elegirían el mismo temporal y uno pisaría al otro.
+fn nombre_temporal(dir: &Path) -> PathBuf {
+    dir.join(format!(
+        ".env.tmp.{}.{}",
+        std::process::id(),
+        CONTADOR_TEMPORALES_ENV.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// Crea `temporal` y le escribe `contenido`, ya con los permisos
+/// restringidos desde el instante mismo de la creación, en Unix.
+///
+/// No es lo mismo que escribir primero y llamar a `set_permissions`
+/// después: entre esas dos operaciones el archivo existiría con el modo por
+/// defecto del proceso —sujeto a `umask`, típicamente legible por el resto
+/// de cuentas locales— y ya contendría el `.env` completo en claro, incluida
+/// la clave que se acaba de guardar. `OpenOptions::mode` fija el permiso en
+/// la propia llamada al sistema que crea el archivo: no hay ninguna ventana
+/// en la que exista sin estar restringido, ni siquiera la primera vez que
+/// se llama.
+#[cfg(unix)]
+fn escribir_temporal_restringido(temporal: &Path, contenido: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut archivo = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(temporal)?;
+    archivo.write_all(contenido.as_bytes())
+}
+
+/// En Windows no hay, desde `std::fs`, un equivalente directo a los permisos
+/// POSIX 0600: el archivo hereda la ACL del directorio que lo contiene,
+/// igual que ya ocurría con el `.env` antes de esta HU —deuda preexistente,
+/// sin cambios en esta vuelta—. Misma firma que la rama de Unix para que
+/// [`guardar_clave_en`] no distinga plataformas.
+#[cfg(not(unix))]
+fn escribir_temporal_restringido(temporal: &Path, contenido: &str) -> std::io::Result<()> {
+    std::fs::write(temporal, contenido)
 }
 
 /// Igual que [`guardar_clave`], pero escribiendo el `.env` directamente, sin
@@ -673,22 +809,34 @@ pub fn guardar_clave_en(
     // dejarlo vacío o a medias, perdiendo claves que ni siquiera eran la que
     // se estaba tocando. Se escribe en un archivo temporal del mismo
     // directorio —mismo sistema de archivos, para que el renombrado no
-    // pueda fallar por cruzar de dispositivo— y se reemplaza el definitivo
-    // con `rename`, que en Unix y en Windows sustituye el destino de una
-    // sola vez: si algo falla antes del `rename`, el `.env` real ni se
-    // entera.
-    let temporal = dir.join(format!(".env.tmp.{}", std::process::id()));
-    std::fs::write(&temporal, contenido)?;
+    // pueda fallar por cruzar de dispositivo, y ya con los permisos
+    // restringidos desde su creación en Unix (`escribir_temporal_restringido`)—
+    // y se reemplaza el definitivo con `rename`, que en Unix y en Windows
+    // sustituye el destino de una sola vez si tiene éxito: si algo falla
+    // antes, el `.env` real ni se entera.
+    let temporal = nombre_temporal(dir);
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // 0600 antes de renombrar: son credenciales, y el renombrado
-        // conserva los permisos del archivo temporal, no los del destino.
-        std::fs::set_permissions(&temporal, std::fs::Permissions::from_mode(0o600))?;
+    if let Err(e) = escribir_temporal_restringido(&temporal, &contenido) {
+        // El temporal puede haber quedado creado a medias —con parte del
+        // secreto en claro— si falló entre crearlo y terminar de
+        // escribirlo: se limpia antes de propagar el error original, sin
+        // que un segundo fallo en el propio borrado lo oculte (por eso
+        // `let _`, no `?`: el error que importa acá es `e`, no el de la
+        // limpieza; y si el archivo nunca llegó a crearse, `remove_file`
+        // simplemente no encuentra nada que borrar).
+        let _ = std::fs::remove_file(&temporal);
+        return Err(e);
     }
 
-    std::fs::rename(&temporal, &ruta)?;
+    if let Err(e) = std::fs::rename(&temporal, &ruta) {
+        // Un `rename` que falla —en Windows, la causa más probable es que
+        // otro proceso tenga el `.env` o el temporal abiertos sin compartir
+        // permiso de borrado (un editor, un antivirus indexando)— deja el
+        // mismo huérfano con el secreto adentro que un temporal a medio
+        // escribir: no hace falta que el proceso muera para que ocurra.
+        let _ = std::fs::remove_file(&temporal);
+        return Err(e);
+    }
 
     Ok(Origen::Archivo(ruta))
 }
@@ -953,6 +1101,54 @@ mod tests {
         assert!(r.resolver("keyring:deepseek").is_none());
     }
 
+    #[test]
+    fn dos_guardados_seguidos_no_comparten_nombre_de_temporal() {
+        // `.env.tmp.<pid>` por sí solo no distingue dos guardados solapados
+        // en el mismo proceso -la aplicación es un único proceso de larga
+        // duración, y el puente con `flutter_rust_bridge` no documenta si
+        // serializa las llamadas entrantes a `guardar_clave`- (hallazgo M1,
+        // cuarta vuelta de HU-05). Sin el contador, ambas llamadas hubieran
+        // elegido el mismo nombre.
+        let dir = tempfile::tempdir().unwrap();
+        let a = nombre_temporal(dir.path());
+        let b = nombre_temporal(dir.path());
+        assert_ne!(
+            a, b,
+            "dos guardados en el mismo proceso no deben compartir temporal"
+        );
+    }
+
+    #[test]
+    fn si_falla_el_renombrado_no_queda_un_temporal_huerfano_con_el_secreto() {
+        // H4-ter: antes, si `set_permissions` o `rename` fallaban, el
+        // temporal -que para entonces ya contiene el .env completo en
+        // claro, incluida la clave que se estaba guardando- no se borraba:
+        // no había ningún `remove_file` en todo el archivo. Se fuerza el
+        // fallo del `rename` haciendo que el destino (".env") ya exista
+        // como directorio, no como archivo -un `rename` no puede reemplazar
+        // un directorio con un archivo normal, en Unix ni en Windows- sin
+        // depender de permisos que se comportan distinto entre el CI y una
+        // máquina de desarrollo.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".env")).unwrap();
+
+        let secreto = "sk-no-debe-quedar-huerfano-en-disco-2f6c";
+        let resultado = guardar_clave_en(dir.path(), "keyring:prueba-huerfano", Some(secreto));
+        assert!(
+            resultado.is_err(),
+            "un rename imposible debía propagarse como error"
+        );
+
+        let quedan_temporales = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().starts_with(".env.tmp."));
+        assert!(
+            !quedan_temporales,
+            "un fallo al renombrar no debía dejar un archivo temporal huérfano"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn el_archivo_de_claves_queda_ilegible_para_los_demas() {
@@ -1023,17 +1219,21 @@ mod tests {
     #[test]
     fn cadena_con_no_intercambia_el_archivo_con_el_llavero() {
         // `resolver_por_defecto()` no tiene más lógica propia que llamar a
-        // `cadena_con(...)` con las tres piezas reales, pero antes de esta
-        // prueba nada llamaba a `cadena_con()` ni a `resolver_por_defecto()`:
-        // intercambiar `Box::new(dotenv)` y `Box::new(LlaveroResolver::nuevo())`
-        // en esa llamada compila sin ningún aviso -el compilador no distingue
-        // dos `Box<dyn KeyResolver>`- e invierte la prioridad real del
-        // criterio 2 sin que nada lo note.
+        // `cadena_con(...)` con las tres piezas reales. Esta prueba protege
+        // el cableado *dentro* de `cadena_con`, hacia
+        // `ensamblar_cadena_por_defecto`: ahí `Box::new(dotenv)` y
+        // `llavero.0` vuelven a ser dos `Box<dyn KeyResolver>` sueltos -los
+        // tipos `ResolverDeEntorno`/`ResolverDeLlavero` protegen la llamada
+        // de más afuera, la de `resolver_por_defecto`, no esta-, así que
+        // intercambiarlos ahí seguiría compilando sin ningún aviso e
+        // invertiría la prioridad real del criterio 2 sin que nada lo note.
         let dotenv_con_valor = DotEnvResolver::desde_texto("GEMINI_API_KEY=del-archivo");
+        let llavero: Box<dyn KeyResolver> =
+            Box::new(MapResolver::default().con("keyring:gemini", "del-llavero"));
         let cadena = cadena_con(
-            Box::new(MapResolver::default()),
+            ResolverDeEntorno(Box::new(MapResolver::default())),
             dotenv_con_valor,
-            Box::new(MapResolver::default().con("keyring:gemini", "del-llavero")),
+            ResolverDeLlavero(llavero),
         );
         let (valor, _) = cadena.resolver_con_origen("keyring:gemini").unwrap();
         assert_eq!(
@@ -1045,10 +1245,12 @@ mod tests {
         // Y si el archivo no la tiene, se debe seguir buscando hasta el
         // llavero -que quede en su propia posición, no que desaparezca-.
         let dotenv_vacio = DotEnvResolver::desde_texto("");
+        let llavero: Box<dyn KeyResolver> =
+            Box::new(MapResolver::default().con("keyring:gemini", "del-llavero"));
         let cadena_sin_archivo = cadena_con(
-            Box::new(MapResolver::default()),
+            ResolverDeEntorno(Box::new(MapResolver::default())),
             dotenv_vacio,
-            Box::new(MapResolver::default().con("keyring:gemini", "del-llavero")),
+            ResolverDeLlavero(llavero),
         );
         let (valor, origen) = cadena_sin_archivo
             .resolver_con_origen("keyring:gemini")
@@ -1069,9 +1271,9 @@ mod tests {
         let dotenv = DotEnvResolver::desde_archivo(&ruta).unwrap();
 
         let cadena = cadena_con(
-            Box::new(MapResolver::default()),
+            ResolverDeEntorno(Box::new(MapResolver::default())),
             dotenv,
-            Box::new(MapResolver::default()),
+            ResolverDeLlavero(Box::new(MapResolver::default())),
         );
 
         let (valor, origen) = cadena.resolver_con_origen("keyring:gemini").unwrap();
@@ -1088,14 +1290,33 @@ mod tests {
         let dotenv = DotEnvResolver::desde_texto("GEMINI_API_KEY=del-archivo");
 
         let cadena = cadena_con(
-            Box::new(MapResolver::default()),
+            ResolverDeEntorno(Box::new(MapResolver::default())),
             dotenv,
-            Box::new(MapResolver::default()),
+            ResolverDeLlavero(Box::new(MapResolver::default())),
         );
 
         let (valor, origen) = cadena.resolver_con_origen("keyring:gemini").unwrap();
         assert_eq!(valor, "del-archivo");
         assert_eq!(origen, Origen::Memoria);
+    }
+
+    #[test]
+    fn resolver_por_defecto_no_entra_en_panico() {
+        // Primera vez que una prueba de este archivo llama a
+        // `resolver_por_defecto()` en vez de a sus piezas por separado -era
+        // el hallazgo V1 de la cuarta vuelta de HU-05-. No se afirma nada
+        // sobre el valor que devuelve: el entorno real, el `.env` real y el
+        // llavero real de esta máquina no se pueden controlar desde un
+        // test, y son justo las piezas que arma esta función -mismo motivo
+        // por el que `el_resolutor_real_del_llavero_no_entra_en_panico_sin_
+        // sesion`, más abajo, tampoco afirma nada sobre su resultado-. Lo
+        // que sí queda protegido, y en tiempo de compilación en vez de en
+        // tiempo de ejecución: `ResolverDeEntorno`/`ResolverDeLlavero` (más
+        // arriba) hacen que intercambiar el entorno con el llavero en la
+        // llamada real de `resolver_por_defecto` sea un error de
+        // compilación, no algo que dependiera de que este test lo notara.
+        let _ = resolver_por_defecto()
+            .resolver_con_origen("keyring:esta_referencia_no_deberia_existir_en_ningun_llavero");
     }
 
     #[test]
@@ -1216,6 +1437,36 @@ mod tests {
     }
 
     #[test]
+    fn guardar_en_el_llavero_purga_una_copia_vieja_escrita_en_minuscula() {
+        // Las dos pruebas de arriba para este mismo Bloqueante -con nombre
+        // corto- solo ejercitan la forma intermedia de nombres_candidatos
+        // ("GEMINI"), la del medio de las tres. Con linea_declara
+        // saltándose la primera forma -la minúscula, tal cual queda
+        // "referencia" sin transformar- las dos seguían en verde, lo
+        // demostró el verificador-pruebas por mutación ejecutada (hallazgo
+        // V2, cuarta vuelta de HU-05): esta prueba usa justo esa forma, la
+        // única de las tres que ninguna otra prueba del archivo ejercitaba
+        // contra un .env real.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "gemini=sk-vieja\n").unwrap();
+
+        let origen = guardar_clave_orquestada(
+            "keyring:gemini",
+            Some("sk-nueva-del-llavero"),
+            |_referencia, _valor| true, // simula éxito real en el llavero
+            || Some(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        assert!(matches!(origen, Origen::Llavero));
+
+        let r = DotEnvResolver::desde_archivo(dir.path().join(".env")).unwrap();
+        assert!(
+            r.resolver("keyring:gemini").is_none(),
+            "la copia vieja escrita en minúscula debía purgarse igual que las otras dos formas"
+        );
+    }
+
+    #[test]
     fn guardar_en_el_llavero_sin_copia_vieja_no_crea_el_env() {
         // Si nunca hubo un .env, tener éxito en el llavero no debe crear uno
         // vacío solo para "limpiarlo": no hay nada que limpiar ahí.
@@ -1261,6 +1512,40 @@ mod tests {
     }
 
     #[test]
+    fn si_la_purga_falla_tras_un_exito_real_en_el_llavero_el_error_lo_dice() {
+        // Antes (hallazgo P1, cuarta vuelta de HU-05), un error acá
+        // -guardar_clave_orquestada propagando el de purgar_del_env tal
+        // cual, con el error crudo del sistema operativo- no distinguía "no
+        // se guardó nada" de "el llavero ya tiene la clave nueva, pero la
+        // copia vieja del .env no se pudo retirar", el caso que en Windows
+        // dispara con más facilidad un `rename` bloqueado por otro proceso
+        // con el .env abierto. Quien reciba el error no puede adivinar cuál
+        // de los dos pasó si el mensaje no lo dice.
+        let dir = tempfile::tempdir().unwrap();
+        // Un ".env" que es un directorio, no un archivo: fuerza que la
+        // lectura dentro de purgar_del_env falle con un error que no es "no
+        // existe", sin depender de permisos que se comportan distinto entre
+        // el CI y una máquina de desarrollo -mismo truco que ya usa
+        // purgar_del_env_propaga_un_error_de_lectura_que_no_es_archivo_ausente-.
+        std::fs::create_dir(dir.path().join(".env")).unwrap();
+
+        let resultado = guardar_clave_orquestada(
+            "keyring:gemini",
+            Some("sk-nueva"),
+            |_referencia, _valor| true, // simula éxito real en el llavero
+            || Some(dir.path().to_path_buf()),
+        );
+
+        let error = resultado.expect_err("una purga que falla debía propagar el error");
+        let texto = error.to_string();
+        assert!(
+            texto.contains("ya se guardó en el llavero"),
+            "el error debía decir que la clave ya había quedado en el llavero, no solo \
+             propagar el error crudo del sistema operativo: {texto}"
+        );
+    }
+
+    #[test]
     fn purgar_del_env_no_crea_el_archivo_si_no_existia() {
         // Caso de borde explícito de H1: instalación nueva, sin .env
         // todavía. Purgar una clave que nunca estuvo en ningún lado no debe
@@ -1299,6 +1584,22 @@ mod tests {
         // misma clave y sobrevivía a la purga.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".env"), "GEMINI=sk-vieja\n").unwrap();
+
+        purgar_del_env(dir.path(), "keyring:gemini").unwrap();
+
+        let r = DotEnvResolver::desde_archivo(dir.path().join(".env")).unwrap();
+        assert!(r.resolver("keyring:gemini").is_none());
+    }
+
+    #[test]
+    fn purgar_del_env_reconoce_una_clave_escrita_en_minuscula() {
+        // Aislado en purgar_del_env, mismo escenario que
+        // guardar_en_el_llavero_purga_una_copia_vieja_escrita_en_minuscula:
+        // la forma en minúsculas de nombres_candidatos, la única de las tres
+        // que las pruebas de este Bloqueante no habían ejercitado todavía
+        // contra un .env real (hallazgo V2, cuarta vuelta de HU-05).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "gemini=sk-vieja\n").unwrap();
 
         purgar_del_env(dir.path(), "keyring:gemini").unwrap();
 

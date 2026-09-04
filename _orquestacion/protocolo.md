@@ -142,6 +142,38 @@ En esta máquina `flutter pub get` falla por versión del SDK, y entonces el ana
 indefinidos hasta `Size` y `debugPrint`. Reportar eso como defecto del código es ruido. Regla
 específica de este proyecto, y existe porque ya despistó una vez.
 
+## Mutar sin aislamiento envenena a todo el que lea
+
+Regla nacida el 2026-09-04, de un incidente con tres testigos.
+
+`verificador-pruebas` trabaja mutando el código: rompe una línea, corre la prueba, confirma el
+rojo, revierte. Mientras la regla de rama estuvo suspendida lo hacía **sobre el árbol
+compartido**, y el resultado fue que durante minutos el archivo contuvo, alternativamente, una
+mutación de `linea_declara`, dos `eprintln!` de diagnóstico y un intercambio de argumentos.
+
+Quien leyera en ese intervalo vería código roto y no lo sabría. Ocurrió:
+
+- El **orquestador** ejecutó `cargo test`, capturó el intercambio de argumentos, lo tomó por un
+  defecto del implementador y **lo comunicó a los tres revisores como hallazgo Bloqueante**, con
+  la salida del compilador pegada. Era una mutación ajena en curso.
+- El **`auditor-plataforma`** lo desmintió porque verificó en vez de citar: leyó el archivo,
+  comparó contra el commit base, comprobó hash y `mtime`, y corrió `cargo check` cinco veces.
+- El **`revisor-codigo`** documentó las tres mutaciones con hashes y diffs, y dedujo la causa sin
+  acusar a nadie.
+
+**La regla, entonces:**
+
+1. **`verificador-pruebas` muta siempre en `isolation: "worktree"`.** Ahora que hay commits, es
+   posible; mientras no lo fue, esto era un accidente esperando ocurrir.
+2. Si por lo que sea muta sobre el árbol compartido, **lo anuncia antes y avisa al terminar**, y
+   nadie más lee ese archivo mientras tanto.
+3. **Antes de afirmar que un archivo está roto, comprobar el hash y volver a leer.** Un error de
+   compilación que aparece una vez y no se reproduce no es un hallazgo: es una foto movida.
+4. Y la que más duele: **el orquestador no está exento.** Comunicó un hallazgo falso a tres
+   agentes por saltarse el punto 3. Lo que salvó la situación fue haberles dicho antes
+   «confirmalo vos en vez de citarme»; sin esa instrucción, el hallazgo fantasma habría entrado
+   en tres informes.
+
 ## La regla de la réplica
 
 Salió de la primera vuelta del mecanismo, y no como una idea: como el mismo fallo cometido por

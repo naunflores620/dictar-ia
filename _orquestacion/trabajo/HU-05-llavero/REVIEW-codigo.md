@@ -797,3 +797,398 @@ ruta muerta.
   (compilacion cruzada a Android, formateo real, el texto exacto de cada variante de
   `keyring::Error`, el valor exacto de `CRED_MAX_USERNAME_LENGTH`) sigue igual: ver las secciones
   originales mas arriba.
+
+---
+
+# Cuarta vuelta (2026-09-04)
+
+Alcance: el encargo de esta vuelta fue verificar H4-ter, H2-ter, P1, V1, V2, M1 y responder si el
+arreglo introdujo algo nuevo. Único archivo de código: `core/providers/src/secretos.rs`. Primera
+vuelta de esta HU con `cargo`/`rustc` instalados (1.98.1) y, tras resolver el PATH (`~/.cargo/bin`
+no estaba en el PATH por defecto de esta sesión de Git Bash), **ejecutables**. Compuertas corridas
+de verdad: `cargo fmt --all -- --check`, `cargo clippy -p dictar-providers --all-targets -- -D
+warnings`, `cargo test -p dictar-providers`, más un test de integración desechable (creado y
+borrado dentro de esta sesión) para confirmar un hallazgo por ejecución en vez de por lectura. Es
+la primera evidencia ejecutada de HU-05 en cuatro vueltas.
+
+## 0. Advertencia: el archivo se modificó por sí solo durante esta revisión
+
+Esto pesa sobre todo lo que sigue y hay que leerlo antes que los hallazgos.
+
+Capturé el diff de esta vuelta al empezar (`git diff -- core/providers/src/secretos.rs`, contra
+`c08abdf7` — el commit con el que cierra la tercera vuelta —, 347 inserciones/52 borrados, hash
+del archivo `9dc5f74b...`). Corrí las tres compuertas contra ese estado: pasaron (detalle abajo).
+Después, sin que yo tocara el archivo, lo volví a leer y encontré un bloque nuevo dentro de
+`linea_declara` que no estaba en mi diff original:
+
+```rust
+fn linea_declara(linea: &str, referencia: &str) -> bool {
+    // MUTACION V2 (verificador-pruebas, cuarta vuelta): se salta la primera
+    // forma (minuscula, sin transformar) de nombres_candidatos.
+    let candidatos = nombres_candidatos(referencia)[1..].to_vec();
+```
+
+Es, letra por letra, la mutación que V2 dice haber verificado que las pruebas nuevas detectan —
+alguien (casi con certeza un proceso de mutación automática corriendo en paralelo sobre el mismo
+árbol de trabajo, a juzgar por el propio texto del comentario) la estaba aplicando en vivo. Un rato
+después volví a comprobar: la mutación ya no estaba, el archivo había vuelto exactamente a mi diff
+original (mismo hash `9dc5f74b...`). Corrí las tres compuertas otra vez contra ese estado estable
+(hash idéntico antes y después de la corrida completa, ver salida en la sección 1) y pasaron limpio.
+
+En el medio, el orquestador me envió tres correcciones sucesivas y contradictorias sobre el
+entorno: primero que `cargo` estaba bloqueado por Smart App Control (con `cargo check -p
+dictar-domain` colgado como evidencia); después una retractación completa ("cargo SÍ funciona",
+con `cargo check -p dictar-domain` en 1,74 s como evidencia); después una tercera afirmación, con
+salida de compilador literal, de que `resolver_por_defecto` tenía `ResolverDeEntorno` y
+`ResolverDeLlavero` intercambiados (`E0308`, línea 549) y el crate no compilaba. Verifiqué esto
+último de inmediato, por mi cuenta, en vez de citarlo: leí las líneas 545-551 en el momento (sin
+intercambio, orden correcto), y corrí `cargo check -p dictar-providers --all-targets` de nuevo, con
+fecha (`Fri Sep 4 01:06:34`-`01:06:48`): terminó en 14 s con éxito. No pude reproducir el error que
+describe el orquestador en ningún momento en que yo mismo miré esa función. La explicación más
+simple, dado lo que ya había observado con `linea_declara`, es que ese intercambio también fue una
+mutación en vivo del mismo proceso concurrente, capturada por el orquestador en una ventana distinta
+a las mías — de hecho, un poco más tarde encontré una tercera mutación transitoria, esta vez dos
+`eprintln!("DIAGNOSTICO verificador-pruebas: ...")` insertados dentro de las dos ramas de limpieza
+de `guardar_clave_en` (las que añadió H4-ter), que también desaparecieron en la siguiente lectura.
+
+No lo presento como acusación — no sé qué proceso es ni si es intencional (mutación controlada de
+`verificador-pruebas`, muy probablemente, a juzgar por el texto de los propios comentarios
+insertados) — sino como una limitación real de esta vuelta: **el archivo bajo revisión no fue
+estable durante toda la sesión**, y cualquier lectura puntual —la mía, la del orquestador, la de
+cualquiera— puede estar describiendo un estado transitorio en vez del que realmente queda en el
+árbol de trabajo. Todo lo que reporto abajo lo verifiqué contra el estado que, en las dos ocasiones
+en que lo comprobé con hash, coincidía exactamente con el diff original de 347/52 líneas (hash
+`9dc5f74bc34d98a30ace6cf7ea9fe1f389db71c20463da97562c2810ae9b2e61`), no contra cualquier lectura
+aislada. Recomiendo, antes de dar por buena esta revisión o cualquier otra, confirmar con
+`sha256sum core/providers/src/secretos.rs` que sigue siendo ese hash, y averiguar qué proceso está
+mutando el archivo y detenerlo si sigue corriendo — de lo contrario ninguna verificación posterior,
+tampoco la mía, es de fiar sin repetirla.
+
+## 1. Veredicto
+
+**Compila, `clippy -p dictar-providers -- -D warnings` sale limpio, y las 87 pruebas de
+`dictar-providers` pasan — ejecutado de verdad, no razonado.** Es la primera vez en esta HU. Pero
+no es una compuerta completamente verde: `cargo fmt --all -- --check` **falla** sobre código nuevo
+de esta vuelta (dos de las seis pruebas nuevas no están formateadas), y leyendo el archivo completo
+(no solo el diff) encontré y **confirmé por ejecución** un hallazgo **Bloqueante** preexistente, no
+introducido esta vuelta y no señalado en ninguna de las tres vueltas anteriores: `guardar_clave_en`
+pierde en silencio las claves de otros proveedores si la lectura del `.env` previo falla por
+cualquier causa que no sea "no existe" (detalle en la sección 2). Los seis puntos puntuales del
+encargo — H4-ter, H2-ter, P1, V1, V2, M1 — verifican correctos tal como los describe el `HANDOFF`,
+con un matiz en H4-ter (gap teórico de baja explotabilidad, no mencionado) y uno en la deuda
+declarada (una vía parcial de prueba que no se exploró). Detalle punto por punto abajo.
+
+**Salida real de las tres compuertas**, corrida contra el estado estable (hash
+`9dc5f74bc34d9...` antes y después, idéntico):
+
+```
+$ export PATH="$HOME/.cargo/bin:$PATH"; cd /d/dictar_ia
+
+$ cargo fmt --all -- --check          # (recorte: solo lo que toca secretos.rs)
+Diff in \\?\D:\dictar_ia\core\providers\src\secretos.rs:1112:
+         let dir = tempfile::tempdir().unwrap();
+         let a = nombre_temporal(dir.path());
+         let b = nombre_temporal(dir.path());
+-        assert_ne!(a, b, "dos guardados en el mismo proceso no deben compartir temporal");
++        assert_ne!(
++            a, b,
++            "dos guardados en el mismo proceso no deben compartir temporal"
++        );
+     }
+Diff in \\?\D:\dictar_ia\core\providers\src\secretos.rs:1131:
+         let secreto = "sk-no-debe-quedar-huerfano-en-disco-2f6c";
+         let resultado = guardar_clave_en(dir.path(), "keyring:prueba-huerfano", Some(secreto));
+-        assert!(resultado.is_err(), "un rename imposible debía propagarse como error");
++        assert!(
++            resultado.is_err(),
++            "un rename imposible debía propagarse como error"
++        );
+Diff in \\?\D:\dictar_ia\core\providers\src\secretos.rs:1771:      # preexistente, ver nota abajo
+-            assert!(!registrar_resultado_de_llavero(Err(keyring::Error::NoEntry)));
++            assert!(!registrar_resultado_de_llavero(Err(
++                keyring::Error::NoEntry
++            )));
+$ echo $?
+1
+
+$ cargo clippy -p dictar-providers --all-targets -- -D warnings
+    Checking dictar-providers v0.1.0 (D:\dictar_ia\core\providers)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 56s
+$ echo $?
+0
+
+$ cargo test -p dictar-providers
+running 87 tests
+...
+test secretos::tests::dos_guardados_seguidos_no_comparten_nombre_de_temporal ... ok
+test secretos::tests::si_falla_el_renombrado_no_queda_un_temporal_huerfano_con_el_secreto ... ok
+test secretos::tests::resolver_por_defecto_no_entra_en_panico ... ok
+test secretos::tests::guardar_en_el_llavero_purga_una_copia_vieja_escrita_en_minuscula ... ok
+test secretos::tests::purgar_del_env_reconoce_una_clave_escrita_en_minuscula ... ok
+test secretos::tests::si_la_purga_falla_tras_un_exito_real_en_el_llavero_el_error_lo_dice ... ok
+...
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.63s
+$ echo $?
+0
+```
+
+`cargo fmt --all` (workspace completo, no solo el paquete) también marca varios archivos de
+`core/audio-capture`. No los reporto ni los cuento contra esta vuelta: ese árbol lo está tocando
+otra sesión ahora mismo (`git status` de apertura), fuera del alcance de este encargo.
+
+La línea 1771 (el `assert!` sobre `registrar_resultado_de_llavero`) **no es de esta vuelta** —
+confirmado contra `git show c08abdf7 -- core/providers/src/secretos.rs`, línea 1479 de esa versión,
+idéntica—: es deuda de formato preexistente, invisible en las tres vueltas anteriores porque nunca
+hubo `cargo fmt` para encontrarla. La anoto por transparencia, no la cuento como hallazgo de esta
+vuelta.
+
+No corrí `cargo build --workspace --all-targets` ni `cargo clippy --workspace` (el paso real de
+CI): el encargo pidió explícitamente las versiones acotadas a `dictar-providers`, y `--workspace`
+tocaría `core/audio-capture` y `app/**`, fuera de mi alcance esta vuelta.
+
+## 2. Hallazgos
+
+### Bloqueante
+
+**`guardar_clave_en` pierde en silencio las claves de otros proveedores si la lectura del `.env`
+previo falla por cualquier causa que no sea "el archivo no existe" — confirmado por ejecución, no
+solo por lectura.**
+
+`secretos.rs:770`:
+
+```rust
+let previo = std::fs::read_to_string(&ruta).unwrap_or_default();
+```
+
+`Result::unwrap_or_default()` descarta el `Err` y da `String::new()` sin importar la causa: archivo
+ausente (el único caso que tiene sentido tratar como "vacío"), pero también permiso denegado,
+contenido no UTF-8, o el mismo bloqueo transitorio de antivirus/sincronizador que el propio archivo
+ya acepta como plausible y digno de manejo explícito en otro punto — es el escenario exacto que
+motivó H3-bis en la segunda vuelta, aceptado entonces por el orquestador. La diferencia es que
+H3-bis arregló la lectura *de `purgar_del_env_con`* (línea 896-906 actual, correcta: distingue
+`NotFound` de cualquier otro error y propaga el segundo). Esta es una **lectura distinta**, dentro
+de `guardar_clave_en`, la función a la que `purgar_del_env_con` delega la reescritura real — y
+nunca recibió el mismo tratamiento.
+
+Efecto: si `previo` "falla" para un `.env` que en realidad tiene contenido (claves de otros
+proveedores), el bucle que sigue (774-792) itera cero líneas, `sustituida` queda en `false`, y el
+bloque de la línea 794 escribe un archivo **nuevo** con únicamente la clave que se está guardando
+en ese momento — perdiendo cualquier otra que hubiera. La función devuelve `Ok(Origen::Archivo(...))`:
+éxito, sin ningún indicio de la pérdida.
+
+**Lo confirmé por ejecución**, no solo por lectura del código: escribí un test de integración
+desechable (`core/providers/tests/zz_temp_verificacion_revisor.rs`, fuera de `secretos.rs` para no
+arriesgar el archivo bajo revisión mientras algo más lo mutaba — ver sección 0), lo corrí, y lo
+borré después (`git status` limpio, confirmado). Reproduce el escenario: un `.env` con
+`OPENAI_API_KEY=sk-openai-real` y `DEEPSEEK_API_KEY=sk-deepseek-real`, corrompido después a bytes
+no UTF-8 (determinista y portable, sin depender de permisos de archivo — el mismo criterio que ya
+usa este archivo para sus propios trucos de prueba). Salida real:
+
+```
+RESULTADO DE guardar_clave_en: Ok(Archivo("...\\.tmpNF1Eve\\.env"))
+CONTENIDO FINAL DEL .env: "# Claves de API de dictar_ia. Permisos 0600.\nGEMINI_API_KEY=sk-nueva-gemini\n"
+
+thread '...' panicked at core\providers\tests\zz_temp_verificacion_revisor.rs:51:5:
+BUG CONFIRMADO: las claves de otros proveedores se perdieron. Contenido final: "# Claves de API de
+dictar_ia. Permisos 0600.\nGEMINI_API_KEY=sk-nueva-gemini\n"
+```
+
+`OPENAI_API_KEY` y `DEEPSEEK_API_KEY` desaparecieron. `guardar_clave` reportaría éxito ("Guardada en
+llavero del sistema" o "Guardada en `.env`", según el camino) mientras borra en silencio las claves
+de los otros proveedores configurados — exactamente "le dice al usuario algo falso sobre el estado
+de sus datos o sus claves", la categoría que el propio protocolo de esta HU amplió explícitamente en
+la tercera vuelta para H4-ter.
+
+**Aclaración importante: no es código de esta vuelta.** Confirmado contra `git show c08abdf7 --
+core/providers/src/secretos.rs`: la línea 632 de esa versión (tercera vuelta, ya cerrada) es
+idéntica, byte a byte. Existe desde antes de que `purgar_del_env` existiera como función separada.
+Ninguna de las tres vueltas anteriores de esta HU lo señaló — lo encuentro ahora porque el encargo
+de esta vuelta me llevó a leer `guardar_clave_en` completa (la función que H4-ter reescribió para
+la parte de escritura atómica) y la lectura del contenido previo, dos líneas más arriba en esa misma
+función, quedó fuera del alcance de esa corrección. Lo marco Bloqueante igual, no como deuda: el
+protocolo no distingue "cuándo se introdujo" para la severidad, y el caso concreto (un usuario con
+tres proveedores configurados que guarda o rota una clave y ve las otras dos desaparecer sin aviso)
+encaja de lleno en la tabla.
+
+### Importante
+
+**`cargo fmt --all -- --check` falla sobre dos de las seis pruebas nuevas de esta vuelta —
+confirmado por ejecución repetida, no sospecha.**
+
+`secretos.rs:1105-1116` (`dos_guardados_seguidos_no_comparten_nombre_de_temporal`) y
+`secretos.rs:1119-1144` (`si_falla_el_renombrado_no_queda_un_temporal_huerfano_con_el_secreto`)
+tienen cada una una línea (`assert_ne!`/`assert!` con su mensaje) más larga de lo que `rustfmt`
+acepta en una sola línea con el ancho configurado; `rustfmt` las quiere partidas en varias líneas
+(salida completa en la sección 1). No cambia comportamiento — es solo formato — pero
+`.github/workflows/ci.yml` corre `formato` como paso **separado y sin `continue-on-error`**, antes
+de `compilar`, `clippy` y `tests`, con el comentario explícito "Pasos separados para que el fallo
+diga cuál de los tres fue": tal como está este diff, el job `nucleo` (Linux, el único que compila
+`core/providers` en CI hoy) fallaría en el primer paso, y ninguno de los siguientes llegaría a
+correr — ni siquiera para confirmar que compila, aunque yo ya lo confirmé aparte. No lo marco
+Bloqueante porque no es una falla de compilación ni de comportamiento, es trivial de corregir
+(`cargo fmt`), y a diferencia de H4-ter no hay dato ni credencial en juego — pero señalo la
+consecuencia práctica en CI con el mismo criterio que ya se aplicó una vez en esta HU ("si un
+hallazgo obliga a discutir si la tabla lo cubre, la tabla está incompleta, no el hallazgo"), para
+que el orquestador decida con el precedente ya sentado.
+
+### Nota
+
+**El cierre de la ventana de permisos en Unix (H4-ter) no cubre un archivo o symlink preexistente
+en la ruta exacta del temporal — sospecha razonada, explotabilidad baja bajo los permisos
+habituales.**
+
+`escribir_temporal_restringido` (`secretos.rs:720-732`) usa `OpenOptions::new().write(true)
+.create(true).truncate(true).mode(0o600)`, **sin** `create_new(true)`. Es correcto que esto cierra
+la ventana temporal entre crear y proteger que motivó el hallazgo (verificado por razonamiento
+POSIX, no solo por confiar en el comentario: `mode` en `open(2)` con `O_CREAT` se aplica de forma
+atómica en la misma llamada al sistema, y `umask` solo puede *restar* bits de un modo pedido
+explícitamente, nunca añadirlos, así que pedir `0o600` da como mucho `0o600` sin importar la umask
+del proceso). Pero `mode` **solo se aplica cuando el `open` efectivamente crea el inodo**: si ya
+existe un archivo (o un symlink) en `dir.join(".env.tmp.<pid>.<contador>")` — nombre predecible por
+cualquiera que conozca el PID del proceso, ya que el contador arranca en 0 en cada proceso —
+`escribir_temporal_restringido` lo abre, lo trunca y escribe el secreto ahí, pero **conserva los
+permisos que ese archivo ya tenía**, no los restringe a 0600. Esto sí dejaría el secreto expuesto,
+sin que nada lo detecte. No lo marco con severidad porque el escenario que lo dispara — otro usuario
+u otro proceso plantando de antemano un archivo o symlink dentro de `dir_configuracion()` — exige
+que ese tercero ya tenga permiso de escritura en el directorio de configuración *del propio usuario*
+que corre `dictar_ia`, algo que las convenciones de permisos habituales (`$HOME/.config` o
+`%APPDATA%`, no escribibles por otros por defecto) ya impiden; no es un vector de ataque
+independiente. Pero es una precisión real sobre el alcance de "no queda ninguna ventana": no queda
+ninguna ventana *temporal*, pero sí queda un supuesto no verificado (que nadie más puede escribir
+ahí) del que depende la garantía completa, y ni el `HANDOFF` ni el comentario del código lo
+mencionan.
+
+## 3. Premisas que cuestiono
+
+**Premisa (implícita en el propio módulo, consecuencia de cómo H3-bis se presentó y se cerró en la
+segunda vuelta): que el archivo maneja correctamente los errores de lectura del `.env`, porque
+`purgar_del_env_con` ya distingue "no existe" de cualquier otro error.**
+
+Conclusión: la premisa es cierta para *una* de al menos dos lecturas independientes del mismo
+archivo, y falsa para la otra. `purgar_del_env_con` (línea 896) sí distingue `NotFound` del resto,
+correcto desde H3-bis. Pero `guardar_clave_en` — la función a la que `purgar_del_env_con` delega la
+reescritura real, y que además es el camino directo de cualquier guardado que cae al `.env` sin
+pasar por `purgar_del_env` — hace su **propia** lectura del mismo archivo (línea 770) con
+`unwrap_or_default()`, sin ninguna de las precauciones de H3-bis. H3-bis cerró el síntoma en el
+lugar donde el hallazgo original lo señaló, pero no en la función vecina que comparte el mismo
+riesgo. Ver el hallazgo Bloqueante de arriba: no es un caso hipotético, lo reproduje.
+
+**Premisa (`HANDOFF`, sección "Lo que no llegué a cubrir con una prueba, y por qué", sobre el
+camino de error de la escritura del temporal en H4-ter): que forzarlo de forma determinista y
+portable "exige... depender de permisos de sistema de archivos... o bien predecir de antemano el
+nombre exacto que va a generar `nombre_temporal`".**
+
+Conclusión: la premisa es cierta para probar el camino **completo**, de punta a punta, a través de
+`guardar_clave_en` — ahí sí hace falta predecir el nombre exacto, y el contador global compartido
+por tests en paralelo lo hace impráctico, coincido. Pero no es la única forma de obtener cobertura
+real: `escribir_temporal_restringido` (`secretos.rs:720-732` en Unix, `739-742` en el resto) es una
+función privada del mismo módulo, así que `mod tests` puede llamarla **directamente**, con una ruta
+elegida a mano — sin pasar por `nombre_temporal` ni por el contador. El mismo truco que ya usa
+`si_falla_el_renombrado_no_queda_un_temporal_huerfano_con_el_secreto` para el `rename` (un directorio
+en vez de un archivo en la ruta de destino) funciona igual aquí, sin ninguna dependencia del
+contador: `escribir_temporal_restringido(&dir.join("obstaculo"), "contenido")` con `"obstaculo"` ya
+creado como directorio falla de forma determinista y portable en cualquier plataforma. Esto no
+cerraría la cobertura de punta a punta del *wrapper* de limpieza dentro de `guardar_clave_en` para
+esta rama específica — para eso sí hace falta el contador, y ahí la premisa se sostiene —, pero sí
+hubiera dado cobertura real de que la función en sí devuelve `Err` cuando la escritura falla, algo
+que hoy no verifica ningún test. La premisa "no lo encontré" es cierta para el camino completo, pero
+había una vía parcial, alcanzable, que no se exploró.
+
+## 4. Qué verifiqué y no marqué
+
+- **H4-ter, la ventana en Unix.** Leí `escribir_temporal_restringido` completa y razoné la
+  atomicidad de `OpenOptions::mode` con `O_CREAT` contra la semántica POSIX de `open(2)` y `umask`
+  (no solo acepté el comentario del código): confirmado que no hay ventana temporal. El gap de
+  archivo/symlink preexistente que sí encontré queda en la sección 2 como Nota, no invalida esto.
+- **H4-ter, la limpieza en los dos caminos falibles.** Leí `guardar_clave_en` completa
+  (`secretos.rs:760-844`): los dos `if let Err(e) = ... { let _ = std::fs::remove_file(&temporal);
+  return Err(e); }` (escritura y `rename`) están, cada uno limpia antes de propagar, y el error que
+  se propaga es siempre el original, nunca el de la propia limpieza (`let _`, no `?`, confirmado
+  línea por línea). Confirmado además por ejecución: `si_falla_el_renombrado_no_queda_un_temporal_
+  huerfano_con_el_secreto` corrió y pasó (`ok`) en mi corrida real de `cargo test`, no solo leída.
+- **H4-ter, Windows.** Comparé `escribir_temporal_restringido` bajo `#[cfg(not(unix))]`
+  (`secretos.rs:739-742`, `std::fs::write(temporal, contenido)` sin ningún endurecimiento) contra
+  el código de Windows anterior a esta vuelta (`git show c08abdf7`, línea 674 de esa versión: la
+  misma llamada, sin ningún `set_permissions` porque ese bloque siempre estuvo bajo `#[cfg(unix)]`).
+  Idénticas en sustancia: en Windows, el temporal nunca tuvo ni tiene ningún endurecimiento de
+  permisos, ni antes ni después de esta vuelta. **No es regresión**, es el mismo estado preexistente,
+  ya trazado como M2/P3 (nota, al tablero) en la tercera vuelta. Confirmado por lectura de ambas
+  versiones, no solo por la caracterización del `HANDOFF`.
+- **H2-ter.** Leí el docblock completo de `escribir_en_llavero` (`secretos.rs:293-339`) contra el
+  código real (340-372): el párrafo "Decisión sobre qué pasa si..." describe con precisión lo que
+  el código hace — no purga, sí escribe en el `.env`, informa `Origen::Archivo` — y nombra el riesgo
+  (duplicación) sin suavizarlo. No encuentro que esconda nada más allá de lo que ya dice. La
+  comparación de valor (`Ok(releido) if releido == v`) está, y usa `keyring::Error::Invalid`, una
+  variante real del crate (confirmado en vueltas anteriores contra el código fuente descargado; no
+  volví a descargarlo esta vuelta, lo doy por bueno porque el tipo ya se usaba sin objeciones en la
+  tercera vuelta y nada de esta vuelta lo toca).
+- **P1, si el mensaje llega al usuario.** Trazé la cadena completa: `guardar_clave_orquestada`
+  (`secretos.rs:613-653`) envuelve el error con `.map_err(...)` (625-643) preservando `e.kind()` y
+  el texto original; `puente.rs:403-406` (`guardar_clave`) hace
+  `.map_err(|e| e.to_string())` sobre el `Result` completo — leído directo del archivo, no citado
+  del `HANDOFF` — así que el texto armado en `secretos.rs` (con "ya se guardó en el llavero...")
+  llega intacto hasta el límite de `flutter_rust_bridge`. De ahí a una pantalla legible depende de
+  `app/lib/pantallas/ajustes.dart`, que no tiene `try/catch` en `_guardar` — ya señalado en la
+  tercera vuelta (M4, al tablero, fuera de los archivos de esta vuelta) — así que "llega al usuario"
+  es cierto hasta la excepción Dart, no hasta una notificación visible. No es un hallazgo nuevo, es
+  la confirmación exacta del límite que ya se había declarado.
+- **V1, mi juicio sobre tipos vs. prueba.** Confirmado por lectura de `ResolverDeEntorno`/
+  `ResolverDeLlavero` (`secretos.rs:481-497`), `cadena_con` (524-535) y `resolver_por_defecto`
+  (545-551): el intercambio que preocupaba en `resolver_por_defecto` ya no compila. Mi conclusión:
+  **una protección de tipos es más fuerte que una prueba** para esta clase de error, no como regla
+  general sino para este caso concreto — no depende de que alguien recuerde correrla, no se puede
+  desactivar con un `#[ignore]` accidental, y falla en el momento más temprano posible. El hueco que
+  el propio `HANDOFF` declara sin cerrar — dentro de `cadena_con`, línea 534,
+  `ensamblar_cadena_por_defecto(entorno.0, origen_archivo, Box::new(dotenv), llavero.0)`, donde
+  `entorno.0` y `llavero.0` vuelven a ser `Box<dyn KeyResolver>` sueltos — es real, lo confirmé
+  leyendo esa línea, y ahí sí solo protege la prueba (`cadena_con_no_intercambia_el_archivo_con_
+  el_llavero`, línea 1214, confirmada pasando en mi corrida). Dato curioso, no planeado: durante
+  esta sesión observé (sección 0) que algo externo efectivamente intentó el intercambio en
+  `resolver_por_defecto` — y el síntoma que le llegó al orquestador fue exactamente un error de
+  compilación, no un test rojo. Es, por accidente, una confirmación en vivo de que la protección
+  funciona como se documenta.
+- **V2.** `guardar_en_el_llavero_purga_una_copia_vieja_escrita_en_minuscula` (línea 1434) y
+  `purgar_del_env_reconoce_una_clave_escrita_en_minuscula` (línea 1589): confirmadas `ok` en mi
+  corrida real de `cargo test`, no solo leídas.
+- **M1.** `CONTADOR_TEMPORALES_ENV` (línea 691) y `nombre_temporal` (701-707): confirmado que usa
+  `AtomicU64::fetch_add` (incremento real, no una lectura sin incrementar). Prueba
+  `dos_guardados_seguidos_no_comparten_nombre_de_temporal` (línea 1105), confirmada `ok`.
+- **Que ninguna prueba toque el llavero real** (H2, primera vuelta, para no perder la pista con
+  tanto código nuevo alrededor). `grep` de `escribir_en_llavero` en todo el archivo: como
+  identificador solo aparece en su propia definición (dos veces, por plataforma) y como valor
+  pasado a `guardar_clave_orquestada` dentro de `guardar_clave` (línea 598, código de producción);
+  cero apariciones dentro de `mod tests`. Confirmado además por ejecución, no solo por `grep`: tras
+  correr `cargo test -p dictar-providers` completo, listé las credenciales de Windows
+  (`cmdkey /list` vía PowerShell, ya que Git Bash traduce mal el `/list`) y busqué "dictar" en las
+  14 entradas: cero coincidencias.
+- **Anchos de línea, con mi propio script, no citando a nadie.** Python, decodificado UTF-8,
+  `len()` por línea sobre las 1794 líneas actuales: máximo real 97 caracteres (línea 214), cero por
+  encima de 100. Coincide con lo que declaran el `HANDOFF` y las vueltas anteriores, pero lo conté
+  yo.
+- **Que el único archivo tocado sea `secretos.rs`.** `git status --porcelain` sobre los cuatro
+  archivos de `PLAN.md`: solo `secretos.rs` aparece; `Cargo.toml`, `puente.rs` y
+  `repositorio_rust.dart` están limpios. Confirmado también que el diff final (347 inserciones/52
+  borrados contra `c08abdf7`) es el mismo que capturé al principio de la sesión, pese a las
+  mutaciones transitorias de la sección 0.
+
+## 5. Qué no pude verificar y qué haría falta
+
+- **El comportamiento real de `entrada.get_password()` contra un backend real** (Credential
+  Manager, Secret Service, Keychain) comparado con el valor recién escrito: sigue sin cubrirse por
+  ninguna prueba automática, y esta máquina (Windows, sin ejercitar el llavero real en ningún test)
+  no lo confirma. Mismo límite que las cuatro vueltas anteriores.
+- **Compilación cruzada a Android y comportamiento en Linux/macOS real** (D-Bus sin sesión,
+  `zbus`): no verificable desde esta máquina Windows. `cargo test -p dictar-providers` solo ejercitó
+  la rama de Windows del `#[cfg]`.
+- **El resto del workspace** (`cargo build --workspace`, `cargo clippy --workspace`, incluidos
+  `core/audio-capture` y `app/**`): fuera de mi alcance por indicación explícita del encargo, y
+  tocado ahora mismo por otra sesión.
+- **Qué proceso está mutando `secretos.rs` y si sigue activo.** No lo investigué más allá de
+  documentar los síntomas (sección 0): no tengo forma de identificar el proceso concreto desde esta
+  sesión sin arriesgarme a interferir con lo que sea que esté haciendo. Haría falta que el
+  orquestador confirme si hay una `verificador-pruebas` corriendo en paralelo sobre este mismo
+  archivo y, si es así, que coordine el orden en vez de dejarlos concurrentes.
+- **La versión final, verdaderamente estable, de `secretos.rs`.** Todo lo que reporto arriba lo
+  verifiqué contra el hash `9dc5f74bc34d98a30ace6cf7ea9fe1f389db71c20463da97562c2810ae9b2e61`, que
+  coincide con el diff de 347/52 líneas contra `c08abdf7`. Si al leer esto el archivo tiene otro
+  hash, esta revisión describe un estado que ya no es el actual y hay que repetirla contra el nuevo.

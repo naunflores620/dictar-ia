@@ -646,3 +646,303 @@ localmente: sin `rustc` ni fuente de `std` en esta máquina); el comportamiento 
 - Lo que ya pedían las dos vueltas anteriores, sin cambios: `cargo build`/`test`/`clippy` en
   Linux y Windows sobre `dictar-providers`/`dictar-api`, y `cargo tree` acotado a Android
   filtrando `keyring`.
+
+---
+
+
+# Cuarta vuelta
+
+Objeto: `HANDOFF.md`, sección «Cuarta vuelta» (líneas 8-601), sobre el único archivo que declara
+tocado: `core/providers/src/secretos.rs`. Confirmado con `git diff --stat -- core/providers/`:
+un solo archivo, sin cambios en `Cargo.toml`, `core/api/src/puente.rs` ni
+`app/lib/datos/repositorio_rust.dart`.
+
+Diferencia de fondo con las tres vueltas anteriores: **hoy hubo `cargo` real** (rustc/cargo
+1.98.1, confirmado con `cargo --version`/`rustc --version`) durante buena parte de la sesión.
+Casi todo lo que sigue distingue explícitamente lectura de ejecución, con comando y salida
+literal — es la primera vez en esta HU que eso es posible.
+
+## 1. Veredicto en una línea
+
+`dictar-providers` **compila limpio en Windows, con sus 87 tests en verde**, verificado por
+ejecución real y repetida (no por lectura): las dos piezas que dependen del sistema operativo
+—`escribir_temporal_restringido` bajo `#[cfg(unix)]`/`#[cfg(not(unix))]` y el mensaje que envuelve
+el error de `rename`— están bien resueltas, y de paso el contrato `#[cfg]` mejoró (el `cfg(unix)`
+que antes vivía en el llamador ahora vive dentro de la función, sin que `guardar_clave_en` escriba
+`#[cfg]` propio). Sin hallazgos Bloqueantes ni Importantes nuevos en el código de esta vuelta.
+Reserva doble: (1) sigue sin poder compilarse ni enlazarse de verdad en Linux ni Android en esta
+máquina — Android, además, confirmé por primera vez con el grafo de dependencias real, no solo
+leyendo `Cargo.toml`, que sigue excluido; y (2) durante esta sesión recibí tres avisos sucesivos y
+mutuamente contradictorios del orquestador sobre el estado de `cargo` en esta máquina, el último
+de ellos citando un error de compilación (E0308) que **no reproduje**: lo verifiqué por mi cuenta
+cinco veces, incluida una corrida a los pocos segundos del aviso, contra el archivo tal como está
+en disco en este momento (hash y hora al final de este párrafo), y compila limpio las cinco veces.
+Detalle completo en «Premisas que cuestiono».
+
+## 2. Matriz de plataformas
+
+| Plataforma | ¿Compila? | Evidencia | Qué lo impediría |
+|---|---|---|---|
+| **Windows** (host real) | **Sí, confirmado por ejecución real**, no solo por lectura | `cargo check -p dictar-providers --all-targets`: 5 corridas independientes en esta sesión, todas `EXIT=0` (una en frío, 4 min 31 s; las demás incrementales, 0.6-10 s). `cargo test -p dictar-providers --lib`: **87 passed; 0 failed** en 4.22 s, incluidas las 6 pruebas nuevas de esta vuelta. `cargo clippy -p dictar-providers --all-targets -- -D warnings`: limpio, `EXIT=0` | Nada identificado. El `#[cfg(unix)]` de `el_archivo_de_claves_queda_ilegible_para_los_demas` (`secretos.rs:1146`) se excluyó correctamente del binario de test en Windows —no aparece entre los 87— sin romper la compilación del resto |
+| **Linux** | Protegido y probable, con evidencia nueva de grafo real (no solo de `Cargo.toml`) | `cargo tree --target x86_64-unknown-linux-gnu -p dictar-providers -e normal`: resuelve `keyring v4.2.0 → zbus-secret-service-keyring-store v1.0.1` sin error. Sin linker de Linux en esta máquina Windows, no llegué a `cargo check`/`build` real ahí | No verificable de punta a punta: falta una máquina o WSL funcional con linker de Linux (la tercera vuelta ya registró que WSL no arranca en esta sesión de Windows) |
+| **Android** | **Excluido por construcción, confirmado hoy con resolución real de dependencias**, no solo leyendo el `any(...)` del `Cargo.toml` | `cargo tree --target aarch64-linux-android -p dictar-providers -e normal`: 315 líneas, **cero** apariciones de "keyring". `cargo check --target aarch64-linux-android -p dictar-providers --all-targets`: avanza hasta `ring v0.17.14` (dependencia de `reqwest`/`rustls`, ajena al llavero) y ahí falla por falta de `aarch64-linux-android-clang` — en ningún punto de esa salida aparece "keyring" | B-3 (NDK) impide terminar el `check` completo, pero no toca la pregunta que importa para esta HU: el crate `keyring` ni se intenta en ese grafo |
+
+macOS: sin cambios respecto a las vueltas anteriores (incluida por paridad de `cfg`, sin runner ni
+fuente descargada). `rustup target list --installed` muestra `aarch64-linux-android`,
+`armv7-linux-androideabi`, `x86_64-pc-windows-msvc` y (agregado por mí esta sesión)
+`x86_64-unknown-linux-gnu` — los dos de Android ya estaban instalados antes de que yo empezara;
+son útiles para `cargo tree`/`cargo check` parcial, no decorativos, pero no alcanzan para un build
+completo sin el NDK.
+
+## 3. Hallazgos
+
+Sin Bloqueantes ni Importantes nuevos. Dos Menores y una confirmación positiva que vale registrar
+como tal.
+
+### Menor
+
+**Q1 — La limpieza del temporal (`remove_file`) es portable en la firma, pero no en la tasa real
+de éxito, y el escenario donde eso importa (P1) no tiene prueba.**
+`guardar_clave_en` (`secretos.rs:819-829` y `831-839`) llama `std::fs::remove_file(&temporal)` sin
+ningún `#[cfg]` — correcto, es una función de la biblioteca estándar sin diferencia de firma entre
+sistemas. Pero P1 (tercera vuelta, `REVIEW-plataforma.md` arriba) ya estableció que en Windows la
+causa más plausible de que `rename` falle es que "otro proceso tenga el `.env` **o el
+`.env.tmp.<pid>` recién creado** abiertos sin permiso de compartir borrado". Si es el temporal el
+que está bloqueado, el mismo candado que hizo fallar el `rename` puede hacer fallar también el
+`remove_file` de limpieza que se dispara justo después (línea 837) — y ese segundo fallo se
+descarta a propósito (`let _`, no `?`), así que no se distingue de un `remove_file` que sí limpió.
+La prueba nueva de esta vuelta (`si_falla_el_renombrado_no_queda_un_temporal_huerfano_con_el_secreto`,
+`secretos.rs:1118-1144`) fuerza el fallo del `rename` con un truco que **no bloquea el temporal**
+(el destino es un directorio; el temporal no tiene ningún handle abierto), así que confirma la
+limpieza en el caso fácil, no en el caso Windows que P1 describe. No es una regresión de esta
+vuelta ni algo que el encargo pidiera cerrar; lo anoto porque conecta un hallazgo ya aceptado (P1)
+con un límite de cobertura que nadie había señalado todavía en estos términos.
+
+**Q2 — Dos convenciones de `cfg` equivalentes, sin efecto práctico, conviven en el mismo archivo.**
+`dir_configuracion` usa `#[cfg(windows)]`/`#[cfg(not(windows))]` (`secretos.rs:175,180`, preexistente);
+`escribir_temporal_restringido`, nuevo de esta vuelta, usa `#[cfg(unix)]`/`#[cfg(not(unix))]`
+(`secretos.rs:718,737`). Confirmé con `rustc --print cfg` contra los tres *targets* reales del
+proyecto que son exactamente complementarios (`windows` es `unix`; `unix` es `not(windows)`) — ver
+§5 —, así que no hay ninguna plataforma del proyecto donde las dos convenciones difieran en el
+resultado. Cero impacto funcional; lo anoto solo por precisión, no como algo que corregir.
+
+### Sin hallazgos (verificado y conforme, con mejora sobre la vuelta anterior)
+
+- **El contrato `#[cfg]` de `escribir_temporal_restringido` es correcto y, además, mejora el patrón
+  que tenía el archivo antes de esta vuelta.** La tercera vuelta había registrado (`REVIEW-plataforma.md`,
+  «Tercera vuelta», §5) que el único `cfg(unix)` de la sección de escritura vivía **en el llamador**
+  (viejo `secretos.rs:583`, dentro de `guardar_clave_en`, sin rama para Windows porque el bloque
+  entero desaparecía ahí). Ahora `guardar_clave_en` (`secretos.rs:758-842`) **no tiene ningún
+  `#[cfg]` propio** —confirmé con un `grep` acotado a ese rango, cero coincidencias— y llama, sin
+  condición, a `escribir_temporal_restringido`, que sí lleva el `#[cfg]` y en las dos ramas
+  (`:718-730` Unix, `:737-740` el resto) con **firma idéntica**:
+  `fn escribir_temporal_restringido(temporal: &Path, contenido: &str) -> std::io::Result<()>`. Es
+  exactamente el defecto que este checklist pide evitar («¿Quien llama necesita escribir `#[cfg]`
+  propio? Si sí, el contrato está mal») resuelto, no solo evitado.
+- **Qué protección queda en Windows: la misma que había, ni mejor ni peor — y ahora queda escrito
+  en el propio código, no solo deducible.** La rama `cfg(not(unix))` (`secretos.rs:737-740`) es
+  `std::fs::write(temporal, contenido)` sin ningún ajuste de permisos; el comentario que la precede
+  (`:732-736`) dice explícitamente que el archivo hereda la ACL del directorio que lo contiene,
+  "igual que ya ocurría con el `.env` antes de esta HU". Comprobé que esa afirmación es correcta y
+  no solo declarada: el temporal se crea en el **mismo directorio** que el `.env` final
+  (`nombre_temporal(dir)`, `secretos.rs:699-705`, mismo `dir` que recibe `guardar_clave_en`), así
+  que en NTFS hereda exactamente la misma ACL por defecto que el `.env` heredaría si se escribiera
+  ahí directamente — el `rename` posterior no cambia esa herencia, porque el descriptor de
+  seguridad se fija al crear el archivo, no al renombrarlo. Es decir: la vuelta **no empeora ni
+  mejora** el estado de Windows que ya señalaba P3 (tercera vuelta) — lo deja igual, con el mismo
+  argumento técnico que entonces, ahora aplicado a un archivo nuevo (el temporal) en vez de al
+  `.env` directamente.
+- **El mecanismo de `rename` no cambió, y no debía cambiar para lo que P1 pedía.** `guardar_clave_en`
+  (`secretos.rs:831`) sigue llamando `std::fs::rename(&temporal, &ruta)`, sin `ReplaceFileW` ni
+  `MoveFileEx` explícitos. Lo que cambió es el mensaje de **uno** de los dos caminos que pueden
+  fallar por esa vía: `guardar_clave_orquestada` (`secretos.rs:625-643`) envuelve con `.map_err`
+  únicamente el error de `purgar_del_env` en la rama donde el llavero ya tuvo éxito — el otro
+  camino (el respaldo directo al `.env` cuando el llavero no estaba disponible,
+  `secretos.rs:647-652`) sigue propagando el error crudo, tal como el propio `HANDOFF` reconoce y
+  el `PLAN.md` acotó. Mi conclusión, no heredada: **es suficiente**, porque `ReplaceFileW` no
+  hubiera evitado el fallo que P1 describe — las dos API (`MoveFileExW` con
+  `MOVEFILE_REPLACE_EXISTING`, a la que mapea `std::fs::rename`, y `ReplaceFileW`) fallan igual
+  cuando el destino u origen están abiertos sin `FILE_SHARE_DELETE`; ninguna evita la condición de
+  carrera, solo cambia detalles de journaling que no aplican aquí (`ReplaceFileW` está pensado para
+  conservar atributos/ACL del reemplazado con una copia de respaldo opcional, no para tolerar un
+  archivo bloqueado). El problema que P1 señalaba era de **diagnóstico**, no de mecanismo, y el
+  mensaje nuevo lo resuelve donde el encargo lo acotó.
+- **El contador atómico (M1) cubre lo que dice cubrir, y el PID sigue cubriendo el resto —
+  verificado, no solo leído.** `CONTADOR_TEMPORALES_ENV` (`secretos.rs:689`) es un `AtomicU64`
+  `static` de módulo: por diseño, un valor por proceso, no compartido entre procesos — correcto,
+  porque `nombre_temporal` (`:699-705`) lo combina con `std::process::id()`, y dos procesos vivos a
+  la vez nunca comparten PID (garantía del sistema operativo). La única forma de colisión sería que
+  un proceso B reutilizara el PID de un proceso A ya terminado **y** generara, por coincidencia, el
+  mismo valor de contador que A alguna vez usó — y aun así, como el nombre resultante solo se usa
+  para un archivo temporal desechable (`create(true).truncate(true)`), lo peor que pasaría es
+  sobrescribir un huérfano viejo de un proceso que ya no existe, no corromper una escritura en
+  curso. Confirmado además en ejecución real: `dos_guardados_seguidos_no_comparten_nombre_de_temporal`
+  (`secretos.rs:1104-1116`) pasó dentro de los 87 tests verdes.
+
+## 4. Premisas que cuestiono
+
+1. **"El crate no compila — ni siquiera en Windows nativo", con un `error[E0308]` citado en
+   `secretos.rs:549` (mensaje del orquestador, penúltimo de la sesión).** La cuestiono y no la
+   confirmo: releí `secretos.rs:544-551` directamente en el archivo tal como está en disco ahora
+   mismo y es
+   ```
+   545  pub fn resolver_por_defecto() -> CadenaResolvers {
+   546      cadena_con(
+   547          ResolverDeEntorno(Box::new(EnvResolver)),
+   548          DotEnvResolver::buscar(),
+   549          ResolverDeLlavero(Box::new(LlaveroResolver::nuevo())),
+   550      )
+   551  }
+   ```
+   sin intercambio: `ResolverDeEntorno` envuelve `EnvResolver` (línea 547) y `ResolverDeLlavero`
+   envuelve `LlaveroResolver::nuevo()` (línea 549) — la línea que el mensaje cita como el lugar del
+   error es, de hecho, la que está bien. Lo confirmé por cuatro vías independientes, no solo
+   releyendo: (a) `git diff -- core/providers/src/secretos.rs` contra el commit base muestra el
+   `hunk` que introdujo estos envoltorios (`-Box::new(EnvResolver), +ResolverDeEntorno(Box::new(EnvResolver))`
+   y análogo para el llavero) sin cruce de posiciones; (b) `cargo check -p dictar-providers
+   --all-targets` — **cinco corridas** en esta sesión, la última a las 01:07:12, es decir, después
+   de recibido el aviso, contra el archivo con hash `SHA256:9DC5F74BC34D98A30ACE6CF7EA9FE1F389DB71C20463DA97562C2810AE9B2E61`
+   y hora de modificación `01:05:08` (confirmé que no cambió entre esa corrida y esta lectura) —
+   `EXIT=0` las cinco, sin ningún `E0308`; (c) `cargo test -p dictar-providers --lib` corrió
+   `resolver_por_defecto_no_entra_en_panico` (`secretos.rs:1297-1314`), la prueba que llama
+   `resolver_por_defecto()` en tiempo de ejecución, con resultado `ok`, lo cual es imposible si la
+   función no compilara; (d) `cargo clippy -p dictar-providers --all-targets -- -D warnings` sobre
+   el mismo archivo, limpio. Conclusión: no encontré el error citado. Nota aparte, honesta: el
+   `diff --stat` de este archivo cambió durante mi sesión (de 350/-53 a 347/-52 inserciones/
+   borrados contra el mismo commit base, con el `mtime` moviéndose a 01:05:08), señal de que algo
+   —no yo— editó `secretos.rs` mientras lo auditaba; el fragmento de `resolver_por_defecto` no
+   está entre los `hunks` que cambiaron (lo confirmé comparando los rangos del `diff` antes y
+   después), así que no afecta esta conclusión, pero lo dejo anotado como observación de proceso,
+   no como hallazgo de plataforma.
+2. **"Smart App Control bloquea `cargo`, y el síntoma es que se cuelga" → retractado por el propio
+   orquestador como error de diagnóstico.** Coincido con la retractación, con mi propia evidencia,
+   no por confiar en ella: en esta sesión `cargo` corrió nueve veces, ocho con éxito. La única
+   falla (`cargo check -p dictar-providers --all-targets`, primera invocación de la sesión, desde
+   Git Bash) fue real y textual —`Una directiva de Control de aplicaciones bloqueó este archivo.
+   (os error 4551)` sobre el *build-script* de `schemars`—, y confirmé por mi cuenta que Smart App
+   Control está activo en modo `Enforce`
+   (`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy\VerifiedAndReputablePolicyState = 1`), así que
+   el bloqueo puntual no es inventado. Pero no volvió a ocurrir en las ocho corridas siguientes,
+   incluida una compilación en frío completa de 4 min 31 s con varios *build-scripts* sin firmar
+   (`cc`, `ring`, `schemars_derive`, `serde_derive`) que no tropezó con nada. Mi conclusión, con mi
+   propia evidencia: hubo un bloqueo real y aislado, consistente con lo que también pudo ser
+   contención de archivo entre sesiones concurrentes de `cargo` sobre el mismo `target/`
+   —observé literalmente el mensaje `Blocking waiting for file lock on build directory` en varias
+   de mis corridas—, no un bloqueo sistemático de Smart App Control. No recomiendo ninguna
+   exclusión de Defender ni de Smart App Control; no es evidencia para eso y no es mi decisión.
+3. **El propio encargo preguntaba si, a falta de cambiar el mecanismo de `rename`, seguía faltando
+   `ReplaceFileW`/`MoveFileEx`.** Respondida arriba (§3): no, con razón técnica propia (ambas API
+   fallan igual bajo la condición de bloqueo que describe P1), no por aceptar la palabra del
+   `HANDOFF`.
+
+## 5. Qué verifiqué y no marqué
+
+**Ejecutado de verdad, con comando y salida (no solo leído):**
+```
+$ cargo --version && rustc --version
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+rustc 1.98.1 (48a229cea 2026-09-01)
+
+$ cargo check -p dictar-providers --all-targets      # 5 corridas en total esta sesión
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.65s   (última, 01:07:12-15)
+EXIT=0
+
+$ cargo test -p dictar-providers --lib
+running 87 tests
+...
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.22s
+EXIT=0
+
+$ cargo clippy -p dictar-providers --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.33s
+EXIT=0
+
+$ cargo tree -p dictar-providers --target aarch64-linux-android -e normal | grep -i keyring
+(sin salida)                                          # 315 líneas de árbol, cero "keyring"
+
+$ cargo tree -p dictar-providers --target x86_64-pc-windows-msvc -e normal | grep -i keyring
+├── keyring v4.2.0
+│   ├── keyring-core v1.0.0
+│   └── windows-native-keyring-store v1.1.0
+
+$ cargo tree -p dictar-providers --target x86_64-unknown-linux-gnu -e normal | grep -i keyring
+├── keyring v4.2.0
+│   ├── keyring-core v1.0.0
+│   └── zbus-secret-service-keyring-store v1.0.1
+
+$ cargo check --target aarch64-linux-android -p dictar-providers --all-targets
+error: failed to run custom build command for `ring v0.17.14`
+  ToolNotFound: failed to find tool "aarch64-linux-android-clang"
+EXIT=101                                              # falla en `ring` (ajeno a keyring), no en keyring
+
+$ rustc --print cfg --target aarch64-linux-android | grep -E "unix|windows|target_os"
+target_family="unix"
+target_os="android"
+unix
+$ rustc --print cfg --target x86_64-pc-windows-msvc | grep -E "unix|windows|target_os"
+target_family="windows"
+target_os="windows"
+windows
+```
+Esta última corrida confirma, con el compilador real y no con documentación, que `#[cfg(unix)]`
+incluye Android y excluye Windows — la base técnica de por qué `escribir_temporal_restringido`
+particiona correctamente por `unix`/`not(unix)` en vez de por la lista de tres SO que usa
+`LlaveroResolver`.
+
+**Parseado, no solo leído:** `core/providers/Cargo.toml` con
+`python -c "import tomllib;print(tomllib.load(open('core/providers/Cargo.toml','rb')))"` — mismas
+tablas que las tres vueltas anteriores, sin diferencias: `[dependencies]` con sus once entradas,
+`[target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]`
+con solo `keyring = "4.2.0"`, `[dev-dependencies]` con `tokio`/`tempfile`. Confirmado también que
+este archivo no tiene diff pendiente (`git status --porcelain` no lo lista).
+
+**`#[cfg]` seguidos, línea por línea:** los 17 de `secretos.rs` (`grep -n '#\[cfg' `):
+`175,180` (`dir_configuracion`, preexistente), `240,250,253,260` / `275,278,285` (`LlaveroResolver`,
+preexistente), `340` / `393` (`escribir_en_llavero`, preexistente), `385`
+(`registrar_resultado_de_llavero`, solo positivo, preexistente), **`718,737`
+(`escribir_temporal_restringido`, nuevo de esta vuelta)**, `936` (`mod tests`), `1146` (test de
+permisos Unix), `1740` (test de `tracing`). Confirmé sin coincidencias un `grep` de `#[cfg`
+acotado a `guardar_clave_en` (`758-842`): cero — no escribe condición propia.
+
+**Rutas de empaquetado:** ninguna nueva. Esta vuelta no toca ningún `CMakeLists.txt`; `keyring`
+sigue enlazándose en tiempo de compilación dentro de `dictar-api`, sin librería nativa adicional
+que empaquetar.
+
+**T-11, T-12 y `README.md`, confirmado que siguen sin tocarse por esta vuelta** (no por ninguna
+vuelta de HU-05 en general, que es lo que pregunta el encargo):
+`git status --porcelain` no lista `Cargo.toml` (raíz), `README.md`, `docs/`, `INSTALL.md` ni
+`packaging/`. `rust-version = "1.75"` sigue igual en `Cargo.toml:20` (T-12, sin cambios). Las nueve
+menciones de `libsecret` catalogadas en la primera vuelta siguen en los mismos nueve sitios, sin
+una nueva ni una removida (`ci.yml:45`, `release.yml:49`, `INSTALL.md:13,24`,
+`build_deb.sh:101`, `docs/05-empaquetado.md:168,289,338`, `docs/01-arquitectura.md:591`,
+`README.md:83,140`) — T-11 igual. Sobre `README.md`: su único cambio es el commit `9ae098b`
+("El README dice la verdad sobre qué se ha ejecutado y qué no"), ya aplicado antes de que
+empezara esta auditoría, de otra sesión (autor: Naun Flores, no el implementador de `secretos.rs`)
+— no se lo imputo a esta vuelta. De paso: `.github/workflows/ci.yml` y `release.yml`, que al
+abrir esta sesión el `git status` inicial marcaba como modificados, ya no lo están — quedaron
+comprometidos en los commits `056f642`/`a210562` de la tarea concurrente de HU-02 antes de que yo
+empezara a mirarlos; no forman parte del diff que audito aquí.
+
+**No verificable en esta sesión:** compilación y enlazado reales en Linux (sin linker cruzado en
+esta máquina Windows); `cargo build`/`test`/`ndk build` completos en Android (B-3, NDK); el
+escenario Windows exacto de P1 con el `.env`/temporal realmente abiertos por otro proceso (Q1,
+arriba); el comportamiento contra un Secret Service o Keychain reales fuera de esta máquina.
+
+## 6. Qué haría falta para verificarlo de verdad
+
+- Un Linux real (o WSL funcional — sigue sin arrancar en esta sesión, según la tercera vuelta) para
+  correr `cargo build`/`test -p dictar-providers` de punta a punta, no solo `cargo tree`.
+- Resolver B-3 (NDK + `cargo-ndk`) y volver a intentar
+  `cargo check --target aarch64-linux-android -p dictar-providers --all-targets`: con el NDK puesto,
+  si el error se mueve más allá de `ring` sin mencionar `keyring` en ningún punto, la protección de
+  Android queda cerrada de punta a punta, no solo hasta donde llegué hoy.
+  `cargo ndk -t arm64-v8a build -p dictar-api` es el siguiente paso real, sobre `dictar-api`, no
+  solo sobre `dictar-providers`.
+- Reproducir P1 de forma empírica en Windows: abrir el `.env` de un directorio de prueba desde un
+  segundo proceso sin `FILE_SHARE_DELETE` y disparar `guardar_clave_orquestada` con el llavero
+  disponible, para medir si además del `rename` falla el `remove_file` de limpieza (Q1).
+- Que la matriz de CI (`ci.yml`) corra, para `dictar-providers`, el mismo trío que corrí a mano hoy
+  (`check --all-targets`, `test`, `clippy -D warnings`) en el job de Windows — no lo revisé en este
+  informe porque el archivo no tiene diff pendiente y no es el objeto de esta vuelta, pero hoy hay
+  evidencia real de que ese trío pasa, y vale la pena que quede automatizado, no solo demostrado a
+  mano una vez.
