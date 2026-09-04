@@ -1476,7 +1476,9 @@ mod tests {
             );
 
             // Rama de error: avisa, pero solo con el error de la plataforma.
-            assert!(!registrar_resultado_de_llavero(Err(keyring::Error::NoEntry)));
+            assert!(!registrar_resultado_de_llavero(Err(
+                keyring::Error::NoEntry
+            )));
             assert!(
                 !captura.textos().is_empty(),
                 "la rama de error debía emitir al menos un evento"
