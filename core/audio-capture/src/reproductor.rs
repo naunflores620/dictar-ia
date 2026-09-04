@@ -6,7 +6,6 @@
 //! repasar una clase se quiere oír la conversación completa —profesor y
 //! preguntas—, no una mitad.
 
-use crate::wav::leer_wav;
 use crate::{AudioError, Result, SAMPLE_RATE};
 use libspa as spa;
 use pipewire as pw;
@@ -16,31 +15,12 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-/// Mezcla las pistas de una sesión en una sola señal mono a 16 kHz.
-///
-/// Suma y recorta a [-1, 1]: las dos voces rara vez coinciden —cuando una
-/// habla, la otra calla— así que la suma directa no satura en la práctica, y
-/// el recorte cubre el caso en que sí.
-pub fn mezclar(dir: &Path) -> Result<Vec<f32>> {
-    let mut mezcla: Vec<f32> = Vec::new();
-
-    for nombre in ["mic.wav", "system.wav"] {
-        let ruta = dir.join(nombre);
-        if !ruta.is_file() {
-            continue;
-        }
-
-        let (pcm, _sr) = leer_wav(&ruta)?;
-        if pcm.len() > mezcla.len() {
-            mezcla.resize(pcm.len(), 0.0);
-        }
-        for (m, v) in mezcla.iter_mut().zip(pcm.iter()) {
-            *m = (*m + *v).clamp(-1.0, 1.0);
-        }
-    }
-
-    Ok(mezcla)
-}
+// `mezclar` no depende de PipeWire —solo de `wav::leer_wav`—, así que vive en
+// `lib.rs` como función independiente de plataforma, y este archivo la
+// reexporta en vez de reimplementarla. `reproductor_stub.rs`, la versión de
+// este módulo fuera de Linux, hace exactamente lo mismo: así no hay dos
+// copias de la lógica de mezcla que puedan divergir con el tiempo.
+pub use crate::mezclar;
 
 struct EstadoSalida {
     pcm: Arc<Vec<f32>>,
@@ -284,94 +264,10 @@ fn err<E: std::fmt::Display>(e: E) -> AudioError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wav::EscritorPistas;
-    use crate::AudioFrame;
-    use dictar_domain::Track;
 
-    #[test]
-    fn la_mezcla_suma_las_dos_pistas() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut e = EscritorPistas::nuevo(dir.path()).unwrap();
-        e.escribir(&AudioFrame {
-            track: Track::Mic,
-            pcm: vec![0.25; 1600],
-            timestamp_ms: 0,
-        })
-        .unwrap();
-        e.escribir(&AudioFrame {
-            track: Track::System,
-            pcm: vec![0.25; 1600],
-            timestamp_ms: 0,
-        })
-        .unwrap();
-        e.cerrar().unwrap();
-
-        let m = mezclar(dir.path()).unwrap();
-        assert_eq!(m.len(), 1600);
-        assert!((m[0] - 0.5).abs() < 0.01, "suma: {}", m[0]);
-    }
-
-    #[test]
-    fn las_pistas_de_distinta_longitud_no_se_truncan() {
-        // El monitor de salida arranca unos ms más tarde que el micro: las
-        // pistas casi nunca miden lo mismo, y recortar a la corta comería el
-        // final de la clase.
-        let dir = tempfile::tempdir().unwrap();
-        let mut e = EscritorPistas::nuevo(dir.path()).unwrap();
-        e.escribir(&AudioFrame {
-            track: Track::Mic,
-            pcm: vec![0.1; 3200],
-            timestamp_ms: 0,
-        })
-        .unwrap();
-        e.escribir(&AudioFrame {
-            track: Track::System,
-            pcm: vec![0.1; 1600],
-            timestamp_ms: 0,
-        })
-        .unwrap();
-        e.cerrar().unwrap();
-
-        assert_eq!(mezclar(dir.path()).unwrap().len(), 3200);
-    }
-
-    #[test]
-    fn la_suma_de_dos_picos_no_desborda() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut e = EscritorPistas::nuevo(dir.path()).unwrap();
-        e.escribir(&AudioFrame {
-            track: Track::Mic,
-            pcm: vec![0.9; 160],
-            timestamp_ms: 0,
-        })
-        .unwrap();
-        e.escribir(&AudioFrame {
-            track: Track::System,
-            pcm: vec![0.9; 160],
-            timestamp_ms: 0,
-        })
-        .unwrap();
-        e.cerrar().unwrap();
-
-        let m = mezclar(dir.path()).unwrap();
-        assert!(m.iter().all(|v| *v <= 1.0), "debe recortar, no desbordar");
-    }
-
-    #[test]
-    fn una_sesion_solo_de_microfono_se_reproduce_igual() {
-        // Las reuniones presenciales no tienen pista de sistema.
-        let dir = tempfile::tempdir().unwrap();
-        let mut e = EscritorPistas::nuevo(dir.path()).unwrap();
-        e.escribir(&AudioFrame {
-            track: Track::Mic,
-            pcm: vec![0.3; 800],
-            timestamp_ms: 0,
-        })
-        .unwrap();
-        e.cerrar().unwrap();
-
-        assert_eq!(mezclar(dir.path()).unwrap().len(), 800);
-    }
+    // Los tests de `mezclar` viven ahora junto a la función, en
+    // `lib.rs::tests`: ese módulo se compila en todas las plataformas, y este
+    // archivo (con PipeWire) solo en Linux.
 
     #[test]
     fn la_conversion_de_tiempo_va_y_vuelve() {

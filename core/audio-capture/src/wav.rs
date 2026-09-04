@@ -119,7 +119,19 @@ pub fn leer_wav(ruta: impl AsRef<Path>) -> Result<(Vec<f32>, u32)> {
     };
 
     let mono = crate::mezcla::a_mono(&muestras, spec.channels as usize);
-    Ok((mono, spec.sample_rate))
+
+    // El contrato de esta función es entregar mono a 16 kHz, no solo mono:
+    // un WAV importado del móvil suele estar a 48 kHz, y si se dejara pasar,
+    // `mezclar` (reproducción) y la transcripción de importadas lo tratarían
+    // como si estuviera a 16 kHz y sonaría a 3× la velocidad.
+    let mut r = crate::mezcla::Remuestreador::nuevo(spec.sample_rate)?;
+    let mut a_16k = r.procesar(&mono)?;
+    // `procesar` solo emite bloques completos de 1024 muestras: al leer el
+    // archivo entero de una sola pasada (no en vivo, donde siempre llega más
+    // audio detrás) hay que pedirle el resto a `vaciar`, o se pierden hasta
+    // 1023 muestras del final —hasta 21 ms a 48 kHz— sin ningún aviso.
+    a_16k.extend(r.vaciar()?);
+    Ok((a_16k, SAMPLE_RATE))
 }
 
 #[cfg(test)]
@@ -206,6 +218,45 @@ mod tests {
 
         // Una pista que no ha recibido nada dura cero, no falla.
         assert_eq!(e.duracion_ms(Track::System), 0);
+    }
+
+    #[test]
+    fn leer_wav_no_pierde_el_final_de_un_archivo_a_48khz() {
+        // Antes de que `leer_wav` llamara a `Remuestreador::vaciar`, las
+        // muestras que no llegaban a completar el último bloque de 1024 se
+        // quedaban dentro del remuestreador y la función las descartaba en
+        // silencio: un WAV importado del móvil a 48 kHz salía hasta 21 ms más
+        // corto de lo que en realidad duraba.
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = dir.path().join("importado.wav");
+
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&ruta, spec).unwrap();
+        // 1,5 s a 48 kHz: no es múltiplo del bloque de 1024 del remuestreador,
+        // así que algo queda pendiente hasta el final del archivo.
+        for i in 0..72_000 {
+            let v = ((i as f32 * 0.01).sin() * 0.5 * i16::MAX as f32) as i16;
+            w.write_sample(v).unwrap();
+        }
+        w.finalize().unwrap();
+
+        let (muestras, sr) = leer_wav(&ruta).unwrap();
+        assert_eq!(sr, SAMPLE_RATE);
+
+        // 72 000 muestras a 48 kHz equivalen a ~24 000 a 16 kHz (un tercio de
+        // la duración). La tolerancia cubre el redondeo del remuestreo, no
+        // una pérdida real de audio.
+        let esperado = 24_000;
+        assert!(
+            (muestras.len() as i64 - esperado).abs() < 400,
+            "salieron {} muestras, esperaba ~{esperado}",
+            muestras.len()
+        );
     }
 
     #[test]

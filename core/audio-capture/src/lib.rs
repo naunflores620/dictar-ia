@@ -11,15 +11,31 @@
 //!    solo la del profesor si tu micrófono captó ruido de casa.
 
 pub mod mezcla;
+pub mod sincronia;
 pub mod wav;
 
 #[cfg(target_os = "linux")]
 pub mod pipewire_src;
 
+#[cfg(target_os = "windows")]
+pub mod wasapi_src;
+
 #[cfg(target_os = "linux")]
 pub mod reproductor;
 
+// `core/api` expone `reproductor::Reproductor` al puente de Flutter sin
+// distinguir plataforma (lo necesita para reproducir sesiones ya grabadas), así
+// que el módulo tiene que existir en todas partes con la misma superficie
+// pública. Fuera de Linux no hay PipeWire para reproducir de verdad, así que se
+// usa un `stub`: mismo criterio que `iniciar()` y `dispositivos()`, un poco más
+// abajo, que devuelven `AudioError::NoSoportada` en vez de dejar sin compilar
+// a quien los llama.
+#[cfg(not(target_os = "linux"))]
+#[path = "reproductor_stub.rs"]
+pub mod reproductor;
+
 use dictar_domain::Track;
+use std::path::Path;
 use std::sync::mpsc::Receiver;
 
 /// Frecuencia de trabajo de todo el pipeline.
@@ -153,7 +169,12 @@ pub fn iniciar(cfg: CaptureConfig) -> Result<(Receiver<AudioFrame>, Box<dyn Capt
         pipewire_src::iniciar(cfg)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        wasapi_src::iniciar(cfg)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = cfg;
         Err(AudioError::NoSoportada)
@@ -167,15 +188,53 @@ pub fn dispositivos() -> Result<Vec<DeviceInfo>> {
         pipewire_src::dispositivos()
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        wasapi_src::dispositivos()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         Err(AudioError::NoSoportada)
     }
 }
 
+/// Mezcla las pistas de una sesión en una sola señal mono a 16 kHz.
+///
+/// Suma y recorta a [-1, 1]: las dos voces rara vez coinciden —cuando una
+/// habla, la otra calla— así que la suma directa no satura en la práctica, y
+/// el recorte cubre el caso en que sí.
+///
+/// Vive en `lib.rs` y no en `reproductor` porque solo depende de
+/// [`wav::leer_wav`], que es independiente de plataforma. `reproductor.rs`
+/// (Linux, con PipeWire) y `reproductor_stub.rs` (el resto) la reexportan
+/// como `reproductor::mezclar` en vez de reimplementarla cada uno: así no hay
+/// dos copias de esta lógica que puedan divergir con el tiempo.
+pub fn mezclar(dir: &Path) -> Result<Vec<f32>> {
+    let mut mezcla: Vec<f32> = Vec::new();
+
+    for nombre in ["mic.wav", "system.wav"] {
+        let ruta = dir.join(nombre);
+        if !ruta.is_file() {
+            continue;
+        }
+
+        let (pcm, _sr) = wav::leer_wav(&ruta)?;
+        if pcm.len() > mezcla.len() {
+            mezcla.resize(pcm.len(), 0.0);
+        }
+        for (m, v) in mezcla.iter_mut().zip(pcm.iter()) {
+            *m = (*m + *v).clamp(-1.0, 1.0);
+        }
+    }
+
+    Ok(mezcla)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wav::EscritorPistas;
 
     #[test]
     fn la_configuracion_por_defecto_graba_las_dos_pistas() {
@@ -225,5 +284,149 @@ mod tests {
         };
         assert_eq!(f.nivel(), 0.0);
         assert_eq!(f.duracion_ms(), 0);
+    }
+
+    // -- mezclar --------------------------------------------------------------
+    //
+    // Movidos aquí junto con la función: antes vivían en `reproductor.rs`, que
+    // en Windows y macOS ni siquiera se compilaba, así que esta lógica —pura,
+    // sin PipeWire de por medio— se quedaba sin probar fuera de Linux.
+
+    #[test]
+    fn la_mezcla_suma_las_dos_pistas() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = EscritorPistas::nuevo(dir.path()).unwrap();
+        e.escribir(&AudioFrame {
+            track: Track::Mic,
+            pcm: vec![0.25; 1600],
+            timestamp_ms: 0,
+        })
+        .unwrap();
+        e.escribir(&AudioFrame {
+            track: Track::System,
+            pcm: vec![0.25; 1600],
+            timestamp_ms: 0,
+        })
+        .unwrap();
+        e.cerrar().unwrap();
+
+        let m = mezclar(dir.path()).unwrap();
+        assert_eq!(m.len(), 1600);
+        assert!((m[0] - 0.5).abs() < 0.01, "suma: {}", m[0]);
+    }
+
+    #[test]
+    fn las_pistas_de_distinta_longitud_no_se_truncan() {
+        // El monitor de salida arranca unos ms más tarde que el micro: las
+        // pistas casi nunca miden lo mismo, y recortar a la corta comería el
+        // final de la clase.
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = EscritorPistas::nuevo(dir.path()).unwrap();
+        e.escribir(&AudioFrame {
+            track: Track::Mic,
+            pcm: vec![0.1; 3200],
+            timestamp_ms: 0,
+        })
+        .unwrap();
+        e.escribir(&AudioFrame {
+            track: Track::System,
+            pcm: vec![0.1; 1600],
+            timestamp_ms: 0,
+        })
+        .unwrap();
+        e.cerrar().unwrap();
+
+        assert_eq!(mezclar(dir.path()).unwrap().len(), 3200);
+    }
+
+    #[test]
+    fn la_suma_de_dos_picos_no_desborda() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = EscritorPistas::nuevo(dir.path()).unwrap();
+        e.escribir(&AudioFrame {
+            track: Track::Mic,
+            pcm: vec![0.9; 160],
+            timestamp_ms: 0,
+        })
+        .unwrap();
+        e.escribir(&AudioFrame {
+            track: Track::System,
+            pcm: vec![0.9; 160],
+            timestamp_ms: 0,
+        })
+        .unwrap();
+        e.cerrar().unwrap();
+
+        let m = mezclar(dir.path()).unwrap();
+        assert!(m.iter().all(|v| *v <= 1.0), "debe recortar, no desbordar");
+    }
+
+    #[test]
+    fn una_sesion_solo_de_microfono_se_reproduce_igual() {
+        // Las reuniones presenciales no tienen pista de sistema.
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = EscritorPistas::nuevo(dir.path()).unwrap();
+        e.escribir(&AudioFrame {
+            track: Track::Mic,
+            pcm: vec![0.3; 800],
+            timestamp_ms: 0,
+        })
+        .unwrap();
+        e.cerrar().unwrap();
+
+        assert_eq!(mezclar(dir.path()).unwrap().len(), 800);
+    }
+
+    // -- reproductor::Reproductor, fuera de Linux ------------------------------
+
+    /// Documenta el contrato del `stub`: sin PipeWire, `Reproductor::iniciar`
+    /// tiene que fallar en tiempo de ejecución con `NoSoportada`, igual que
+    /// `iniciar()` y `dispositivos()`. Sin este test, un cambio futuro en
+    /// `reproductor_stub.rs` podría romper ese contrato sin que nada lo avisara,
+    /// porque en Linux —donde sí corre la CI— `reproductor.rs` es otro archivo
+    /// por completo y nunca ejercita esta rama.
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn fuera_de_linux_reproducir_avisa_en_vez_de_no_compilar() {
+        let err = reproductor::Reproductor::iniciar(Path::new("."), 0).unwrap_err();
+        assert!(matches!(err, AudioError::NoSoportada));
+    }
+
+    // -- iniciar()/dispositivos(), enrutado por plataforma ---------------
+    //
+    // Antes, el invariante 4 (ninguna plataforma sin backend rompe la
+    // firma) lo probaba un `enum Plataforma` escrito a mano en
+    // `sincronia.rs`, desconectado de los `#[cfg(target_os)]` de aquí
+    // abajo: seguía en verde aunque este `cfg` se rompiera -- incluido el
+    // caso de confundir Android con "no-Linux" (`target_os = "android"` no
+    // es `"linux"` ni `"windows"`, así que cae bien en esta rama, pero un
+    // `cfg` mal escrito podría dejar de excluirlo). Estos tests llaman a
+    // las funciones reales de este módulo (`iniciar`/`dispositivos`, más
+    // abajo), gateados por el mismo `#[cfg]` que la rama que verifican:
+    // mismo criterio que
+    // `fuera_de_linux_reproducir_avisa_en_vez_de_no_compilar`, arriba.
+    //
+    // Con la matriz de CI actual (jobs solo para Linux y Windows) esta
+    // rama no compila en ningún job existente, así que este test tampoco
+    // corre hoy -- ninguna prueba automatizada puede ejercitarla sin
+    // compilar para una tercera plataforma. Sigue siendo mejor que la
+    // réplica: en cuanto exista un job así, protege de verdad; la réplica
+    // nunca lo habría hecho.
+    #[test]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    fn fuera_de_windows_y_linux_iniciar_devuelve_no_soportada() {
+        let err = iniciar(CaptureConfig::default()).unwrap_err();
+        assert!(matches!(err, AudioError::NoSoportada));
+    }
+
+    /// Mismo caso que la de arriba, para la otra mitad del invariante 4: la
+    /// réplica que reemplaza (`tiene_backend`) no distinguía entre
+    /// `iniciar()` y `dispositivos()`, así que esta prueba cubre la que
+    /// aquella dejaba fuera.
+    #[test]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    fn fuera_de_windows_y_linux_dispositivos_devuelve_no_soportada() {
+        let err = dispositivos().unwrap_err();
+        assert!(matches!(err, AudioError::NoSoportada));
     }
 }
