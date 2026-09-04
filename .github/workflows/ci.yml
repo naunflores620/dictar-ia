@@ -38,18 +38,27 @@ jobs:
       #
       # No se instala libssl-dev: el proyecto usa rustls.
       #
-      # `libdbus-1-dev` es el que faltaba y tumbaba el paso `compilar` con
-      # «Package dbus-1 was not found in the pkg-config search path». No lo
-      # pide nadie de forma visible: entra por `xcap` (en
-      # `core/screen-capture`) -> `dbus` -> `libdbus-sys`, cuyo `build.rs`
-      # exige el .pc del sistema. Funcionaba en la máquina de desarrollo
-      # porque allí ya estaba instalado, y en el CI no.
+      # Las de `xcap` (en `core/screen-capture`) son las que más cuesta
+      # adivinar, porque **ninguna aparece en ningún Cargo.toml de este
+      # repositorio**: entran por dependencias transitivas y solo se
+      # manifiestan al enlazar.
+      #
+      #   xcap -> dbus     -> libdbus-sys : «Package dbus-1 was not found»
+      #   xcap -> xcb 1.7               : «unable to find library -lxcb»
+      #
+      # Las tres extensiones de xcb (randr, shm, xfixes) van con la primera:
+      # el crate las enlaza para capturar y consultar las pantallas, y salen
+      # una por una en vueltas sucesivas del CI si se añaden a cuentagotas.
+      #
+      # Todo esto compilaba en la máquina de desarrollo porque allí ya estaba
+      # instalado de antes, y en ningún runner limpio.
       - name: dependencias del sistema
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             cmake ninja-build clang libclang-dev pkg-config \
-            libpipewire-0.3-dev libasound2-dev libsecret-1-dev libdbus-1-dev
+            libpipewire-0.3-dev libasound2-dev libsecret-1-dev \
+            libdbus-1-dev libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
 
       - name: versiones
         run: |

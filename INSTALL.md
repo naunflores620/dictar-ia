@@ -11,6 +11,7 @@ sudo apt update && sudo apt install -y \
   libgtk-3-dev liblzma-dev libstdc++-15-dev \
   libpipewire-0.3-dev libasound2-dev \
   libsecret-1-dev libdbus-1-dev libsqlite3-dev \
+  libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
   libvulkan-dev glslc spirv-tools
 ```
 
@@ -23,6 +24,7 @@ Para qué es cada bloque:
 | `libpipewire-0.3-dev libasound2-dev` | Captura de audio: loopback del sistema y micrófono |
 | `libsecret-1-dev` | Llavero del SO para las claves de API |
 | `libdbus-1-dev` | Lo exige `libdbus-sys`, que entra por `xcap` (captura de pantalla). No lo pide nadie de forma visible, y sin él el núcleo no compila en Linux |
+| `libxcb1-dev` y sus extensiones | Igual: las enlaza `xcb`, otra dependencia transitiva de `xcap`. El fallo es `unable to find library -lxcb` al enlazar, no al compilar |
 | `libsqlite3-dev` | Base de datos local |
 | `libvulkan-dev glslc spirv-tools` | Aceleración de Whisper en tu Intel Arc 140V |
 
