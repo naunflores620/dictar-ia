@@ -30,7 +30,7 @@ use windows::core::GUID;
 use windows::Win32::Media::Audio::{
     eCapture, eConsole, eRender, EDataFlow, IAudioCaptureClient, IAudioClient, IMMDevice,
     IMMDeviceCollection, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED,
-    WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
+    DEVICE_STATE, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
@@ -51,11 +51,15 @@ const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 0x2;
 const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT: GUID =
     GUID::from_u128(0x0000_0003_0000_0010_8000_00AA00389B71);
 
-// mmdeviceapi.h. Mismo motivo que las constantes de audioclient.h de más
-// arriba: es un valor fijo de la ABI (un `#define`, no un enum con nombre
-// propio en el SDK de Win32), así que no depende de cómo lo exponga esta
-// versión del crate. Sin esta máscara, `EnumAudioEndpoints` también
-// devolvería los dispositivos deshabilitados o desconectados.
+// mmdeviceapi.h. Sin esta máscara, `EnumAudioEndpoints` también devolvería
+// los dispositivos deshabilitados o desconectados.
+//
+// A diferencia de las constantes de audioclient.h de más arriba, esta **sí**
+// hay que envolverla: `EnumAudioEndpoints` pide un `DEVICE_STATE`, que en
+// este crate es un newtype y no un `u32`. El comentario original de aquí
+// afirmaba lo contrario —que daba igual cómo lo expusiera esta versión del
+// crate— y era falso; no se detectó porque este archivo no se compiló nunca
+// hasta hoy.
 const DEVICE_STATE_ACTIVE: u32 = 0x1;
 
 /// Ventana de captura. Bastante para no perder paquetes entre dos sondeos
@@ -419,7 +423,11 @@ unsafe fn abrir_cliente(
         }
     };
 
-    let banderas: u32 = if loopback { AUDCLNT_STREAMFLAGS_LOOPBACK } else { 0 };
+    let banderas: u32 = if loopback {
+        AUDCLNT_STREAMFLAGS_LOOPBACK
+    } else {
+        0
+    };
 
     let resultado_init = unsafe {
         cliente.Initialize(
@@ -465,7 +473,14 @@ unsafe fn leer_formato(formato: *const WAVEFORMATEX) -> Result<(FormatoNativo, u
         // vez de un `wFormatTag` directo: el formato real va en el
         // `SubFormat` de la estructura extendida.
         let ext = unsafe { &*(formato as *const WAVEFORMATEXTENSIBLE) };
-        ext.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
+        // La copia a una variable local no sobra: `WAVEFORMATEXTENSIBLE`
+        // está empaquetado, y comparar con `==` directamente tomaría una
+        // referencia a `SubFormat`, que puede estar desalineada —
+        // comportamiento indefinido, y el compilador lo rechaza. Leer el
+        // campo por valor (`GUID` es `Copy`) es lo único que un struct
+        // empaquetado permite.
+        let subformato = ext.SubFormat;
+        subformato == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
     } else {
         f.wFormatTag == WAVE_FORMAT_IEEE_FLOAT
     };
@@ -522,16 +537,14 @@ pub fn dispositivos() -> Result<Vec<DeviceInfo>> {
     // Un fallo al enumerar una dirección (por ejemplo, el subsistema de
     // audio del micrófono deshabilitado por política) no debe vaciar la
     // lista de la otra dirección: se registra y se sigue con lo que haya.
-    let resultado_mic = unsafe {
-        enumerar_flujo(&enumerador, eCapture, false, "Micrófono", &mut lista)
-    };
+    let resultado_mic =
+        unsafe { enumerar_flujo(&enumerador, eCapture, false, "Micrófono", &mut lista) };
     if let Err(e) = resultado_mic {
         tracing::warn!(error = %e, "no se pudieron enumerar los micrófonos");
     }
 
-    let resultado_salida = unsafe {
-        enumerar_flujo(&enumerador, eRender, true, "Salida", &mut lista)
-    };
+    let resultado_salida =
+        unsafe { enumerar_flujo(&enumerador, eRender, true, "Salida", &mut lista) };
     if let Err(e) = resultado_salida {
         tracing::warn!(error = %e, "no se pudieron enumerar las salidas");
     }
@@ -555,7 +568,8 @@ unsafe fn enumerar_flujo(
     let id_por_defecto = unsafe { id_de_endpoint_por_defecto(enumerador, flujo) }.ok();
 
     let coleccion: IMMDeviceCollection =
-        unsafe { enumerador.EnumAudioEndpoints(flujo, DEVICE_STATE_ACTIVE) }.map_err(err)?;
+        unsafe { enumerador.EnumAudioEndpoints(flujo, DEVICE_STATE(DEVICE_STATE_ACTIVE)) }
+            .map_err(err)?;
     let total = unsafe { coleccion.GetCount() }.map_err(err)?;
 
     for i in 0..total {

@@ -12,7 +12,8 @@ Afectan a todo lo demás, así que van primero.
 
 | # | Bloqueo | Efecto | Sale con |
 |---|---|---|---|
-| B-1 | **No hay toolchain de Rust.** Verificado el 03/09: no existen `cargo`, `rustc` ni `rustfmt`, ni en Windows ni en `Ubuntu-26.04` de WSL | Ninguna compuerta de Rust se puede ejecutar. Todo cambio en el núcleo se entrega sin comprobar y todo cierre queda condicionado | Instalar Rust 1.75+ (lo que exige el workspace) |
+| ~~B-1~~ | **RESUELTO el 04/09.** La sesión hermana `dictar-ia-b2` instaló rustc/cargo 1.98.1 y las VS Build Tools (MSVC 14.44). Confirmado: `~/.cargo/bin` completo y `Cargo.lock` con 718 líneas nuevas resolviendo `keyring` | **Es el cambio de mayor impacto del proyecto.** Catorce revisiones cerradas como `NO VERIFICABLE` pasan a ser ejecutables, y ninguna HU seguía en *cierre condicionado* por otro motivo | ✅ |
+| B-1b | **El SDK de Windows sigue instalándose**, así que `cargo test` en el host todavía no enlaza. Y en Git Bash el `link` de coreutils **ensombrece al `link.exe` de MSVC**: un error de enlazado raro es eso, no el código | Compilar sí, enlazar todavía no | Que termine la instalación; usar PowerShell o anteponer MSVC en el `PATH` |
 | B-2 | **Flutter desactualizado.** Dart 3.11.4 contra el `sdk: ^3.12.2` de `app/pubspec.yaml` | `flutter pub get` falla, y con él `analyze` y `test`. Además el analizador del IDE marca como indefinidos hasta `Size` y `debugPrint`: **ese ruido no es un hallazgo** | `flutter upgrade` |
 | B-3 | **No hay NDK de Android ni `cargo-ndk`** | El cruce a Android no se puede probar. `cargo ndk build -p dictar-api` nunca se ha ejecutado | Depende de B-1, más el NDK |
 | B-4 | El `target/` de 21 GB tiene artefactos de Linux (`.so`), de otra máquina | No sirve de evidencia de nada acá | — |
@@ -23,17 +24,45 @@ ejecutar nada — documentación, estructura de archivos, y comprobaciones con P
 demás sale como *APROBADA, cierre condicionado*. Resolver B-1 es la acción de mayor palanca del
 proyecto ahora mismo.
 
-## Regla suspendida
+## Regla restaurada — 2026-09-04
 
-**Rama por tarea, suspendida.** El protocolo la exige, pero el árbol tiene 24 archivos
-modificados sin commitear de trabajo anterior, y crear ramas ahora los arrastraría a todas.
-Vuelve a estar en vigor en cuanto el PO autorice el primer commit. Hasta entonces todas las
-tareas trabajan sobre el árbol de `main`, sin commit, y el aislamiento lo da la regla de
-archivos disjuntos.
+**Rama por tarea, otra vez en vigor.** El PO autorizó commitear y la sesión hermana lo hizo:
+cuatro commits en `main`, de `849e95e` a `a210562` — el mecanismo, HU-01, HU-05 y el resto.
+Desaparece el motivo por el que estaba suspendida (un árbol con 24 archivos sin commitear que
+cualquier rama habría arrastrado).
 
-Consecuencia añadida: `verificador-pruebas` **no puede usar `isolation: "worktree"`**, porque un
-worktree se crea desde un commit y no llevaría nada que mutar. Se lanza sin aislamiento, con
-instrucción explícita de revertir cada mutación y de pegar `git status` al empezar y al terminar.
+Dos consecuencias, y las dos importan:
+
+- **`verificador-pruebas` vuelve a poder usar `isolation: "worktree"`.** Era imposible mientras
+  no hubiera un commit desde el que crearlo, y le obligaba a copiar archivos al scratchpad a mano
+  para no destruir el trabajo del implementador.
+- **Y es la salida limpia al problema que la regla de archivos disjuntos no cubre.** Esa regla
+  protege colisiones *dentro* del mecanismo; no sirvió cuando apareció otra sesión trabajando
+  sobre el mismo árbol, y estuvo a punto de costar un rename global a medio aplicar. Con ramas,
+  el aislamiento deja de depender de que dos sesiones se pongan de acuerdo por mensaje.
+
+## Dos sesiones sobre el mismo repositorio — 2026-09-04
+
+El PO puso a una segunda sesión, **`dictar-ia-b2`**, a implementar HU-02 (Android) más cuatro
+puntos de saneamiento, en paralelo a esta. Se detectó por un cambio inesperado en `sincronia.rs`,
+no por aviso previo, y se coordinó por `SendMessage`.
+
+**El riesgo concreto que se evitó:** había renombrado `PistaWasapi` → `PistaCapturada` en
+`sincronia.rs` **y** en `wasapi_src.rs` (10 ocurrencias). Un implementador de esta sesión tenía
+encargo de editar el primero; si hubiera escrito sobre la copia que leyó al empezar, habría
+deshecho el rename en un archivo y no en el otro, dejando el crate sin compilar. Se le avisó a
+tiempo con instrucción de releer antes de escribir.
+
+**Reparto acordado.** Suyos: `core/audio-capture/src/{aaudio_src.rs, lib.rs}`, todo
+`app/android/**`, `app/lib/plataforma/android.dart`, `app/lib/pantallas/grabacion.dart` y
+`.github/workflows/ci.yml`. Nuestros: `core/providers/src/secretos.rs`,
+`app/lib/pantallas/ajustes.dart`, `app/test/` y `core/audio-capture/src/sincronia.rs` (ya
+liberado por ella).
+
+**HU-02 no ha pasado por el mecanismo.** Ella misma lo declaró en su `PLAN.md`: el PO se la
+delegó directamente, sin `contradictor` ni los tres revisores. Queda como deuda de revisión
+explícita, igual que T-15, y **no se da por cerrada**. Ofreció expresamente que se revise, «cuanto
+más hostil mejor».
 
 ## El orquestador ya no implementa — decisión del PO, 2026-09-03
 
@@ -108,7 +137,8 @@ Ordenado por lo que costaría más caro si se queda como está.
 | T-2 | **Búsqueda en la interfaz** | [HU-04](../docs/06-historias-de-usuario.md#hu-04--buscar-en-todo-lo-que-he-grabado) | El backend existe y el puente expone `buscar`, pero `FraseDto` **no lleva `session_id`**: los criterios 2 y 3 no se pueden cumplir sin regenerar el puente. **Parcialmente bloqueada por B-5** | `contradictor`, `revisor-codigo` |
 | T-5 | Importar audio desde la interfaz | [HU-03](../docs/06-historias-de-usuario.md#hu-03--importar-un-audio-que-grabé-con-otra-cosa) | Botón maqueta con backend completo detrás. **Bloqueada por B-5** | Los tres |
 | T-6b | **Resto de T-6**: el botón de captura manual durante la grabación | HU-11 §4 | La parte previa a grabar ya está resuelta (ver Terminadas, T-6). Queda «Capturar diapositiva» **durante** la sesión, en `grabacion.dart`. No es una tarea chica: en la disposición compacta ese botón es el elemento principal y quitarlo obliga a repensarla. Necesita su `PLAN.md` | `contradictor` antes, luego `revisor-codigo` |
-| T-7 | **El chequeo de «el núcleo va dentro» no corre en los PR** | HU-10 §3 | Hallazgo de `qa`. El paso que verifica que el `.exe` y el APK llevan la librería nativa solo vive en `release.yml`, que dispara con `tags: v*`. Una regresión que reintroduzca el fallo original del proyecto —paquete sin núcleo, aplicación con datos de demostración— **no se vería en el PR que la introduce**, solo al cortar un release. Misma clase de fallo silencioso, movido más tarde en el pipeline | `auditor-plataforma` |
+| T-7 | ⚠️ **Dice la sesión hermana que la cerró — sin revisar.** Metió un job `android` en `ci.yml` que cruza el núcleo con `cargo ndk` y comprueba que `libdictar_api.so` está dentro del APK **en cada PR**, no solo tras un tag. Si es así, resuelve el hallazgo. **No se marca terminada hasta que lo verifique `auditor-plataforma`**: viene de HU-02, que no ha pasado por el mecanismo. El enunciado original, abajo | `auditor-plataforma` |
+| T-7bis | **El chequeo de «el núcleo va dentro» no corría en los PR** | HU-10 §3 | Hallazgo de `qa`. El paso que verifica que el `.exe` y el APK llevan la librería nativa solo vive en `release.yml`, que dispara con `tags: v*`. Una regresión que reintroduzca el fallo original del proyecto —paquete sin núcleo, aplicación con datos de demostración— **no se vería en el PR que la introduce**, solo al cortar un release. Misma clase de fallo silencioso, movido más tarde en el pipeline | `auditor-plataforma` |
 | T-8 | `pipewire_src` no vacía el remuestreador al cerrar | Deuda de HU-01 | Hallazgo del `contradictor`. Pierde hasta ~21 ms por pista en **cada** cierre de sesión, hoy, en silencio. WASAPI sí lo hará, así que Linux queda inconsistente con Windows | `revisor-codigo` |
 | T-9 | El cambio de dispositivo por defecto a mitad de sesión no se soporta | Deuda de HU-01 | Conectar unos auriculares durante la clase termina esa pista. Decidido fuera de alcance en HU-01, sin resolver en ninguna plataforma | `contradictor` sobre el alcance, antes de planear |
 | T-11 | **Limpiar `libsecret-1-dev` — y NO hacerlo a ciegas** | Deuda de HU-05 | `libsecret-1-dev` está en el CI, en `release.yml`, en `INSTALL.md`, en el README y en `docs/01-arquitectura.md:591` desde el commit inicial, y el backend de `keyring` que se usa no lo necesita. **Pero el `auditor-plataforma` encontró la trampa:** `xcap` —dependencia de `core/screen-capture`, ajena a esta HU— arrastra `dbus` → `libdbus-sys`, que sí necesita `libdbus-1-dev` en Linux, y **eso no está declarado en ningún sitio**. Si hoy llega por accidente como dependencia transitiva de `libsecret-1-dev` vía `apt`, quitarlo rompería la captura de pantalla en Linux por un motivo que no tiene nada que ver con el llavero, y el error señalaría al sitio equivocado. Declarar `libdbus-1-dev` explícitamente **antes** de tocar nada | `auditor-plataforma` |

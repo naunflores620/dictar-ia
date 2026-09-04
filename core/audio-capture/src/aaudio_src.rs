@@ -33,7 +33,9 @@
 //! espera acotado, en un hilo normal, es la forma correcta y además la que
 //! deja el bucle idéntico al de `wasapi_src`.
 
-use crate::sincronia::{bytes_por_muestra, formato_desde_aaudio, pistas_en_android, PistaCapturada};
+use crate::sincronia::{
+    bytes_por_muestra, formato_desde_aaudio, pistas_en_android, PistaCapturada,
+};
 use crate::{AudioError, AudioFrame, CaptureConfig, CaptureSession, DeviceInfo, Result};
 use dictar_domain::Track;
 use std::ffi::{c_void, CStr};
@@ -270,7 +272,10 @@ fn bucle(
         }
     };
 
-    if let Err(e) = comprobar(unsafe { AAudioStream_requestStart(abierto.flujo) }, "arrancar") {
+    if let Err(e) = comprobar(
+        unsafe { AAudioStream_requestStart(abierto.flujo) },
+        "arrancar",
+    ) {
         let _ = tx_listo.send(Err(e));
         return Ok(());
     }
@@ -422,16 +427,16 @@ fn abrir_microfono() -> Result<FlujoAbierto> {
         "flujo de AAudio abierto (lo pedido fue 16 kHz mono f32)"
     );
 
-    let pista = match PistaCapturada::nueva(Track::Mic, canales as usize, formato, frecuencia as u32)
-    {
-        Ok(p) => p,
-        Err(e) => {
-            unsafe {
-                AAudioStream_close(flujo);
+    let pista =
+        match PistaCapturada::nueva(Track::Mic, canales as usize, formato, frecuencia as u32) {
+            Ok(p) => p,
+            Err(e) => {
+                unsafe {
+                    AAudioStream_close(flujo);
+                }
+                return Err(e);
             }
-            return Err(e);
-        }
-    };
+        };
 
     Ok(FlujoAbierto {
         flujo,

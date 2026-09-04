@@ -401,8 +401,13 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "linux"))]
     fn fuera_de_linux_reproducir_avisa_en_vez_de_no_compilar() {
-        let err = reproductor::Reproductor::iniciar(Path::new("."), 0).unwrap_err();
-        assert!(matches!(err, AudioError::NoSoportada));
+        // Se compara contra el `Result` entero y no con `unwrap_err()`:
+        // ese método exige que el tipo Ok implemente `Debug` para poder
+        // imprimirlo, y `Reproductor` no lo implementa en ninguna de las dos
+        // plataformas. Derivarlo solo para esto obligaría a derivarlo también
+        // en `reproductor.rs`, que guarda manejadores de PipeWire.
+        let r = reproductor::Reproductor::iniciar(Path::new("."), 0);
+        assert!(matches!(r, Err(AudioError::NoSoportada)));
     }
 
     // -- iniciar()/dispositivos(), enrutado por plataforma ---------------

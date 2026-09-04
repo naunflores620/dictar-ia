@@ -166,3 +166,69 @@ Lo que **no** hay que rehacer: la extracción de las tres funciones, el contrato
 protección de Android, los permisos por reutilización y la decisión sobre el mock.
 
 Orquestador · 2026-09-03
+
+---
+
+# Tercera vuelta — 2026-09-03
+
+## Lo que quedó cerrado
+
+- **H1-bis, el Bloqueante.** Confirmado corregido con evidencia propia del `revisor-codigo`: ambos
+  consumidores usan `linea_declara` (`guardar_clave_en:637`, `purgar_del_env_con:760`), no hay un
+  tercer sitio que reimplemente la noción, y —lo que nadie había mirado— **no borra de más**: con
+  `GEMINI=x` y `GEMINI_API_KEY=y` simultáneos colapsa a una línea sin restos, y la comparación es
+  por igualdad exacta, así que un proveedor cuyo nombre sea prefijo de otro no da falso positivo.
+- **La relectura del llavero es fiable por diseño.** El `auditor-plataforma` reconstruyó la cadena
+  entera —`keyring::Entry` → `keyring_core::Entry` → backend nativo— extrayendo `keyring-core` del
+  `.crate` con `tar` porque no estaba desempaquetado. **Ningún eslabón cachea.** En Windows
+  (`CredWriteW`/`CredReadW` directas) es incluso más fiable que en Linux, que depende de un demonio.
+- **H3-bis, H5-bis y H6-bis** confirmados. Para H6-bis el revisor comparó el comentario aplicado
+  contra el texto exacto de su propio pedido: coincide.
+- **Verificación ejecutada, por primera vez en esta HU.** El `verificador-pruebas` reprodujo los dos
+  scripts de Python del `HANDOFF` — pero antes los comparó línea por línea contra el Rust real,
+  incluida la lógica vieja recuperada con `git diff`, para no confiar en una traducción infiel. Y
+  escribió un tercero propio para un hueco que el `HANDOFF` describe en prosa pero no implementa.
+  Con eso confirmó que H8-bis y H9-bis sí detectan sus mutaciones y que ninguna prueba previa se
+  debilitó.
+
+## Hallazgos nuevos
+
+| # | Hallazgo | Origen | Severidad | Estado |
+|---|---|---|---|---|
+| H4-ter | **La escritura atómica empeoró la seguridad.** El temporal se crea con `std::fs::write` (permisos por defecto, típicamente legibles por grupo y otros bajo umask 022) y el `chmod 0600` se aplica **después** (`secretos.rs:681` vs `688`). Hay una ventana con el `.env` entero en claro bajo permisos abiertos, **y ahora en cada guardado**: antes la escritura era directa sobre un archivo que, tras la primera vez, ya conservaba 0600 al truncarse. Además, si `set_permissions` falla, el temporal **queda huérfano con el secreto en claro** — no hay ningún `remove_file` en todo el archivo | `revisor-codigo` · `auditor-plataforma` (P2, P4) | **Bloqueante** (elevado; ver §2) | Cuarta vuelta |
+| H2-ter | `secretos.rs:328-331` — `.map(\|_\| ())` descarta el valor releído: certifica que la lectura no falla, no que coincida con lo escrito. Y el caso trazado completo: si `set_password` tiene éxito real pero la relectura falla, `escribir_en_llavero` devuelve `false`, no se purga (correcto) **pero sí se escribe la clave en el `.env`** — queda duplicada en ambos sitios, e informa `Origen::Archivo` como si el llavero hubiera fallado del todo | `revisor-codigo` | **Importante** | Cuarta vuelta |
+| P1 | En Windows, si `std::fs::rename` (`secretos.rs:691`) falla porque otro proceso tiene el `.env` abierto sin `FILE_SHARE_DELETE`, y ocurre en la purga posterior a un guardado **ya exitoso** en el llavero (`secretos.rs:562`), `guardar_clave` devuelve `Err` **aunque la clave ya esté guardada**. No miente, pero deja llavero y `.env` en desacuerdo sin ningún diagnóstico que apunte a la causa | `auditor-plataforma` | **Importante** | Cuarta vuelta |
+| V1 | **`resolver_por_defecto()` sigue sin ninguna prueba** (`secretos.rs:485-491`). Se extrajo `cadena_con` para cubrir el cableado, pero `resolver_por_defecto` le pasa `entorno` y `llavero` —**el mismo tipo exacto**, `Box<dyn KeyResolver>`— así que intercambiarlos compila sin aviso. Ninguna prueba del repositorio la invoca. **El hueco no se cerró: se movió un nivel más adentro**, y contradice la afirmación del `HANDOFF` de que «ya no le queda ninguna decisión propia sin cubrir» | `verificador-pruebas` | **Importante** | Cuarta vuelta |
+| V2 | Las dos pruebas nuevas de H1-bis cubren **2 de las 3** formas de `nombres_candidatos`: la forma en minúsculas (`gemini`) no aparece en ningún `.env` de prueba del archivo. Demostrado **por mutación ejecutada**: una `linea_declara` que la ignorase dejaría ambas pruebas en verde. Es el Bloqueante original otra vez, un tercio más pequeño | `verificador-pruebas` | **Importante** | Cuarta vuelta |
+| M1 | El nombre del temporal (`.env.tmp.<pid>`) no distingue llamadas concurrentes del mismo proceso | `revisor-codigo` | **Menor** | Cuarta vuelta |
+| M2 | En Windows no hay ningún endurecimiento de permisos, ni antes ni después. Preexistente, no regresión de esta vuelta | `auditor-plataforma` (P3) | **Nota** | Al tablero |
+| M3 | El `HANDOFF` (líneas 144-146, 554-556) dice que el temporal huérfano depende de que el proceso muera. Es falso: cualquier error de `rename`/`set_permissions` lo deja igual, con el proceso vivo | `auditor-plataforma` | **Menor** | Cuarta vuelta |
+| M4 | `ajustes.dart:_guardar` no tiene `try/catch`, a diferencia de `_probar`, justo cuando `purgar_del_env` ha empezado a propagar errores que antes se tragaba | `revisor-codigo` | **Importante** | Al tablero: es `app/lib`, fuera del alcance de esta HU |
+
+## Desacuerdos
+
+**Con el `revisor-codigo`, sobre H4-ter.** Él lo clasifica como Importante; el orquestador lo eleva
+a **Bloqueante**. Una fuga de credenciales en disco, recurrente, introducida por la historia que
+existe precisamente para evitarlas. **Y obligó a arreglar el protocolo**: su tabla de severidad se
+quedó corta dos veces el mismo día, las dos en esta HU. Ahora «expone una credencial» y «le dice al
+usuario algo falso sobre el estado de sus datos o sus claves» son causales explícitas, con la regla
+general escrita al lado: *si un hallazgo obliga a discutir si la tabla lo cubre, la tabla está
+incompleta, no el hallazgo*.
+
+**Entre revisores, ninguno.** El `revisor-codigo` y el `auditor-plataforma` llegaron por separado a
+la ventana de permisos (H4-ter y P2/P4 son el mismo defecto visto desde dos ángulos).
+
+## Veredicto
+
+**VUELVE A IMPLEMENTACIÓN.** Cuarta vuelta.
+
+Dos patrones atraviesan esta vuelta y conviene nombrarlos, porque se repiten:
+
+1. **Arreglar un camino de error abre los caminos de error del arreglo.** H4-ter, H2-ter y P1 son
+   los tres consecuencia directa de las correcciones de la vuelta anterior, no defectos originales.
+   Es normal; lo que no sería normal es no revisarlos.
+2. **La corrección desplaza el problema en vez de eliminarlo.** V1 es el hueco de cableado de la
+   segunda vuelta, movido un nivel más adentro. V2 es el Bloqueante original, reducido a un tercio.
+   En ambos casos el `HANDOFF` los da por cerrados.
+
+Orquestador · 2026-09-03

@@ -5,6 +5,603 @@ Escrito por quien implementó, al entregar.
 > **Para los revisores:** esto es una **declaración**, no evidencia. Todo lo que dice acá está
 > por verificarse. Ver `protocolo.md`, regla 1.
 
+## Cuarta vuelta — correcciones al `REVIEW.md`
+
+La tercera entrega volvió a implementación otra vez: sección «Tercera vuelta» de
+`_orquestacion/trabajo/HU-05-llavero/REVIEW.md`, con el detalle en las secciones «Tercera vuelta»
+de `REVIEW-codigo.md`, `REVIEW-pruebas.md` y `REVIEW-plataforma.md`, en la misma carpeta. Esta
+sección documenta qué se corrigió de cada uno de los hallazgos nuevos (H4-ter, H2-ter, P1, V1, V2,
+M1, M3). Lo de abajo (primera, segunda y tercera vuelta) queda tal cual se escribió entonces.
+
+**Archivo tocado en esta vuelta: únicamente `core/providers/src/secretos.rs`**, igual que en la
+segunda y la tercera. Confirmado con `git status --porcelain`: de los cuatro archivos que declara
+el `PLAN.md`, solo ese aparece modificado; `core/providers/Cargo.toml`, `core/api/src/puente.rs` y
+`app/lib/datos/repositorio_rust.dart` no tienen ningún cambio pendiente. No toqué `core/audio-capture`
+ni `app/lib`: el `git status` de esta sesión muestra a otro agente trabajando ahí mismo
+(`core/audio-capture/src/sincronia.rs`, `wasapi_src.rs`, `aaudio_src.rs` nuevo,
+`app/lib/plataforma/` nuevo), consistente con el aviso explícito del encargo.
+
+Sigue sin haber `cargo`/`rustc`/`rustfmt` en esta máquina — confirmado de nuevo antes de escribir
+una línea, con `command -v` y llamando a cada binario directamente, los dos con el mismo resultado
+de "command not found" que reportaron las tres vueltas anteriores — y no reintenté WSL: el encargo
+no lo pedía y la tercera vuelta ya dejó registrado que ni siquiera arranca
+(`HCS_E_CONNECTION_TIMEOUT`). Nada de lo de abajo se compiló ni se ejecutó como Rust: es lectura,
+trazado manual de tipos y de control de flujo contra las firmas reales de `keyring`/`keyring_core`
+(confirmadas contra el código fuente ya descargado en rondas anteriores, `C:\Users\naunf\AppData\
+Local\Temp\keyring-src\keyring-4.2.0\src\v1.rs` y `...\kc-src\keyring-core-1.0.0\src\error.rs`, este
+último para confirmar que `Error::Invalid(String, String)` existe y es del mismo patrón que ya usa
+el propio crate `keyring` en `v1.rs:125` para un caso análogo). Donde la lógica era de cadenas y
+control de flujo puro, sin tocar el sistema operativo ni el llavero, la traduje a Python y la
+**ejecuté de verdad** — igual que hicieron la segunda y la tercera vuelta, y es lo que el encargo
+pedía explícitamente que siguiera haciendo—; los dos scripts nuevos, completos, están en
+«Verificación por cálculo, no solo lectura», más abajo. También verifiqué con un script propio,
+sin confiar en el número de memoria, que ninguna línea del archivo (1794 líneas ahora) supera 100
+caracteres Unicode (máximo real: 97, sin cambios respecto de las vueltas anteriores — la línea más
+larga sigue siendo la misma, ajena a esta vuelta) y que paréntesis, llaves y corchetes están
+balanceados (1050/1050, 186/186, 109/109).
+
+Antes de entrar en cada hallazgo: el propio veredicto nombra dos patrones que atravesaron la
+tercera vuelta y que intenté no repetir. Cómo quedaron, hallazgo por hallazgo, abajo — pero en
+resumen: para el patrón 1 (arreglar un camino de error abre los del arreglo), la limpieza nueva de
+H4-ter tiene su propia prueba (`si_falla_el_renombrado_no_queda_un_temporal_huerfano_con_el_secreto`)
+que fuerza el `rename` a fallar de verdad y confirma que no queda huérfano — no me limité a razonar
+que "ahora sí limpia". Para el patrón 2 (la corrección desplaza el problema en vez de eliminarlo),
+V1 lo resolví con un cambio de **tipos**, no con una promesa de prueba futura: `ResolverDeEntorno`/
+`ResolverDeLlavero` hacen que el intercambio que preocupaba sea un error de compilación, verificable
+por lectura de firmas sin necesitar ejecutar nada — y donde el mismo patrón de tipo-compartido seguía
+existiendo dentro de `cadena_con` (que V1 no pedía cerrar), lo dejo dicho explícitamente en vez de
+callado.
+
+### H4-ter (Bloqueante) — el temporal nace ya restringido, y se limpia en los dos caminos de error
+
+La causa que señaló el `revisor-codigo` y confirmó el `auditor-plataforma` por separado (P2/P4) era
+exacta: `std::fs::write(&temporal, contenido)` (línea vieja 681) creaba el archivo con el modo por
+defecto del proceso —sujeto a `umask`, típicamente legible por grupo y otros— y el `chmod 0600` solo
+se aplicaba después, con una ventana real en cada guardado, no solo en el primero. Y si ese
+`set_permissions` fallaba, no había ningún `remove_file` en todo el archivo: el temporal quedaba
+huérfano con el secreto en claro.
+
+La corrección, tal como pedía el hallazgo, no fue "mover el `chmod` más temprano" —eso seguiría
+teniendo una ventana, solo que más corta—, sino crear el archivo **ya restringido desde la llamada
+al sistema que lo crea**:
+
+- `escribir_temporal_restringido` (`secretos.rs:718-730` en Unix, `:737-740` en el resto): en Unix
+  usa `std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(...)`
+  seguido de `write_all`, así que el archivo nunca existe con un modo distinto de 0600 —no hay
+  `set_permissions` posterior porque no hace falta—. En el resto de plataformas (Windows, donde no
+  hay un equivalente directo a los permisos POSIX desde `std::fs`, deuda preexistente sin cambios
+  esta vuelta, `P3` en `REVIEW-plataforma.md`) es la misma llamada `std::fs::write` de siempre, con
+  la misma firma que la rama de Unix para que `guardar_clave_en` no distinga plataformas —mismo
+  patrón `#[cfg(unix)]`/`#[cfg(not(unix))]` con firma idéntica que ya usa el resto del archivo—.
+- `guardar_clave_en` (`secretos.rs:817-839`) ya no usa `?` directo sobre la escritura ni el
+  renombrado: cada uno es un `if let Err(e) = ... { let _ = std::fs::remove_file(&temporal); return
+  Err(e); }`. Los dos caminos falibles —la escritura del temporal y el `rename`— limpian antes de
+  propagar, y el error que se propaga es siempre el original (`e`), nunca el de la propia limpieza:
+  si `remove_file` también fallara —el archivo nunca llegó a crearse, por ejemplo—, ese fallo
+  secundario se descarta a propósito (`let _`, no `?`) para no ocultar la causa real.
+
+**De paso, M1**: el nombre del temporal pasó de `.env.tmp.<pid>` a `.env.tmp.<pid>.<contador>`
+(`nombre_temporal`, `secretos.rs:699-705`), con un `AtomicU64` de módulo (`CONTADOR_TEMPORALES_ENV`,
+línea 689) que se incrementa en cada llamada. El hallazgo M1 decía que el PID por sí solo no
+distingue dos guardados solapados del mismo proceso —la aplicación es un proceso único de larga
+duración, y no hay garantía documentada de que `flutter_rust_bridge` serialice las llamadas
+entrantes a `guardar_clave`—; con el contador, dos llamadas concurrentes en el mismo proceso jamás
+comparten nombre, sin necesidad de resolver esa pregunta sobre el puente.
+
+**Pruebas, las dos ejercitando la función real, no una réplica:**
+
+- `si_falla_el_renombrado_no_queda_un_temporal_huerfano_con_el_secreto` (`secretos.rs:1118-1144`):
+  fuerza el fallo del `rename` haciendo que el destino (`.env`) ya exista como **directorio**, no
+  como archivo —un `rename` no puede reemplazar un directorio con un archivo normal, en Unix ni en
+  Windows (`MOVEFILE_REPLACE_EXISTING` está documentado como inválido si el destino nombra un
+  directorio), así que es determinista y portable, sin depender de permisos que se comportan
+  distinto entre el CI y una máquina de desarrollo— y confirma, listando el directorio real después,
+  que no queda ningún archivo `.env.tmp.*`. Esto no es trazado a mano: es la propiedad que la
+  función real deja o no deja en el disco, comprobada con `std::fs::read_dir` sobre el directorio de
+  verdad que usó la propia llamada.
+- `dos_guardados_seguidos_no_comparten_nombre_de_temporal` (`secretos.rs:1104-1116`): llama a
+  `nombre_temporal` —la función real, no una copia— dos veces seguidas y comprueba que los dos
+  resultados difieren.
+
+**Lo que no llegué a cubrir con una prueba, y por qué:** el otro camino de error (que la propia
+escritura del temporal falle, no el `rename`) no tiene una prueba dedicada. Lo até a un truco
+determinista y portable como el del `rename` de arriba y no lo encontré: forzarlo de forma
+reproducible en cualquier plataforma exige, o bien depender de permisos de sistema de archivos
+—que este mismo archivo evita a propósito en sus pruebas por comportarse distinto entre el CI y una
+máquina de desarrollo, y que en Unix además pueden no aplicar corriendo como root—, o bien predecir
+de antemano el nombre exacto que va a generar `nombre_temporal` —que depende de un contador global
+compartido por todos los tests del binario, y Rust corre los tests en paralelo por default, así que
+ese nombre no es predecible desde un test aislado—. Queda cubierto por la simetría del código (el
+mismo patrón `if let Err(e) = ...` con el mismo `remove_file` que sí demostré que funciona para el
+`rename`) y por el script de Python de abajo, que modela la forma exacta de los dos caminos y
+confirma por cálculo que ambos limpian igual. Ver «Lo que NO pude verificar».
+
+### H2-ter (Importante) — la relectura ahora compara el valor, y la duplicación posible queda decidida y documentada
+
+Dos partes distintas, con distinta certeza según el propio `revisor-codigo`:
+
+**La que trazó completa, y que decidí activamente:** si `set_password` tiene éxito real pero la
+relectura inmediata falla, `escribir_en_llavero` devuelve `false` —correcto, no se purga la copia
+del `.env`— pero el respaldo sí la vuelve a escribir ahí, así que la clave puede terminar en los dos
+sitios a la vez, e `Origen::Archivo` se informa aunque el llavero pueda no haber fallado del todo.
+No cambié ese comportamiento —revertirlo (confiar en un `set_password` sin confirmar) reabriría,
+con otra forma, el mismo problema que motivó exigir la relectura en la segunda vuelta—, pero lo
+**documenté explícitamente** como decisión, con su porqué, en el docblock de `escribir_en_llavero`
+(`secretos.rs:319-339`, párrafo "**Decisión sobre qué pasa si `set_password` sí tuvo éxito real
+pero la relectura falla o no coincide:**"): antes ese riesgo residual no estaba nombrado en ningún
+lado, solo se podía deducir leyendo el código con cuidado.
+
+**La que el propio revisor marcó como sospecha razonada, no hallazgo confirmado** —"con los tres
+backends reales (síncronos, sobre la misma entrada, mismo proceso) esto es poco probable que
+diverja en la práctica"—, pero que igual cerré porque el costo era mínimo y la letra del hallazgo la
+señalaba explícitamente: `.map(|_| ())` (`secretos.rs:330` en la versión vieja) descartaba el valor
+releído y certificaba solo que la lectura no fallara, no que coincidiera con lo escrito. Ahora
+(`secretos.rs:352-367`):
+
+```rust
+Some(v) => {
+    entrada.set_password(v)?;
+    match entrada.get_password() {
+        Ok(releido) if releido == v => Ok(()),
+        Ok(_) => Err(keyring::Error::Invalid(
+            "valor releído del llavero".to_owned(),
+            "no coincide con el que se acababa de escribir".to_owned(),
+        )),
+        Err(e) => Err(e),
+    }
+}
+```
+
+`keyring::Error::Invalid(String, String)` no es una elección arbitraria: es la misma variante que
+el propio crate `keyring` usa para un caso análogo ("valor de un parámetro inválido, con
+descripción") en `v1.rs:125` de sus propias fuentes —lo confirmé leyendo `keyring-core-1.0.0/src/
+error.rs` completo, no asumí que existía una variante que sirviera sin comprobarlo—.
+
+**Por qué no hay una prueba nueva para esta comparación:** `escribir_en_llavero` sigue siendo la
+única función del archivo que toca el almacén real (Decisión #1, primera vuelta, sin cambios), y
+ninguna prueba la llama directamente por esa razón. La comparación vive dentro de esa misma función,
+así que queda cubierta por lectura de tipos, no por ejecución — igual que ya ocurría con el resto de
+esa rama antes de esta vuelta. No inventé un tipo o una función que solo la prueba usara para
+sortear esta limitación: hubiera sido exactamente la trampa que describe «La regla de la réplica».
+
+### P1 (Importante) — el error de una purga fallida después de un éxito real ya dice qué pasó
+
+`guardar_clave_orquestada` (`secretos.rs:624-643`) envuelve el error de `purgar_del_env` con
+`.map_err(...)` antes del `?`, solo en la rama donde `en_llavero` ya es `true`:
+
+```rust
+purgar_del_env(&dir, referencia).map_err(|e| {
+    std::io::Error::new(
+        e.kind(),
+        format!(
+            "la clave ya se guardó en el llavero del sistema, pero no se \
+             pudo retirar la copia anterior del archivo .env: {e}"
+        ),
+    )
+})?;
+```
+
+Conserva el `ErrorKind` original (para quien inspeccione `.kind()` en vez de solo el texto) y el
+texto del error original completo al final del mensaje —no lo reemplaza, lo contextualiza—. El
+hallazgo pedía "que el error diga qué pasó de verdad", no un tipo de error nuevo ni una forma de
+recuperar el estado: con esto, un `Err` en este camino específico ya no se puede confundir con "no
+se guardó nada".
+
+No toqué el otro camino de error que el `auditor-plataforma` mencionó en su hallazgo original más
+amplio —el respaldo al `.env` fallando cuando el llavero **no** estaba disponible (línea ~570 vieja,
+dentro de `resultado_de_guardar`)—: el encargo de esta vuelta, tal como lo redactó el orquestador,
+acota P1 específicamente a "la purga posterior a un guardado ya exitoso en el llavero"
+(`secretos.rs:562` en la numeración de la tercera vuelta), y ese otro camino no tiene la misma
+asimetría que motiva el hallazgo —ahí no hay ningún éxito silencioso en otro lado que el mensaje
+deba explicar, es simplemente "no se pudo guardar en ningún sitio"—. Si el orquestador quiere que
+también se anote ahí, lo dejo para una vuelta futura en vez de ampliar el alcance por mi cuenta.
+
+**Prueba, ejercitando `guardar_clave_orquestada` real, no una réplica del mensaje:**
+`si_la_purga_falla_tras_un_exito_real_en_el_llavero_el_error_lo_dice` (`secretos.rs:1508-1540`)
+simula éxito real en el llavero (`|_referencia, _valor| true`) y fuerza que la purga falle con el
+mismo truco ya establecido en este archivo (`.env` como directorio, no como archivo — el mismo
+mecanismo que ya usa `purgar_del_env_propaga_un_error_de_lectura_que_no_es_archivo_ausente`, que el
+`verificador-pruebas` de la tercera vuelta confirmó que ejercita código real con una aserción no
+trivial). Comprueba que el texto del error contiene "ya se guardó en el llavero" — no solo que el
+resultado sea `Err`, que ya lo comprobaba indirectamente cualquier prueba con `.unwrap()`.
+
+### V1 (Importante) — el cableado de `resolver_por_defecto` ahora es un error de compilación, no una promesa de prueba
+
+El encargo pedía que quedara "cubierto de verdad", y si el tipo compartido lo hacía imposible de
+proteger con una prueba, que lo dijera y propusiera otra cosa. Lo pensé en ese orden —¿se puede
+proteger con una prueba real?— y concluí que no de forma limpia: `resolver_por_defecto()` no tiene
+ningún parámetro para inyectar dobles de prueba en el lugar del entorno o el llavero —esa es
+justamente su función, ser la que arma la cadena **real**—, y las piezas reales
+(`EnvResolver`, `DotEnvResolver::buscar()`, `LlaveroResolver::nuevo()`) dependen de variables de
+entorno, del sistema de archivos y del llavero del sistema operativo, nada de lo cual se puede
+controlar de forma determinista desde un test —es la misma razón, ya establecida en la segunda
+vuelta, por la que este archivo evita mutar variables de entorno globales en los tests—.
+
+Así que, tal como invitaba el encargo, usé tipos distintos en vez de una prueba:
+
+- `ResolverDeEntorno`/`ResolverDeLlavero` (`secretos.rs:481-497`): envoltorios de un solo campo
+  sobre `Box<dyn KeyResolver>`, sin más función que dar identidad de tipo a cada posición.
+  `cadena_con` (`secretos.rs:524-535`) ahora los recibe en vez de dos `Box<dyn KeyResolver>` sueltos,
+  y `resolver_por_defecto` (`secretos.rs:545-551`) construye cada pieza envuelta en su tipo. El
+  intercambio que preocupaba —`ResolverDeEntorno(Box::new(EnvResolver))` y
+  `ResolverDeLlavero(Box::new(LlaveroResolver::nuevo()))` cambiados de posición— ya no compila:
+  no hace falta correr nada para confirmarlo, es una propiedad del sistema de tipos, verificable
+  por lectura de las firmas.
+- Añadí igual una prueba, `resolver_por_defecto_no_entra_en_panico` (`secretos.rs:1297-1314`): es
+  la primera del archivo que llama a `resolver_por_defecto()` en vez de a sus piezas por separado,
+  cerrando también la letra literal del hallazgo ("ninguna prueba del repositorio invoca
+  `resolver_por_defecto()`"). No afirma nada sobre el valor que devuelve —el entorno, el `.env` y el
+  llavero reales de esta máquina no se pueden controlar desde el test—, así que no protege el orden
+  por sí misma: eso ya lo hace el sistema de tipos. Lo que sí confirma es que la función existe, se
+  puede llamar con los tipos reales y no entra en pánico.
+
+**Lo que V1 no pedía cerrar, y no cerré, pero dejo dicho para que no se lea como que "ya no hay
+ningún riesgo de este tipo":** dentro del propio cuerpo de `cadena_con`
+(`secretos.rs:534`,
+`ensamblar_cadena_por_defecto(entorno.0, origen_archivo, Box::new(dotenv), llavero.0)`), `entorno.0`
+y `llavero.0` vuelven a ser dos `Box<dyn KeyResolver>` sueltos al desenvolver los tipos nuevos, así
+que intercambiarlos **ahí** seguiría compilando sin aviso. Ese riesgo concreto ya tenía una prueba
+desde la tercera vuelta (`cadena_con_no_intercambia_el_archivo_con_el_llavero`, que actualicé para
+usar los tipos nuevos en su llamada a `cadena_con` sin tocar lo que protege) y el hallazgo V1 hablaba
+específicamente del cableado de `resolver_por_defecto`, no de este segundo punto interno — pero
+prefiero decirlo explícito, con archivo y línea, a que quede implícito.
+
+### V2 (Importante) — las tres formas de `nombres_candidatos` ahora tienen prueba contra un `.env` real
+
+Las dos pruebas nuevas de H1-bis (tercera vuelta) usaban las dos como escenario `"GEMINI=sk-vieja"`
+—la forma intermedia—, así que la forma en minúsculas (la primera de las tres que devuelve
+`nombres_candidatos`, la cadena tal cual sin transformar) nunca se ejercitaba contra un `.env` real
+en ninguna prueba del archivo. Añadí el par que faltaba, mismo patrón que sus dos análogas de
+nombre corto:
+
+- `guardar_en_el_llavero_purga_una_copia_vieja_escrita_en_minuscula` (`secretos.rs:1433-1461`): la
+  composición completa, con `.env` conteniendo `"gemini=sk-vieja\n"`.
+- `purgar_del_env_reconoce_una_clave_escrita_en_minuscula` (`secretos.rs:1588-1602`): la misma,
+  aislada en `purgar_del_env`.
+
+Verifiqué **por cálculo, no solo por lectura** —igual que pedía la evidencia que ya había
+convencido al `verificador-pruebas` en la vuelta anterior— que estas dos pruebas nuevas sí
+detectarían la mutación exacta que describe V2 (`linea_declara` usando
+`nombres_candidatos(referencia)[1..]`, salteando la forma en minúsculas) mientras que las dos
+pruebas viejas (con `"GEMINI=sk-vieja"`) no la detectarían — reproduciendo en Python el mismo
+resultado que el `verificador-pruebas` reportó haber obtenido por mutación ejecutada. Script
+completo en «Verificación por cálculo, no solo lectura».
+
+### M1 (Menor) — resuelto como parte de H4-ter
+
+Ver arriba: el contador `CONTADOR_TEMPORALES_ENV` y la prueba
+`dos_guardados_seguidos_no_comparten_nombre_de_temporal`.
+
+### M3 (Menor) — la afirmación sobre el huérfano, corregida
+
+El propio `HANDOFF` (tercera vuelta, más abajo en este mismo documento — el hallazgo la citaba como
+líneas 144-146 y 554-556 en la numeración de ese momento; con esta sección nueva encima, hoy son las
+líneas 737-740 y 1150-1152) decía que `.env.tmp.<pid>` "puede quedar huérfano si el proceso muere
+entre escribir el temporal y renombrarlo", dando a entender que esa era la única causa. Es falso, y el `auditor-plataforma` lo
+señaló con precisión (P4): cualquier error de `set_permissions` (en el código viejo) o de `rename`
+lo dejaba igual, con el proceso vivo y funcionando — el escenario exacto de P1. No edito el texto
+viejo de la tercera vuelta —el resto de este documento sigue la convención de dejar cada vuelta tal
+cual se escribió, marcando las correcciones en la vuelta siguiente, no reescribiendo hacia atrás—,
+pero la corrijo acá, explícitamente: **la causa no dependía de que el proceso muriera**, y esta
+misma vuelta (H4-ter) ya la resuelve para ambos caminos falibles de `guardar_clave_en`
+(`escribir_temporal_restringido` y `rename`), no solo para el que describía mal el texto viejo. Lo
+que sigue siendo cierto, y por eso queda como nota en «Deuda que dejo»: un corte de proceso justo
+entre el `remove_file` fallido (si también fallara) y el final de la función podría, en teoría,
+dejar un huérfano — pero eso ya no es "depende de que el proceso muera" como causa principal, es un
+caso límite de una limpieza que ahora sí se intenta.
+
+### Verificación por cálculo, no solo lectura
+
+Mismo criterio que las vueltas anteriores: donde la lógica es de cadenas o de control de flujo puro,
+sin tocar el sistema operativo ni el llavero, la traduje a Python y la corrí de verdad. Los dos
+scripts completos, transcritos para que sean reproducibles sin depender del `scratchpad` de esta
+sesión (que no persiste):
+
+```python
+# verificar_v2.py -- V2: cobertura de las tres formas de nombres_candidatos
+# en linea_declara, incluida la minuscula.
+def nombres_candidatos(referencia):
+    base = referencia.split(":", 1)[1] if ":" in referencia else referencia
+    base = base.strip()
+    mayus = base.upper()
+    v = [base]
+    if mayus != base:
+        v.append(mayus)
+    if not mayus.endswith("_API_KEY"):
+        v.append(mayus + "_API_KEY")
+    return v
+
+def nombre_canonico(referencia):
+    return nombres_candidatos(referencia)[-1]
+
+def nombre_de_linea(linea):
+    l = linea.strip()
+    if l.startswith("export "):
+        l = l[len("export "):]
+    if "=" not in l:
+        return None
+    k, _ = l.split("=", 1)
+    return k.strip()
+
+def linea_declara(linea, referencia):
+    candidatos = nombres_candidatos(referencia)
+    k = nombre_de_linea(linea)
+    return k is not None and k in candidatos
+
+def linea_declara_SIN_MINUSCULA(linea, referencia):
+    # La mutacion exacta de V2: se salta el primer candidato (la forma en
+    # minuscula, tal cual queda "referencia" sin transformar).
+    candidatos = nombres_candidatos(referencia)[1:]
+    k = nombre_de_linea(linea)
+    return k is not None and k in candidatos
+
+def guardar_clave_en_sim(previo_texto, referencia, valor, declara_fn):
+    nombre = nombre_canonico(referencia)
+    lineas = []
+    sustituida = False
+    for linea in (previo_texto.splitlines() if previo_texto else []):
+        if declara_fn(linea, referencia):
+            if not sustituida:
+                if valor is not None:
+                    lineas.append(f"{nombre}={valor}")
+            sustituida = True
+        else:
+            lineas.append(linea)
+    if not sustituida and valor is not None:
+        if not lineas:
+            lineas.append("# Claves de API de dictar_ia. Permisos 0600.")
+        lineas.append(f"{nombre}={valor}")
+    return "\n".join(lineas) + "\n"
+
+def purgar_del_env_sim(previo_texto, referencia, declara_fn):
+    if previo_texto is None:
+        return None
+    ya_estaba = any(declara_fn(l, referencia) for l in previo_texto.splitlines())
+    if ya_estaba:
+        return guardar_clave_en_sim(previo_texto, referencia, None, declara_fn)
+    return previo_texto
+
+def dotenv_resolver_sim(texto, referencia):
+    valores = {}
+    for linea in (texto.splitlines() if texto else []):
+        l = linea.strip()
+        if not l or l.startswith("#"):
+            continue
+        if l.startswith("export "):
+            l = l[len("export "):]
+        if "=" not in l:
+            continue
+        k, v = l.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if k and v:
+            valores[k] = v
+    for n in nombres_candidatos(referencia):
+        if n in valores:
+            return valores[n]
+    return None
+
+env_minuscula = "gemini=sk-vieja\n"
+referencia = "keyring:gemini"
+
+# Con linea_declara real: la prueba nueva queda en verde (se purga).
+assert dotenv_resolver_sim(
+    purgar_del_env_sim(env_minuscula, referencia, linea_declara), referencia
+) is None
+
+# Con la mutacion V2: la prueba nueva SI se pondria en rojo (sobrevive).
+assert dotenv_resolver_sim(
+    purgar_del_env_sim(env_minuscula, referencia, linea_declara_SIN_MINUSCULA), referencia
+) == "sk-vieja"
+
+# Control: la mutacion V2 NO afecta el escenario de las pruebas VIEJAS
+# (forma intermedia "GEMINI="), que es exactamente el hueco que describe V2.
+env_intermedio = "GEMINI=sk-vieja\n"
+assert dotenv_resolver_sim(
+    purgar_del_env_sim(env_intermedio, referencia, linea_declara_SIN_MINUSCULA), referencia
+) is None
+
+print("verificar_v2.py: todas las aserciones pasaron")
+```
+
+```python
+# verificar_h4ter.py -- H4-ter: forma de la cola nueva de guardar_clave_en
+# (dos pasos falibles, cada uno con su propia limpieza, sin ocultar el
+# error original con uno de la propia limpieza).
+class Resultado:
+    def __init__(self, ok, valor=None, error=None):
+        self.ok = ok
+        self.valor = valor
+        self.error = error
+
+def guardar_clave_en_cola_sim(temporal, ruta, escribir_temporal_fn, renombrar_fn, remove_file_fn):
+    r = escribir_temporal_fn(temporal)
+    if not r.ok:
+        remove_file_fn(temporal)
+        return Resultado(False, error=r.error)
+    r = renombrar_fn(temporal, ruta)
+    if not r.ok:
+        remove_file_fn(temporal)
+        return Resultado(False, error=r.error)
+    return Resultado(True, valor=("Origen::Archivo", ruta))
+
+class Espia:
+    def __init__(self):
+        self.llamadas = []
+    def __call__(self, temporal):
+        self.llamadas.append(temporal)
+
+# Exito completo: remove_file nunca se llama.
+espia = Espia()
+r = guardar_clave_en_cola_sim(
+    "t1", "ruta1", lambda t: Resultado(True), lambda t, ruta: Resultado(True), espia
+)
+assert r.ok and espia.llamadas == []
+
+# Falla la escritura: se limpia y se propaga ESE error.
+espia = Espia()
+r = guardar_clave_en_cola_sim(
+    "t2", "ruta2", lambda t: Resultado(False, error="fallo de escritura"),
+    lambda t, ruta: Resultado(True), espia
+)
+assert not r.ok and r.error == "fallo de escritura" and espia.llamadas == ["t2"]
+
+# Falla el rename: se limpia y se propaga el error del rename.
+espia = Espia()
+r = guardar_clave_en_cola_sim(
+    "t3", "ruta3", lambda t: Resultado(True),
+    lambda t, ruta: Resultado(False, error="rename bloqueado"), espia
+)
+assert not r.ok and r.error == "rename bloqueado" and espia.llamadas == ["t3"]
+
+# Contraste con el codigo VIEJO (sin remove_file en ninguna rama): reproduce
+# el huerfano que describia H4-ter.
+def guardar_clave_en_cola_VIEJA_sim(temporal, ruta, escribir_temporal_fn, renombrar_fn, _rm):
+    r = escribir_temporal_fn(temporal)
+    if not r.ok:
+        return Resultado(False, error=r.error)
+    r = renombrar_fn(temporal, ruta)
+    if not r.ok:
+        return Resultado(False, error=r.error)
+    return Resultado(True, valor=("Origen::Archivo", ruta))
+
+espia = Espia()
+r = guardar_clave_en_cola_VIEJA_sim(
+    "t4", "ruta4", lambda t: Resultado(True),
+    lambda t, ruta: Resultado(False, error="rename bloqueado"), espia
+)
+assert not r.ok and espia.llamadas == []  # el bug original: nunca se limpia
+
+print("verificar_h4ter.py: todas las aserciones pasaron")
+```
+
+Los corrí con `python3` en esta sesión: `python3 verificar_v2.py` → `verificar_v2.py: todas las
+aserciones pasaron`; `python3 verificar_h4ter.py` → `verificar_h4ter.py: todas las aserciones
+pasaron`. Los dos, ejecución real, no simulada. `verificar_h4ter.py` no modela permisos de archivo
+—eso es responsabilidad del sistema operativo, no de la lógica de `secretos.rs`, y no es replicable
+de forma significativa en Python—, así que no sustituye a la prueba real de Rust
+(`si_falla_el_renombrado_no_queda_un_temporal_huerfano_con_el_secreto`, que sí fuerza un `rename`
+real contra el sistema de archivos real del entorno de pruebas): confirma la **forma** del control
+de flujo (que los dos caminos limpian, que ninguno oculta el error original), no que `rename` vaya a
+fallar como se espera en cada sistema operativo.
+
+### Comandos para reproducir (cuarta vuelta)
+
+Sigue sin haber `cargo`/`rustc`/`rustfmt` en esta máquina:
+
+```
+$ command -v cargo rustc rustfmt
+(sin salida)
+
+$ cargo --version
+/usr/bin/bash: line 1: cargo: command not found
+$ rustc --version
+/usr/bin/bash: line 1: rustc: command not found
+```
+
+Ninguno de los cuatro comandos del checklist de cierre se corrió en esta vuelta:
+
+```
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cd app && flutter analyze && flutter test
+```
+
+Lo que sí corrí, a falta de compilador:
+
+```
+$ python3 verificar_v2.py
+verificar_v2.py: todas las aserciones pasaron
+$ python3 verificar_h4ter.py
+verificar_h4ter.py: todas las aserciones pasaron
+```
+
+Y, con un script de Python propio (no el de ninguna vuelta anterior, aunque con el mismo método):
+conteo de caracteres Unicode por línea sobre las 1794 líneas del archivo (máximo real: 97, sin
+cambios) y balance de paréntesis/llaves/corchetes (1050/1050, 186/186, 109/109).
+
+### Lo que NO pude verificar (cuarta vuelta)
+
+- **Nada de lo nuevo compiló.** B-1 sigue igual, confirmado de nuevo antes de escribir una línea y
+  otra vez al terminar.
+- **Que `escribir_temporal_restringido`, `ResolverDeEntorno`/`ResolverDeLlavero` y el `.map_err` de
+  `guardar_clave_orquestada` compilen exactamente como los escribí.** Revisé a mano cada firma
+  contra la documentación conocida de `std::fs::OpenOptions`/`OpenOptionsExt`/`std::io::Error::new`
+  (el patrón `Error::new(kind, format!(...))` con un `String` ya lo usa este mismo archivo por otra
+  vía, `Error::other(&str)`, así que el bound `Into<Box<dyn Error + Send + Sync>>` ya estaba
+  ejercitado) y contra `keyring_core::error::Error::Invalid`, confirmado en el código fuente real
+  (`kc-src/keyring-core-1.0.0/src/error.rs`) — pero es lectura, no compilación.
+- **Que `si_falla_el_renombrado_no_queda_un_temporal_huerfano_con_el_secreto` fuerce el fallo del
+  `rename` tal como razoné.** Tracé la semántica documentada de `rename(2)` en Unix (`EISDIR` al
+  reemplazar un directorio con un archivo) y de `MoveFileExW` con `MOVEFILE_REPLACE_EXISTING` en
+  Windows (inválido si el destino nombra un directorio, según la documentación de la API) para
+  concluir que el `rename` falla en las dos plataformas con el truco de ".env" como directorio, pero
+  no lo ejecuté: sin `cargo` no hay forma de correr este test contra el sistema de archivos real de
+  esta máquina Windows para confirmarlo empíricamente.
+- **El otro camino de error de H4-ter** (que la propia escritura del temporal falle, no el
+  `rename`): sin prueba dedicada, razón completa en la sección de H4-ter arriba. Cubierto por
+  simetría de código y por el script de Python, no por una prueba de Rust que lo fuerce de verdad.
+- **El comportamiento real de `entrada.get_password()` comparado contra el valor recién escrito, en
+  un backend real** (Credential Manager, Secret Service, Keychain): sigue sin poder confirmarse sin
+  un llavero real y sin compilar — mismo límite que ya declaraban las tres vueltas anteriores para
+  esta misma línea, ahora con la comparación añadida.
+- **Que las seis pruebas nuevas de esta vuelta se pongan en rojo exactamente como las tracé**
+  (`resolver_por_defecto_no_entra_en_panico`,
+  `guardar_en_el_llavero_purga_una_copia_vieja_escrita_en_minuscula`,
+  `purgar_del_env_reconoce_una_clave_escrita_en_minuscula`,
+  `si_la_purga_falla_tras_un_exito_real_en_el_llavero_el_error_lo_dice`,
+  `dos_guardados_seguidos_no_comparten_nombre_de_temporal`,
+  `si_falla_el_renombrado_no_queda_un_temporal_huerfano_con_el_secreto`). De las seis, dos se apoyan
+  en lógica que además verifiqué por cálculo con Python (las dos de V2, contra el script de arriba);
+  las otras cuatro dependen de tipos de Rust, del sistema de archivos real o de que el compilador
+  rechace un intercambio de tipos, así que quedan en trazado manual, razonado en cada hallazgo.
+- **Que las 36 pruebas preexistentes (antes de esta vuelta) sigan pasando sin cambios de
+  comportamiento.** Solo tres necesitaron un cambio mecánico —envolver sus argumentos a `cadena_con`
+  en `ResolverDeEntorno`/`ResolverDeLlavero`, sin tocar lo que cada una protege
+  (`cadena_con_no_intercambia_el_archivo_con_el_llavero`,
+  `un_env_encontrado_se_reporta_como_origen_archivo_no_como_memoria`,
+  `sin_env_encontrado_el_origen_es_memoria_no_una_ruta_inventada`)—. El resto no se tocó, incluida
+  `el_texto_del_error_no_contiene_la_clave`, que vale mencionar aparte: fuerza el error por una vía
+  que falla antes de llegar a `nombre_temporal` (`create_dir_all` sobre una ruta imposible), así que
+  sigue ejercitando exactamente lo mismo que antes, sin pasar por el camino nuevo de esta vuelta;
+  ninguna aserción se debilitó, ninguna se
+  quitó. No pude confirmarlo ejecutando `cargo test`, solo releyendo cada una contra el código nuevo.
+- Todo lo que las tres vueltas anteriores ya declaraban sin verificar y que esta vuelta no toca
+  —compilación cruzada a Android, `cargo fmt` real, el texto exacto de cada variante de
+  `keyring::Error` distinta de `Invalid`, el comportamiento medido de D-Bus sin sesión, el valor
+  exacto de `CRED_MAX_USERNAME_LENGTH`— sigue igual: ver las secciones originales más abajo.
+
+### Deuda que dejo (actualizada, cuarta vuelta)
+
+- **La red de seguridad que retira la purga (H2-bis) y la posible duplicación en dos sitios tras una
+  relectura fallida (H2-ter) siguen siendo riesgos aceptados y documentados, no eliminados.**
+  Cerrarlos del todo exigiría avisar al usuario desde `app/lib/pantallas/ajustes.dart`, fuera de la
+  lista de archivos de esta vuelta. Los comentarios de `purgar_del_env`
+  (`secretos.rs:856-874`) y de `escribir_en_llavero` (`secretos.rs:319-339`) dejan escrita la
+  decisión y el porqué de cada uno.
+- **Sigue sin haber una prueba de ida y vuelta para el criterio 1** (AC 1) — sin cambios respecto de
+  las vueltas anteriores: la razón (el `LazyLock` de `keyring::Entry` v1 no es interceptable en el
+  CI de Linux) sigue siendo la misma.
+- **El otro camino de error de H4-ter sin prueba dedicada** (la propia escritura del temporal
+  fallando, no el `rename`): ver «Lo que NO pude verificar» arriba. Bajo riesgo — el código que lo
+  maneja es simétrico al que sí tiene prueba, y una prueba de Rust que lo fuerce de forma
+  determinista y portable necesitaría, o bien depender de permisos de archivo (que este mismo
+  archivo evita por comportarse distinto entre plataformas y con root), o bien predecir el nombre
+  exacto que un contador global compartido por tests en paralelo va a generar.
+- **`P1` solo se corrigió para el camino que el encargo acotó explícitamente** (purga fallida tras
+  éxito real en el llavero). El otro camino que mencionaba el hallazgo original del
+  `auditor-plataforma` —el respaldo al `.env` fallando cuando el llavero no estaba disponible— no
+  tiene el mismo problema de diagnóstico (no hay ningún éxito silencioso que explicar ahí), así que
+  no lo toqué; si el orquestador quiere un mensaje más específico ahí también, queda para una vuelta
+  futura.
+- El resto de la deuda que ya declaraban las tres vueltas anteriores (`libsecret-1-dev` en los
+  archivos de T-11, `README.md:78-80`, `ajustes.dart:161-179` sin `try/catch` — M4, al tablero según
+  el propio encargo de esta vuelta —, MSRV/T-12, la línea de `entrada.get_password()` sin cobertura
+  automática, la ausencia de endurecimiento de permisos en Windows — M2, al tablero) sigue igual, sin
+  cambios: ver las secciones originales más abajo.
+
+---
+
 ## Tercera vuelta — correcciones al `REVIEW.md`
 
 La segunda entrega volvió a implementación otra vez: sección «Segunda vuelta» de

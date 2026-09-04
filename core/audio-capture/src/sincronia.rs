@@ -411,7 +411,10 @@ mod tests {
         // `un_silencio_en_loopback_no_adelanta_lo_que_viene_despues` para el
         // caso completo a través de `PistaCapturada`; esta prueba aísla la
         // función pura con números simples.
-        assert_eq!(muestras_de_relleno(2_000, 1_600, 1_600), 32_000 - 1_600 - 1_600);
+        assert_eq!(
+            muestras_de_relleno(2_000, 1_600, 1_600),
+            32_000 - 1_600 - 1_600
+        );
     }
 
     #[test]
@@ -623,5 +626,4 @@ mod tests {
             "un segundo a 44,1 kHz debe salir como ~16 000 muestras, salieron {emitidas}"
         );
     }
-
 }
