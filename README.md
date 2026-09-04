@@ -137,7 +137,7 @@ afirmación de este archivo.
 ```bash
 # Requisitos del sistema (único paso con sudo) — ver INSTALL.md
 sudo apt install -y cmake ninja-build clang pkg-config libgtk-3-dev \
-  liblzma-dev libpipewire-0.3-dev libasound2-dev libsecret-1-dev
+  liblzma-dev libpipewire-0.3-dev libasound2-dev libsecret-1-dev libdbus-1-dev
 
 # Claves de API
 cp .env.example .env      # y rellena GEMINI_API_KEY o DEEPSEEK_API_KEY

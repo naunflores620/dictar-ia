@@ -10,7 +10,7 @@ sudo apt update && sudo apt install -y \
   cmake ninja-build clang pkg-config \
   libgtk-3-dev liblzma-dev libstdc++-15-dev \
   libpipewire-0.3-dev libasound2-dev \
-  libsecret-1-dev libsqlite3-dev \
+  libsecret-1-dev libdbus-1-dev libsqlite3-dev \
   libvulkan-dev glslc spirv-tools
 ```
 
@@ -22,6 +22,7 @@ Para qué es cada bloque:
 | `libgtk-3-dev liblzma-dev` | Flutter en Linux |
 | `libpipewire-0.3-dev libasound2-dev` | Captura de audio: loopback del sistema y micrófono |
 | `libsecret-1-dev` | Llavero del SO para las claves de API |
+| `libdbus-1-dev` | Lo exige `libdbus-sys`, que entra por `xcap` (captura de pantalla). No lo pide nadie de forma visible, y sin él el núcleo no compila en Linux |
 | `libsqlite3-dev` | Base de datos local |
 | `libvulkan-dev glslc spirv-tools` | Aceleración de Whisper en tu Intel Arc 140V |
 
