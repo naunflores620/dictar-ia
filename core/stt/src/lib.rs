@@ -11,6 +11,7 @@
 pub mod acuerdo;
 pub mod limpieza;
 pub mod modelos;
+pub mod nivel;
 pub mod vosk;
 pub mod whisper;
 #[cfg(target_os = "windows")]
