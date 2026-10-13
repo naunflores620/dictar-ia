@@ -8,6 +8,7 @@
 //! prompts, que es el riesgo que decide si el producto sirve.
 
 mod grabar;
+mod metricas;
 mod sesion;
 mod transcribir;
 mod transcripcion;
@@ -27,6 +28,7 @@ USO
   dictar grabar [--segundos N] [--salida <dir>] [--solo-microfono]
   dictar reproducir [--datos <dir>] [--segundos N]   ← oye la última sesión
   dictar transcribir --in <archivo.wav> [--modelo turbo|medium|small]
+  dictar metricas --in <archivo_de_métricas|carpeta_de_sesión>
   dictar modelos [--descargar turbo]
   dictar notas --in <archivo> [opciones]
   dictar proveedores
@@ -49,8 +51,10 @@ OPCIONES de `grabar`
 OPCIONES de `transcribir`
   --in <archivo.wav>    Audio a 16 kHz mono, tal como lo deja `grabar`
   --modelo <m>          turbo | medium | small          [por defecto: turbo]
+  --borrador            Usa los ajustes de Whisper de la pasada en vivo
+  --con-timestamps       Control A/B: genera timestamps sin alinearlos por palabra
   --glosario <lista>    Términos de la asignatura, para el initial_prompt
-  --idioma <cod>        Código ISO                          [por defecto: es]
+  --idioma <cod|auto>   Código ISO o detección automática   [por defecto: auto]
 
 OPCIONES de `notas`
   --in <archivo>        Transcripción en texto plano (obligatorio)
@@ -105,6 +109,7 @@ async fn main() -> Result<()> {
         Some("grabar") => grabar::ejecutar(&opciones(&args[1..])),
         Some("sesion") => sesion::ejecutar(&opciones(&args[1..])).await,
         Some("transcribir") => transcribir::ejecutar(&opciones(&args[1..])),
+        Some("metricas") => metricas::ejecutar(&opciones(&args[1..])),
         Some("reproducir") => reproducir(&opciones(&args[1..])),
         Some("modelos") => transcribir::descargar(&opciones(&args[1..])),
         Some("ayuda") | Some("--help") | Some("-h") | None => {

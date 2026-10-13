@@ -19,6 +19,7 @@ dictar-stt = { path = "../core/stt" }
 dictar-api = { path = "../core/api" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs"] }
 serde_json = { workspace = true }
+serde = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

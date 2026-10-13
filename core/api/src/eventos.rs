@@ -29,8 +29,10 @@ pub enum Evento {
         inicio_ms: TsMs,
         fin_ms: TsMs,
         texto: String,
-        /// `false` mientras es la pasada en vivo, que se sustituye entera al
-        /// terminar. La interfaz la pinta atenuada.
+        /// Límite del prefijo estable expresado en unidades UTF-16 para Dart.
+        estable_hasta_utf16: i64,
+        /// `false` mientras es la pasada en vivo, que se sustituye al terminar.
+        /// La interfaz usa `estable_hasta_utf16` para atenuar solo el sufijo.
         definitiva: bool,
     },
 
@@ -62,13 +64,43 @@ impl Evento {
         texto: impl Into<String>,
         definitiva: bool,
     ) -> Self {
+        let texto = texto.into();
         Evento::Frase {
             session_id: session_id.0.clone(),
             track: track.as_str().to_owned(),
             inicio_ms,
             fin_ms,
-            texto: texto.into(),
+            estable_hasta_utf16: if definitiva {
+                texto.encode_utf16().count() as i64
+            } else {
+                0
+            },
+            texto,
             definitiva,
+        }
+    }
+
+    pub fn frase_incremental(
+        session_id: &SessionId,
+        track: Track,
+        inicio_ms: TsMs,
+        fin_ms: TsMs,
+        estable: &str,
+        provisional: &str,
+    ) -> Self {
+        let texto = match (estable.is_empty(), provisional.is_empty()) {
+            (true, _) => provisional.to_owned(),
+            (_, true) => estable.to_owned(),
+            _ => format!("{estable} {provisional}"),
+        };
+        Evento::Frase {
+            session_id: session_id.0.clone(),
+            track: track.as_str().to_owned(),
+            inicio_ms,
+            fin_ms,
+            estable_hasta_utf16: estable.encode_utf16().count() as i64,
+            texto,
+            definitiva: false,
         }
     }
 

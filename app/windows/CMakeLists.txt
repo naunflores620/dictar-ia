@@ -104,7 +104,12 @@ set(RUST_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 # «Profile» va con el perfil de release de cargo, igual que en Linux.
 set(RUST_PERFIL "$<IF:$<CONFIG:Debug>,debug,release>")
 set(RUST_FLAG "$<$<NOT:$<CONFIG:Debug>>:--release>")
-set(RUST_LIB "${RUST_ROOT}/target/${RUST_PERFIL}/dictar_api.dll")
+if(DEFINED ENV{CARGO_TARGET_DIR} AND NOT "$ENV{CARGO_TARGET_DIR}" STREQUAL "")
+  file(TO_CMAKE_PATH "$ENV{CARGO_TARGET_DIR}" RUST_TARGET_DIR)
+else()
+  set(RUST_TARGET_DIR "${RUST_ROOT}/target")
+endif()
+set(RUST_LIB "${RUST_TARGET_DIR}/${RUST_PERFIL}/dictar_api.dll")
 
 # rustup instala cargo en %USERPROFILE%\.cargo\bin, que no siempre está en el
 # PATH que hereda CMake cuando lo lanza Visual Studio o el propio `flutter`.

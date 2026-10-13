@@ -239,3 +239,70 @@ arreglo del primero, también; y el último Importante se corrigió en el acto.
 Deuda que sale de esta HU al tablero: T-8, T-9, T-13 y T-14.
 
 Orquestador · 2026-09-03
+
+---
+
+# REAPERTURA — 2026-09-04
+
+**El cierre de arriba era falso.** Se dio como «aprobada, cierre condicionado» sobre la base de
+tres vueltas de revisión estática, y en cuanto hubo compilador aparecieron **cinco defectos que
+ninguna lectura había cazado**, tres de ellos errores de compilación en código que los tres
+revisores dieron por bueno.
+
+Los encontró la sesión hermana `dictar-ia-b2` al ejecutar por primera vez, no una revisión de
+esta sesión.
+
+## Lo que el compilador encontró y la lectura no
+
+| # | Hallazgo | Severidad |
+|---|---|---|
+| R1 | `EnumAudioEndpoints` exige un `DEVICE_STATE`, no un `u32`. **Y el comentario que justificaba usar la constante cruda afirmaba justo lo contrario**: que no dependía de cómo lo expusiera esa versión del crate. Un comentario que miente sobre la única razón por la que existe | **Bloqueante** |
+| R2 | `WAVEFORMATEXTENSIBLE` está empaquetado: comparar `ext.SubFormat` con `==` crea una referencia a un campo desalineado (E0793) | **Bloqueante** |
+| R3 | `fuera_de_linux_reproducir_avisa_en_vez_de_no_compilar` usaba `unwrap_err()`, que exige `Debug` en el tipo `Ok`, y `Reproductor` no lo implementa. **Esa prueba nunca compiló** | **Bloqueante** |
+| R4 | **Uno más, escondido tras un `cfg` que nadie compila.** `fuera_de_windows_linux_y_android_iniciar_devuelve_no_soportada` (`lib.rs:436`) usa `unwrap_err()` sobre `Result<(Receiver<AudioFrame>, Box<dyn CaptureSession>)>`. `Receiver<T>` sí implementa `Debug`, pero `Box<dyn CaptureSession>` no —`CaptureSession: Send` y nada más— y una tupla lo exige de todos sus miembros. Gateado a `not(any(linux, windows, android))`, que ninguno de los cuatro targets instalados satisface | **Bloqueante** |
+
+> **Corrección del propio orquestador, 2026-09-04.** Esta fila decía «dos más» e incluía también
+> `fuera_de_windows_linux_y_android_dispositivos_devuelve_no_soportada` (`lib.rs:447`). **Era
+> falso.** Esa segunda prueba compila sin problema: su tipo `Ok` es `Vec<DeviceInfo>`, y
+> `DeviceInfo` deriva `Debug` en `lib.rs:150`.
+>
+> El error fue de método, y es el mismo que este documento reprocha a otros: verifiqué «por
+> tipos» que `CaptureSession` no implementa `Debug`, y **extendí la conclusión a la prueba de al
+> lado sin comprobar su tipo de retorno**. La sesión hermana lo desmintió compilando —
+> `rustup target add x86_64-unknown-freebsd` y `cargo check --target x86_64-unknown-freebsd`,
+> la primera vez que ese `cfg` se compila en la vida del proyecto — y el compilador señaló una
+> sola línea, la 436.
+>
+> Razonar sobre tipos es válido; extrapolar de un caso al de al lado, no.
+
+**R4 es el que más enseña**, y es doblemente irónico:
+
+- Son las dos pruebas que esta misma HU escribió **para cerrar el hallazgo de la réplica** — el
+  `enum Plataforma` desconectado de los `#[cfg]` reales. Dejaron de ser una réplica y pasaron a
+  ser algo peor: código que no compila, escondido tras un `cfg` que nadie satisface.
+- Su comentario dice: *«en cuanto exista un job así, protege de verdad; la réplica nunca lo habría
+  hecho»*. **Es al revés**: en cuanto exista ese job, lo primero que hará es fallar al compilar.
+- Y explica T-13 mejor de lo que estaba escrito. El problema no era «el test no se ejecuta», sino
+  que **un `cfg` que ningún target satisface es un escondite**: ahí dentro cabe cualquier cosa, y
+  parece protección.
+
+## Qué significa para el mecanismo
+
+Tres vueltas de revisión, nueve hallazgos cerrados, tres revisores independientes y un cierre
+formal — y el código no compilaba. No es que las revisiones fueran malas: encontraron cosas
+reales que el compilador jamás habría visto (audio perdido al fallar una pista, relleno duplicado
+en cada silencio, pruebas que no protegían su criterio). **Es que revisión y compilación cazan
+familias distintas de defecto, y ninguna sustituye a la otra.**
+
+Queda como la lección más cara del proyecto: mientras B-1 estuvo activo, todo lo que se cerró
+como «cierre condicionado» era más frágil de lo que el adjetivo sugería. Conviene releer con esa
+luz cualquier otro cierre de esa época.
+
+## Veredicto
+
+**REABIERTA.** R1, R2 y R3 los corrigió ya la sesión hermana al encontrarlos. **R4 sigue abierto**
+y es de esta sesión: hay que arreglar los dos `unwrap_err()` de `lib.rs:436` y `:447`, corregir el
+comentario que promete una protección que no existe, y decidir con el PO si T-13 se cierra con un
+job de macOS o si esos tests deben desaparecer por no poder ejecutarse nunca.
+
+Orquestador · 2026-09-04

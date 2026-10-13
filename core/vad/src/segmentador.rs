@@ -10,12 +10,43 @@ use dictar_audio::SAMPLE_RATE;
 use dictar_domain::{Track, TsMs};
 
 /// Duración a partir de la cual se busca dónde cerrar.
-pub const OBJETIVO_MS: i64 = 25_000;
+///
+/// Es la latencia de la transcripción en vivo: hasta que un segmento no cierra
+/// no aparece ni una palabra en pantalla. Estaba en 25 s, y se bajó el
+/// 2026-09-10 tras medirlo, porque la suposición que sostenía ese número era
+/// falsa.
+///
+/// Lo que se creía: que Whisper rellena toda entrada hasta 30 s, así que un
+/// fragmento de 9 s cuesta casi lo mismo que uno de 25 y trocear más fino
+/// multiplica el trabajo. Lo que salió al medirlo, mismo audio de 119 s con
+/// pausas cada 10 s, modelo `small`:
+///
+/// ```text
+/// objetivo 25 s -->  5 segmentos, 75 s de reloj
+/// objetivo  9 s --> 12 segmentos, 68 s de reloj
+/// ```
+///
+/// Es decir: **no cuesta más**. El coste lo domina la decodificación, que
+/// escala con el audio total y no con cuántas veces se invoque al modelo. Lo
+/// único que sí crece es el solape: 12 segmentos con 2 s de [`SOLAPE_MS`] cada
+/// uno son un 11 % más de audio procesado, y aun así el reloj no subió.
+///
+/// La diferencia de 68 a 75 s está dentro de la variación entre ejecuciones.
+/// La conclusión que aguanta es «sale igual», no «sale más rápido».
+pub const OBJETIVO_MS: i64 = 9_000;
 
 /// Corte forzado. Existe para el profesor que encadena diez minutos sin una
 /// pausa clara: sin este tope, el segmento crecería hasta agotar la memoria y
 /// la transcripción en vivo dejaría de llegar.
-pub const MAXIMO_MS: i64 = 45_000;
+///
+/// Bajado de 45 s junto con [`OBJETIVO_MS`], y no por simetría: **es el que
+/// manda de verdad en el caso peor**. En una grabación real de 106 s no hubo
+/// ni una sola pausa de [`PAUSA_CIERRE_MS`], así que todos los cortes los dio
+/// este tope y no el objetivo. Bajar solo el objetivo no habría cambiado nada
+/// para quien habla seguido, que es justo el caso de una clase.
+///
+/// El precio es cortar a mitad de frase más a menudo; lo amortigua el solape.
+pub const MAXIMO_MS: i64 = 20_000;
 
 /// Silencio que cierra un segmento.
 pub const PAUSA_CIERRE_MS: i64 = 500;
@@ -46,8 +77,13 @@ impl Segmento {
     ///
     /// Transcribir treinta segundos de silencio cuesta lo mismo que treinta de
     /// habla y solo puede producir alucinaciones, así que se descarta.
+    /// Se exige al menos un 10% de proporción de voz, un mínimo de 400 ms de
+    /// duración y al menos 250 ms acumulados de habla real para evitar que un
+    /// clic o respiración aislada mande 10-20 segundos vacíos a Whisper.
     pub fn merece_transcribirse(&self) -> bool {
-        self.proporcion_voz > 0.05 && self.duracion_ms() > 300
+        let duracion = self.duracion_ms();
+        let ms_voz = (self.proporcion_voz * duracion as f32) as i64;
+        self.proporcion_voz >= 0.10 && duracion >= 400 && ms_voz >= 250
     }
 }
 
@@ -89,6 +125,29 @@ impl Segmentador {
 
     fn duracion_buffer_ms(&self) -> i64 {
         (self.buffer.len() as i64 * 1000) / SAMPLE_RATE as i64
+    }
+
+    /// Copia el segmento que se está formando sin cerrarlo ni alterar el VAD.
+    /// El transcriptor la usa para mostrar borradores mientras la frase sigue
+    /// abierta; el WAV original continúa escribiéndose independientemente.
+    pub fn vista_previa(&self) -> Option<Segmento> {
+        if self.buffer.is_empty() && self.resto.is_empty() {
+            return None;
+        }
+
+        let mut pcm = self.buffer.clone();
+        pcm.extend_from_slice(&self.resto);
+        let duracion = (pcm.len() as i64 * 1000) / SAMPLE_RATE as i64;
+        let ventanas = self.ventanas_totales.max(1);
+        let proporcion_voz = (self.ventanas_con_voz as f32 / ventanas as f32).clamp(0.0, 1.0);
+
+        Some(Segmento {
+            track: self.track,
+            inicio_ms: self.inicio_ms,
+            fin_ms: self.inicio_ms + duracion,
+            pcm,
+            proporcion_voz,
+        })
     }
 
     /// Añade audio y devuelve los segmentos que hayan quedado cerrados.
@@ -268,11 +327,16 @@ mod tests {
         // detector necesita ver el fondo para saber qué es voz.
         s.empujar(&vec![0.001; 16_000], 0);
 
-        // 26 s hablando: pasa del objetivo pero sin pausa, no debe cerrar.
-        assert!(s.empujar(&habla(26_000, 0.3), 1_000).is_empty());
+        // Pasado el objetivo pero sin pausa y sin llegar al tope: no cierra.
+        // La duración se deriva de las constantes en vez de escribirse a mano:
+        // con un 26_000 fijo, este test dejó de significar lo que dice en
+        // cuanto MAXIMO_MS bajó a 20 s —pasó a cerrar por tope, probando otra
+        // cosa— y el nombre habría seguido prometiendo lo de antes.
+        let hablado = (OBJETIVO_MS + MAXIMO_MS) / 2;
+        assert!(s.empujar(&habla(hablado, 0.3), 1_000).is_empty());
 
         // Llega la pausa y ahí sí.
-        let segs = s.empujar(&silencio(800), 27_000);
+        let segs = s.empujar(&silencio(800), 1_000 + hablado);
         assert_eq!(segs.len(), 1, "debería haberse cerrado en la pausa");
         assert!(segs[0].duracion_ms() >= OBJETIVO_MS);
     }
@@ -282,7 +346,10 @@ mod tests {
         // Un profesor que encadena diez minutos sin pausa no puede hacer crecer
         // el buffer indefinidamente.
         let mut s = Segmentador::nuevo(Track::System);
-        let segs = s.empujar(&habla(50_000, 0.3), 0);
+        // Más que el tope, derivado de él: un 50_000 fijo dejaría de excederlo
+        // el día que alguien suba MAXIMO_MS, y el test pasaría sin probar el
+        // corte forzado.
+        let segs = s.empujar(&habla(MAXIMO_MS + 5_000, 0.3), 0);
 
         assert_eq!(segs.len(), 1);
         assert!(
@@ -297,13 +364,20 @@ mod tests {
         let mut s = Segmentador::nuevo(Track::System);
         s.empujar(&vec![0.001; 16_000], 0);
 
-        s.empujar(&habla(26_000, 0.3), 1_000);
-        let mut cerrados = s.empujar(&silencio(800), 27_000);
+        // Derivado de las constantes, por el mismo motivo que en el test de
+        // arriba: se quiere un tramo que cierre por pausa, no por tope.
+        let hablado = (OBJETIVO_MS + MAXIMO_MS) / 2;
+        let fin_primero = 1_000 + hablado;
+        let inicio_segundo = fin_primero + 800;
+        let fin_segundo = inicio_segundo + hablado;
+
+        s.empujar(&habla(hablado, 0.3), 1_000);
+        let mut cerrados = s.empujar(&silencio(800), fin_primero);
         assert_eq!(cerrados.len(), 1, "no se cerró el primer segmento");
         let primero = cerrados.remove(0);
 
-        s.empujar(&habla(26_000, 0.3), 27_800);
-        let mut cerrados = s.empujar(&silencio(800), 53_800);
+        s.empujar(&habla(hablado, 0.3), inicio_segundo);
+        let mut cerrados = s.empujar(&silencio(800), fin_segundo);
         assert_eq!(cerrados.len(), 1, "no se cerró el segundo segmento");
         let segundo = cerrados.remove(0);
 

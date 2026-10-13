@@ -1,31 +1,9 @@
-//! Captura automática de diapositivas.
-//!
-//! El profesor comparte pantalla, y esa información se pierde por completo si
-//! solo se graba el audio. En clases con fórmulas, diagramas o código, la
-//! transcripción sola no basta: «como veis aquí» no significa nada dentro de
-//! un texto.
-//!
-//! El mecanismo muestrea la pantalla cada pocos segundos, calcula un hash
-//! perceptual y guarda una imagen solo cuando la lámina cambia de verdad. Todo
-//! el criterio de «de verdad» vive en [`detector`], porque es lo que separa una
-//! función útil de una que llena el disco de capturas repetidas.
+//! Captura manual de diapositivas durante una sesión.
 
-pub mod detector;
 pub mod hash;
 
-#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-use detector::{Decision, Detector};
 use dictar_domain::TsMs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
-use std::sync::Arc;
-use std::thread::JoinHandle;
-use std::time::Duration;
-#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-use std::time::Instant;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScreenError {
@@ -47,215 +25,12 @@ pub enum ScreenError {
 
 pub type Result<T> = std::result::Result<T, ScreenError>;
 
-#[derive(Debug, Clone)]
-pub struct ConfigCaptura {
-    /// Cada cuánto se mira la pantalla.
-    ///
-    /// Dos segundos es el equilibrio: más frecuente no encuentra más láminas
-    /// —una diapositiva dura minutos— y más espaciado se arriesga a perder la
-    /// que el profesor enseña de pasada.
-    pub intervalo: Duration,
-
-    /// Fracción que se recorta por cada lado antes de comparar.
-    ///
-    /// Deja fuera la miniatura de la webcam y las barras de Meet o Zoom, que
-    /// cambian constantemente y generarían una lámina por muestra.
-    pub margen: f32,
-
-    /// Distancia de Hamming a partir de la cual es otra diapositiva.
-    pub umbral: u32,
-
-    /// Índice de la pantalla, o `None` para la principal.
-    pub pantalla: Option<usize>,
-
-    /// Área a la que se recortan las capturas. Sin ella se guarda la pantalla
-    /// entera, con todo lo que haya en ella.
-    pub region: Option<Region>,
-}
-
-impl Default for ConfigCaptura {
-    fn default() -> Self {
-        Self {
-            intervalo: Duration::from_secs(2),
-            margen: 0.12,
-            umbral: detector::UMBRAL_CAMBIO,
-            pantalla: None,
-            region: None,
-        }
-    }
-}
-
-/// Diapositiva detectada, lista para guardarse en la base de datos.
+/// Diapositiva capturada manualmente, lista para guardarse en la base de datos.
 #[derive(Debug, Clone)]
 pub struct SlideCapturada {
     pub ts_ms: TsMs,
     pub phash: String,
     pub ruta: PathBuf,
-}
-
-/// Captura en curso. Al detenerla, para el hilo de muestreo.
-pub struct SesionCaptura {
-    parar: Arc<AtomicBool>,
-    hilo: Option<JoinHandle<()>>,
-}
-
-impl SesionCaptura {
-    pub fn detener(mut self) {
-        self.parar.store(true, Ordering::SeqCst);
-        if let Some(h) = self.hilo.take() {
-            let _ = h.join();
-        }
-    }
-}
-
-impl Drop for SesionCaptura {
-    fn drop(&mut self) {
-        self.parar.store(true, Ordering::SeqCst);
-        if let Some(h) = self.hilo.take() {
-            let _ = h.join();
-        }
-    }
-}
-
-/// Arranca la captura de diapositivas.
-///
-/// Corre en su propio hilo, separado del audio a propósito: si la captura de
-/// pantalla falla o se ralentiza, **la grabación de audio no se ve afectada**.
-/// Nunca al revés — perder la clase por un fallo capturando imágenes sería
-/// inaceptable.
-///
-/// Fuera del escritorio devuelve [`ScreenError::NoSoportada`]: en Android no
-/// hay pantalla ajena que capturar —el profesor comparte en tu portátil, no en
-/// tu móvil— y xcap, que es quien sabe hacerlo, no compila siquiera para ese
-/// objetivo. Mismo criterio que `dictar_audio::iniciar`: devolver un error
-/// claro en vez de dejar sin compilar a medio núcleo.
-#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-pub fn iniciar(
-    dir: impl AsRef<Path>,
-    cfg: ConfigCaptura,
-) -> Result<(Receiver<SlideCapturada>, SesionCaptura)> {
-    let dir = dir.as_ref().to_path_buf();
-    std::fs::create_dir_all(&dir)?;
-
-    // Se comprueba aquí que hay pantalla, y no dentro del hilo, para que el
-    // error llegue a quien llama en lugar de perderse en un log.
-    let monitores = xcap::Monitor::all().map_err(|e| ScreenError::Captura(e.to_string()))?;
-    if monitores.is_empty() {
-        return Err(ScreenError::SinPantalla);
-    }
-
-    let (tx, rx) = mpsc::channel();
-    let parar = Arc::new(AtomicBool::new(false));
-    let inicio = Instant::now();
-
-    let hilo = {
-        let parar = parar.clone();
-        std::thread::Builder::new()
-            .name("dictar-pantalla".into())
-            .spawn(move || {
-                let mut det = Detector::con_umbral(cfg.umbral);
-                let mut n = 0usize;
-
-                while !parar.load(Ordering::SeqCst) {
-                    // Se duerme a tramos de 100 ms: durmiendo el intervalo
-                    // entero, detener la grabación se quedaba hasta 2 s
-                    // esperando a que este hilo despertara para cerrarlo.
-                    let mut dormido = Duration::ZERO;
-                    while dormido < cfg.intervalo && !parar.load(Ordering::SeqCst) {
-                        std::thread::sleep(Duration::from_millis(100));
-                        dormido += Duration::from_millis(100);
-                    }
-                    if parar.load(Ordering::SeqCst) {
-                        break;
-                    }
-
-                    match muestrear(&dir, &cfg, &mut det, &mut n, inicio.elapsed()) {
-                        Ok(Some(s)) => {
-                            if tx.send(s).is_err() {
-                                break;
-                            }
-                        }
-                        Ok(None) => {}
-                        // Un fallo puntual no detiene la captura: la pantalla
-                        // puede estar bloqueada un momento, o el usuario puede
-                        // haber desconectado un monitor.
-                        Err(e) => tracing::warn!(error = %e, "fallo al muestrear la pantalla"),
-                    }
-                }
-
-                tracing::info!(laminas = det.guardadas(), "captura de pantalla detenida");
-            })
-            .map_err(|e| ScreenError::Captura(e.to_string()))?
-    };
-
-    Ok((
-        rx,
-        SesionCaptura {
-            parar,
-            hilo: Some(hilo),
-        },
-    ))
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-fn muestrear(
-    dir: &Path,
-    cfg: &ConfigCaptura,
-    det: &mut Detector,
-    n: &mut usize,
-    transcurrido: Duration,
-) -> Result<Option<SlideCapturada>> {
-    let monitores = xcap::Monitor::all().map_err(|e| ScreenError::Captura(e.to_string()))?;
-    let monitor = match cfg.pantalla {
-        Some(i) => monitores.get(i).ok_or(ScreenError::SinPantalla)?,
-        None => monitores.first().ok_or(ScreenError::SinPantalla)?,
-    };
-
-    let imagen = monitor
-        .capture_image()
-        .map_err(|e| ScreenError::Captura(e.to_string()))?;
-    let completa = image::DynamicImage::ImageRgba8(imagen);
-
-    let dyn_img = match cfg.region.filter(|r| r.es_valida()) {
-        Some(r) => r.recortar(&completa),
-        None => completa,
-    };
-
-    let recorte = hash::region_central(&dyn_img, cfg.margen);
-    let h = hash::dhash(&recorte);
-
-    // El timestamp real es lo que activa el tope de MIN_ENTRE_LAMINAS_MS:
-    // `observar` sin marca fabrica un `ts` que hace esa comprobación siempre
-    // falsa, y dos láminas en menos de cinco segundos se guardarían como nuevas.
-    let ts = transcurrido.as_millis() as i64;
-    match det.observar_en(h, ts) {
-        Decision::Nueva { phash } => {
-            *n += 1;
-            let ruta = dir.join(format!("{:04}.png", n));
-
-            // Se guarda la captura completa, no el recorte: el recorte solo
-            // sirve para decidir, pero al usuario le interesa la lámina entera.
-            dyn_img
-                .save(&ruta)
-                .map_err(|e| ScreenError::Imagen(e.to_string()))?;
-
-            tracing::info!(
-                lamina = *n,
-                ts_s = transcurrido.as_secs(),
-                "diapositiva nueva"
-            );
-
-            Ok(Some(SlideCapturada {
-                ts_ms: transcurrido.as_millis() as i64,
-                phash: hash::a_hex(phash),
-                ruta,
-            }))
-        }
-        // Volver a una lámina ya guardada no produce archivo nuevo, pero sí
-        // interesa dejar constancia del momento: los apuntes pueden referenciar
-        // esa diapositiva desde dos puntos distintos de la clase.
-        Decision::Repetida { .. } | Decision::Esperando | Decision::SinCambio => Ok(None),
-    }
 }
 
 /// Región de la pantalla a la que se recortan las capturas.
@@ -324,12 +99,7 @@ pub fn captura_para_seleccion(destino: impl AsRef<Path>) -> Result<(PathBuf, u32
     Ok((ruta, w, h))
 }
 
-/// Captura la pantalla ahora mismo, sin pasar por el detector.
-///
-/// Es la vía manual, y existe porque la detección automática nunca acertará
-/// siempre: hay clases sin diapositivas, presentaciones con vídeo dentro y
-/// profesores que enseñan algo tres segundos. Con un botón, el usuario decide
-/// el momento exacto y el resultado es correcto por definición.
+/// Captura la pantalla ahora mismo, cuando el usuario lo solicita.
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub fn capturar_ahora(
     dir: impl AsRef<Path>,
@@ -360,8 +130,7 @@ pub fn capturar_ahora(
 
     let h = hash::dhash(&hash::region_central(&dyn_img, 0.12));
 
-    // El nombre lleva la marca de tiempo, no un contador: así no choca con las
-    // que va guardando el hilo automático, que lleva su propia numeración.
+    // La marca temporal identifica el momento de la captura manual.
     let ruta = dir.join(format!("manual-{ts_ms}.png"));
     dyn_img
         .save(&ruta)
@@ -404,14 +173,6 @@ pub fn pantallas() -> Result<Vec<String>> {
 // ---------------------------------------------------------------------------
 
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-pub fn iniciar(
-    _dir: impl AsRef<Path>,
-    _cfg: ConfigCaptura,
-) -> Result<(Receiver<SlideCapturada>, SesionCaptura)> {
-    Err(ScreenError::NoSoportada)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 pub fn captura_para_seleccion(_destino: impl AsRef<Path>) -> Result<(PathBuf, u32, u32)> {
     Err(ScreenError::NoSoportada)
 }
@@ -436,16 +197,6 @@ pub fn pantallas() -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn la_configuracion_por_defecto_es_razonable() {
-        let c = ConfigCaptura::default();
-        // Dos segundos: una diapositiva dura minutos, muestrear más a menudo
-        // no encuentra más láminas y consume CPU durante toda la clase.
-        assert_eq!(c.intervalo, Duration::from_secs(2));
-        // Margen suficiente para dejar fuera la webcam y las barras de Meet.
-        assert!(c.margen > 0.05 && c.margen < 0.25);
-    }
 
     fn lienzo(w: u32, h: u32) -> image::DynamicImage {
         image::DynamicImage::ImageRgba8(image::RgbaImage::new(w, h))
@@ -501,21 +252,5 @@ mod tests {
             alto: 600
         }
         .es_valida());
-    }
-
-    #[test]
-    fn sin_region_la_configuracion_no_recorta() {
-        assert!(ConfigCaptura::default().region.is_none());
-    }
-
-    #[test]
-    fn el_directorio_se_crea_al_iniciar() {
-        // No se comprueba la captura en sí: en CI no hay servidor gráfico. Lo
-        // que sí debe cumplirse es que la carpeta quede lista.
-        let dir = tempfile::tempdir().unwrap();
-        let destino = dir.path().join("laminas");
-
-        let _ = iniciar(&destino, ConfigCaptura::default());
-        assert!(destino.is_dir());
     }
 }

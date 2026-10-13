@@ -1,3 +1,4 @@
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../datos/repositorio.dart';
@@ -56,6 +57,8 @@ class _PantallaAjustesState extends State<PantallaAjustes> {
           return ListView(
             padding: const EdgeInsets.only(bottom: 32),
             children: [
+              _IdiomaTranscripcion(repo: widget.repo),
+              const Divider(height: 32),
               _CarpetaApuntes(repo: widget.repo),
               const Divider(height: 32),
 
@@ -84,6 +87,128 @@ class _PantallaAjustesState extends State<PantallaAjustes> {
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+class _IdiomaTranscripcion extends StatefulWidget {
+  const _IdiomaTranscripcion({required this.repo});
+
+  final Repositorio repo;
+
+  @override
+  State<_IdiomaTranscripcion> createState() => _IdiomaTranscripcionState();
+}
+
+class _IdiomaTranscripcionState extends State<_IdiomaTranscripcion> {
+  String _idioma = 'es';
+  bool _guardando = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _cargar();
+  }
+
+  Future<void> _cargar() async {
+    final r = widget.repo;
+    if (r is! RepositorioRust) return;
+    final a = await r.ajustes();
+    if (!mounted) return;
+    setState(() => _idioma = a.idiomaTranscripcion ?? 'auto');
+  }
+
+  Future<void> _guardar(String idioma) async {
+    final r = widget.repo;
+    if (r is! RepositorioRust) return;
+    final idiomaAnterior = _idioma;
+    setState(() {
+      _idioma = idioma;
+      _guardando = true;
+      _error = null;
+    });
+    try {
+      final a = await r.ajustes();
+      await r.guardarAjustes(
+        AjustesApp(
+          carpetaApuntes: a.carpetaApuntes,
+          modelo: a.modelo,
+          // Persistir la elección explícitamente evita que una actualización
+          // cambie el idioma elegido para las sesiones nuevas.
+          idiomaTranscripcion: idioma,
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _idioma = idiomaAnterior;
+          _error = '$e';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _guardando = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Idioma de transcripción',
+            style: t.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Selecciona el idioma del audio de la clase, no el de la interfaz '
+            'ni el de los apuntes. Automático queda seleccionado al instalar '
+            'para no asumir el idioma del video. En Windows, Español e Inglés '
+            'usan reconocimiento local incremental de bajo consumo. En Windows, '
+            'Español usa Sherpa-ONNX y recurre a Vosk si no está disponible; '
+            'Inglés usa Vosk. Automático usa Whisper Tiny. Se aplica a sesiones nuevas.',
+            style: t.textTheme.bodySmall?.copyWith(
+              color: t.colorScheme.outline,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            value: _idioma,
+            decoration: InputDecoration(
+              border: const OutlineInputBorder(),
+              isDense: true,
+              errorText: _error,
+              suffixIcon: _guardando
+                  ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : null,
+            ),
+            items: const [
+              DropdownMenuItem(value: 'auto', child: Text('Automático')),
+              DropdownMenuItem(value: 'es', child: Text('Español')),
+              DropdownMenuItem(value: 'en', child: Text('Inglés')),
+            ],
+            onChanged: _guardando
+                ? null
+                : (value) {
+                    if (value != null) _guardar(value);
+                  },
+          ),
+        ],
       ),
     );
   }
@@ -405,11 +530,16 @@ class _SinNucleo extends StatelessWidget {
 
 /// Carpeta donde se guardan los apuntes exportados.
 ///
-/// Se ofrecen las carpetas de sincronización detectadas en vez de un selector
-/// de archivos: apuntando a OneDrive, Drive o Nextcloud, los apuntes acaban en
-/// el móvil solos, sin que la aplicación tenga que hablar con la API de ninguna
-/// nube —menos código, ningún token que caduque, y funciona con el servicio que
-/// ya uses—.
+/// Se eligen las carpetas de sincronización detectadas —OneDrive, Drive,
+/// Nextcloud— con un solo toque: apuntando ahí, los apuntes acaban en el móvil
+/// solos, sin que la aplicación tenga que hablar con la API de ninguna nube
+/// —menos código, ningún token que caduque, y funciona con el servicio que ya
+/// uses—.
+///
+/// Pero esa lista no puede cubrir todos los casos, así que hay además un
+/// explorador de carpetas. Antes solo se podía escribir la ruta a mano, y eso
+/// falla justo donde más duele en Windows: una ruta larga con espacios,
+/// tecleada de memoria, que el núcleo rechaza por no existir.
 class _CarpetaApuntes extends StatefulWidget {
   const _CarpetaApuntes({required this.repo});
 
@@ -471,7 +601,7 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
         AjustesApp(
           carpetaApuntes: ruta,
           modelo: a.modelo,
-          capturarDiapositivas: a.capturarDiapositivas,
+          idiomaTranscripcion: a.idiomaTranscripcion,
         ),
       );
       if (mounted) {
@@ -484,6 +614,29 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
       // apuntes sin exportar, sería el peor momento.
       if (mounted) setState(() => _error = '$e');
     }
+  }
+
+  /// Abre el explorador de carpetas del sistema.
+  ///
+  /// Se guarda en el acto, sin obligar a pulsar «Guardar» después: la carpeta
+  /// ya se eligió en un diálogo que pide confirmación, y pedir una segunda
+  /// confirmación para lo mismo es la clase de paso que se olvida y deja la
+  /// ruta puesta en el campo pero no en los ajustes.
+  Future<void> _examinar() async {
+    final actual = _campo.text.trim();
+    final elegida = await getDirectoryPath(
+      // Arranca donde ya apunta la configuración, si es que apunta a algo:
+      // volver siempre al escritorio obliga a rehacer el mismo camino cada
+      // vez que se quiere corregir una ruta.
+      initialDirectory: actual.isEmpty ? null : actual,
+      confirmButtonText: 'Usar esta carpeta',
+    );
+
+    // `null` es que se canceló el diálogo, no un error: no se toca nada.
+    if (elegida == null || !mounted) return;
+
+    _campo.text = elegida;
+    await _guardar(elegida);
   }
 
   @override
@@ -575,6 +728,18 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
                 child: const Text('Guardar'),
               ),
               const SizedBox(width: 8),
+              // Solo escritorio: `getDirectoryPath` no tiene implementación en
+              // Android —`file_selector_android` no la ofrece— y llamarlo allí
+              // lanza `MissingPluginException`. Misma pregunta que usa la
+              // captura de diapositivas para decidir si ofrecerse.
+              if (Ventana.esEscritorio) ...[
+                OutlinedButton.icon(
+                  onPressed: _examinar,
+                  icon: const Icon(Icons.folder_open, size: 18),
+                  label: const Text('Examinar…'),
+                ),
+                const SizedBox(width: 8),
+              ],
               if (_campo.text.isNotEmpty)
                 TextButton(
                   onPressed: () async {
@@ -585,7 +750,7 @@ class _CarpetaApuntesState extends State<_CarpetaApuntes> {
                       AjustesApp(
                         carpetaApuntes: null,
                         modelo: a.modelo,
-                        capturarDiapositivas: a.capturarDiapositivas,
+                        idiomaTranscripcion: a.idiomaTranscripcion,
                       ),
                     );
                     if (mounted) {

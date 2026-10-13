@@ -27,6 +27,12 @@ static NUCLEO: OnceLock<Nucleo> = OnceLock::new();
 /// suscriba.
 static EVENTOS: Mutex<Option<Receiver<Evento>>> = Mutex::new(None);
 
+fn normalizar_idioma_configurado(idioma: Option<String>) -> Option<String> {
+    idioma
+        .map(|l| l.trim().to_ascii_lowercase())
+        .filter(|l| !l.is_empty())
+}
+
 fn nucleo() -> Result<&'static Nucleo, String> {
     NUCLEO
         .get()
@@ -121,6 +127,7 @@ pub struct EventoDto {
     pub texto: Option<String>,
     pub inicio_ms: i64,
     pub fin_ms: i64,
+    pub estable_hasta_utf16: i64,
     pub definitiva: bool,
 
     // Progreso
@@ -147,6 +154,7 @@ impl Default for EventoDto {
             texto: None,
             inicio_ms: 0,
             fin_ms: 0,
+            estable_hasta_utf16: 0,
             definitiva: false,
             fase: None,
             fraccion: 0.0,
@@ -177,6 +185,7 @@ impl From<Evento> for EventoDto {
                 inicio_ms,
                 fin_ms,
                 texto,
+                estable_hasta_utf16,
                 definitiva,
                 ..
             } => EventoDto {
@@ -185,6 +194,7 @@ impl From<Evento> for EventoDto {
                 texto: Some(texto),
                 inicio_ms,
                 fin_ms,
+                estable_hasta_utf16,
                 definitiva,
                 ..Default::default()
             },
@@ -466,7 +476,7 @@ pub struct AjustesDto {
     /// Documentos. La interfaz enseña esta.
     pub carpeta_efectiva: Option<String>,
     pub modelo: Option<String>,
-    pub capturar_diapositivas: bool,
+    pub idioma_transcripcion: Option<String>,
 }
 
 pub fn obtener_ajustes() -> Result<AjustesDto, String> {
@@ -479,14 +489,14 @@ pub fn obtener_ajustes() -> Result<AjustesDto, String> {
         carpeta_efectiva: efectiva,
         carpeta_apuntes: a.carpeta_apuntes,
         modelo: a.modelo,
-        capturar_diapositivas: a.capturar_diapositivas,
+        idioma_transcripcion: a.idioma_transcripcion,
     })
 }
 
 pub fn guardar_ajustes(
     carpeta_apuntes: Option<String>,
     modelo: Option<String>,
-    capturar_diapositivas: bool,
+    idioma_transcripcion: Option<String>,
 ) -> Result<(), String> {
     let n = nucleo()?;
     let carpeta = carpeta_apuntes
@@ -511,7 +521,9 @@ pub fn guardar_ajustes(
     let mut nuevos = n.ajustes();
     nuevos.carpeta_apuntes = carpeta;
     nuevos.modelo = modelo;
-    nuevos.capturar_diapositivas = capturar_diapositivas;
+    // `auto` debe persistirse explícitamente: `None` activa el idioma
+    // predeterminado (Español/Vosk) al volver a cargar los ajustes.
+    nuevos.idioma_transcripcion = normalizar_idioma_configurado(idioma_transcripcion);
 
     n.guardar_ajustes(&nuevos).map_err(|e| e.to_string())
 }
@@ -581,13 +593,11 @@ pub fn borrar_sesion(session_id: String) -> Result<(), String> {
 
 // -- Grabación ---------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 pub fn iniciar_grabacion(
     tipo: String,
     topic_id: Option<String>,
     titulo: Option<String>,
     capturar_sistema: bool,
-    capturar_diapositivas: bool,
     solo_local: bool,
     ahora_ms: i64,
 ) -> Result<String, String> {
@@ -607,7 +617,6 @@ pub fn iniciar_grabacion(
                 topic_id: topic_id.map(TopicId::from),
                 titulo,
                 capturar_sistema,
-                capturar_diapositivas,
                 solo_local,
             },
             ahora_ms,
@@ -710,6 +719,22 @@ pub fn procesar_sesion(session_id: String, ahora_ms: i64) -> Result<ProcesadaDto
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatico_se_conserva_al_normalizar_y_persistir_ajustes() {
+        let dir = tempfile::tempdir().unwrap();
+        let idioma = normalizar_idioma_configurado(Some(" Auto ".into()));
+        let ajustes = crate::ajustes::Ajustes {
+            idioma_transcripcion: idioma,
+            ..Default::default()
+        };
+
+        ajustes.guardar(dir.path()).unwrap();
+        let recargados = crate::ajustes::Ajustes::cargar(dir.path());
+
+        assert_eq!(recargados.idioma_transcripcion.as_deref(), Some("auto"));
+        assert_eq!(recargados.idioma_efectivo(), None);
+    }
 
     #[test]
     fn sin_inicializar_el_error_dice_que_hacer() {

@@ -113,6 +113,7 @@ class Frase {
     required this.pista,
     this.hablante,
     this.definitiva = true,
+    this.estableHasta = 0,
   });
 
   final int inicioMs;
@@ -121,9 +122,13 @@ class Frase {
   final Pista pista;
   final String? hablante;
 
-  /// `false` mientras es la pasada en vivo del modelo pequeño. La interfaz la
-  /// atenúa: es desechable y se sustituye entera al terminar.
+  /// `false` mientras el texto viene de la pasada en vivo del modelo pequeño.
+  /// El texto provisional se distingue de su prefijo estable; toda la frase
+  /// se sustituye o confirma con el procesado final.
   final bool definitiva;
+
+  /// Posición UTF-16 que separa el texto confirmado del provisional.
+  final int estableHasta;
 
   String get quien => hablante ?? pista.etiquetaPorDefecto;
 }

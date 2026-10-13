@@ -142,6 +142,47 @@ En esta máquina `flutter pub get` falla por versión del SDK, y entonces el ana
 indefinidos hasta `Size` y `debugPrint`. Reportar eso como defecto del código es ruido. Regla
 específica de este proyecto, y existe porque ya despistó una vez.
 
+## El verde que no prueba nada
+
+Tres casos reales, el mismo día, todos con el patrón «pasó la comprobación, luego no funciona».
+Antes de dar algo por verificado, hay que saber **qué comprueba de verdad la orden que se corrió**.
+
+**1. `cargo check` no enlaza.** Comprueba tipos; no resuelve símbolos de librerías nativas. El
+cruce a Android daba verde en local con `check` y fallaba en el CI con `unable to find library
+-laaudio`, porque `cargo ndk` compila contra API 21 por defecto y `libaaudio.so` no existe por
+debajo de la 26. **Y una `rlib` tampoco enlaza**: para que el error aparezca hay que construir
+algo que enlace de verdad — los tests, o un binario.
+
+**2. Un `#[cfg]` que ningún target satisface no verifica nada, y puede esconder código que ni
+compila.** Los dos tests del invariante 4 en `core/audio-capture/src/lib.rs` están gateados a
+`not(any(linux, windows, android))`, y los cuatro targets instalados eran exactamente esos: nadie
+los compilaba nunca. Al abrigo de eso, **uno de ellos** (`lib.rs:436`) llevaba un
+`iniciar(...).unwrap_err()` que no podía compilar — `unwrap_err()` exige `Debug` en el tipo `Ok`,
+y `Box<dyn CaptureSession>` no lo implementa. Su comentario afirmaba que «en cuanto exista un job
+así, protege de verdad»: al revés, lo primero que haría es fallar al compilar. El mismo defecto
+apareció en `reproductor_stub.rs` y **ahí sí se detectó**, porque esa rama sí se compila.
+
+**El arreglo resultó ser barato, y esa es la otra mitad de la lección.** El tablero había supuesto
+que hacía falta un runner de macOS, razonando que «compilar cruzado no es ejecutar». Cierto como
+principio, y equivocado aquí: lo roto era la **compilación**, no el comportamiento. Basta un
+target cualquiera que satisfaga el `cfg` — se usó `x86_64-unknown-freebsd` — y un `cargo check`
+cruzado en el job que ya existe. **Antes de pedir infraestructura, preguntarse qué clase de
+defecto se busca.**
+
+Y un aviso sobre el método, cometido por el orquestador al encontrar esto: verificó por tipos que
+`CaptureSession` no implementa `Debug` y **extendió la conclusión a la prueba de al lado sin
+mirar su tipo de retorno**, informando de dos fallos donde había uno. La segunda devuelve
+`Vec<DeviceInfo>`, que sí deriva `Debug`. Razonar sobre tipos vale; extrapolar del caso de al
+lado, no.
+
+**3. Un pipe se lleva el código de salida.** `cargo test ... | tail -20` devuelve el estado de
+`tail`, que es siempre 0. El orquestador leyó un `error[E0308]` en el texto, un «exit 0» al final,
+y se quedó con la parte alarmante en vez de notar la contradicción. Usar `${PIPESTATUS[0]}`, o no
+canalizar.
+
+La regla que sale de los tres: **decir qué comprobó la orden, no solo que salió en verde.** «Los
+tests pasan» y «el crate enlaza en el target de producción» son afirmaciones distintas.
+
 ## Mutar sin aislamiento envenena a todo el que lea
 
 Regla nacida el 2026-09-04, de un incidente con tres testigos.

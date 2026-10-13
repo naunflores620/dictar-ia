@@ -76,11 +76,59 @@ pub fn es_alucinacion(texto: &str) -> bool {
         return true;
     }
 
-    // Repetición de la misma palabra: el otro modo de fallo típico, cuando el
-    // decodificador se engancha en un bucle. «gracias gracias gracias…».
-    if palabras.len() >= 6 {
-        let primera = palabras[0];
-        if palabras.iter().all(|p| *p == primera) {
+    // Bucles de repetición del decodificador: el modo de fallo típico cuando
+    // el decodificador se engancha (ej. «gracias gracias...», «de 100, de 100...»,
+    // o cualquier subsecuencia repetida).
+    if tiene_bucle_repeticion(&palabras) {
+        return true;
+    }
+
+    false
+}
+
+/// Detecta si un fragmento contiene bucles de repetición del decodificador
+/// (n-gramas repetidos consecutivamente o diversidad léxica anormalmente baja).
+pub fn tiene_bucle_repeticion(palabras: &[&str]) -> bool {
+    if palabras.len() < 5 {
+        return false;
+    }
+
+    // 1. Repetición consecutiva de n-gramas (longitud k de 1 a 4 palabras).
+    // Si una subsecuencia de k palabras se repite al menos 3 veces seguidas y abarca
+    // al menos 6 palabras en total o más de la mitad del fragmento, es un bucle.
+    for k in 1..=4 {
+        if palabras.len() < k * 3 {
+            continue;
+        }
+        for i in 0..=palabras.len() - (k * 3) {
+            let patron = &palabras[i..i + k];
+            let mut repeticiones = 1;
+            let mut offset = i + k;
+            while offset + k <= palabras.len() && &palabras[offset..offset + k] == patron {
+                repeticiones += 1;
+                offset += k;
+            }
+            if repeticiones >= 3 {
+                let palabras_en_bucle = repeticiones * k;
+                if palabras_en_bucle >= 6 || palabras_en_bucle * 2 >= palabras.len() {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // 2. Diversidad léxica anormalmente baja en fragmentos largos.
+    // Si una frase larga contiene solo 1 o 2 palabras únicas distintas,
+    // es un síntoma de decodificación colapsada ante silencio/ruido.
+    if palabras.len() >= 8 {
+        let mut unicas = std::collections::HashSet::new();
+        for p in palabras {
+            unicas.insert(*p);
+        }
+        if unicas.len() <= 2 {
+            return true;
+        }
+        if palabras.len() >= 12 && unicas.len() <= 3 {
             return true;
         }
     }
@@ -245,6 +293,20 @@ mod tests {
         ));
         // Pero una repetición corta puede ser real («no, no, no»).
         assert!(!es_alucinacion("no no no"));
+    }
+
+    #[test]
+    fn se_detecta_el_bucle_de_ngramas_repetidos() {
+        // Caso real: repetición de "de 100" provocada por silencio/ruido.
+        assert!(es_alucinacion(
+            "de 100, de 100, de 100, de 100, de 100, de 100, de 100, de 100"
+        ));
+        assert!(es_alucinacion(
+            "100, de 100, de 100, de 100, de 100, de 100"
+        ));
+        assert!(es_alucinacion(
+            "de esto, de esto, de esto, de esto, de esto"
+        ));
     }
 
     #[test]

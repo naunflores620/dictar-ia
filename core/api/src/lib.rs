@@ -17,6 +17,7 @@ mod frb_generated;
 pub mod ajustes;
 pub mod eventos;
 pub mod grabacion;
+mod limpieza_transcripcion;
 pub mod proceso;
 pub mod puente;
 pub mod transcriptor;
@@ -24,7 +25,7 @@ pub mod transcriptor;
 use dictar_domain::{Alert, NoteTemplate, Session, SessionId, Topic, TopicId, Utterance};
 use dictar_notes::markdown;
 use dictar_providers::config::ProvidersFile;
-use dictar_providers::router::{resolver_por_defecto, Router};
+use dictar_providers::router::{Router, resolver_por_defecto};
 use dictar_storage::Db;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -92,14 +93,16 @@ impl Nucleo {
         let db = Db::abrir(dir_datos.join("dictar.db"))?;
         let config = cargar_config(&dir_datos)?;
 
-        Ok(Self {
+        let nucleo = Self {
             db: Mutex::new(db),
             dir_datos,
             config,
             grabacion: Mutex::new(None),
             reproductor: Mutex::new(None),
             drenaje: Mutex::new(None),
-        })
+        };
+        nucleo.iniciar_precalentamiento_stt();
+        Ok(nucleo)
     }
 
     /// Carpeta de datos por defecto del usuario.
@@ -351,12 +354,33 @@ impl Nucleo {
     }
 
     /// Modelo de Whisper configurado.
-    pub fn modelo_configurado(&self) -> dictar_stt::modelos::Modelo {
+    /// Modelo de la pasada **en vivo**, la que corre durante la clase.
+    ///
+    /// Su único llamador es `grabacion.rs`. La pasada definitiva no pasa por
+    /// aquí: el puente le pasa `LargeV3Turbo` fijo.
+    ///
+    /// El defecto es `Small` y esa es la corrección. Antes se llamaba
+    /// `modelo_configurado` y devolvía `LargeV3Turbo` cuando no había ajuste
+    /// guardado —que es siempre, porque ninguna pantalla escribe ese campo—,
+    /// así que las dos pasadas usaban el modelo pesado y la doble pasada que
+    /// describe el README no existía. Durante la clase el equipo está
+    /// reproduciendo vídeo y quedarse sin CPU corta el audio, que es lo único
+    /// que no se puede recuperar después; el texto en vivo, en cambio, es
+    /// desechable y se sustituye entero al terminar. Cambiar latencia por
+    /// precisión aquí es exactamente al revés de lo que conviene.
+    ///
+    /// Se respeta una elección explícita. Cuando no hay ajuste, Tiny se usa
+    /// para las revisiones rápidas si está disponible junto a la app o en los
+    /// datos del usuario; instalaciones antiguas continúan con Small.
+    pub fn modelo_en_vivo(&self) -> dictar_stt::modelos::Modelo {
         use dictar_stt::modelos::Modelo;
         match self.ajustes().modelo.as_deref() {
+            Some("tiny") => Modelo::Tiny,
             Some("small") => Modelo::Small,
+            Some("turbo") => Modelo::LargeV3Turbo,
             Some("medium") => Modelo::Medium,
-            _ => Modelo::LargeV3Turbo,
+            _ if dictar_stt::modelos::localizar(Modelo::Tiny).is_ok() => Modelo::Tiny,
+            _ => Modelo::Small,
         }
     }
 
@@ -365,7 +389,28 @@ impl Nucleo {
     }
 
     pub fn guardar_ajustes(&self, a: &ajustes::Ajustes) -> Result<()> {
-        a.guardar(&self.dir_config())
+        a.guardar(&self.dir_config())?;
+        self.iniciar_precalentamiento_stt();
+        Ok(())
+    }
+
+    /// Carga en segundo plano Sherpa cuando el usuario seleccionó Español.
+    /// El clic en grabar ya no paga la carga inicial si el modelo terminó de
+    /// prepararse mientras la persona configuraba la sesión.
+    fn iniciar_precalentamiento_stt(&self) {
+        #[cfg(target_os = "windows")]
+        if self.ajustes().idioma_efectivo().as_deref() == Some("es") {
+            if let Err(error) = std::thread::Builder::new()
+                .name("dictar-precalentar-sherpa".into())
+                .spawn(|| {
+                    if let Err(error) = dictar_stt::sherpa::precalentar_modelo_es() {
+                        tracing::warn!(error = %error, "no se pudo precargar Sherpa en español");
+                    }
+                })
+            {
+                tracing::warn!(error = %error, "no se pudo iniciar la precarga de Sherpa");
+            }
+        }
     }
 
     /// Escribe los apuntes de una sesión en la carpeta configurada.
@@ -456,6 +501,19 @@ mod tests {
 
         assert!(dir.path().join("dictar.db").is_file());
         assert!(dir.path().join("audio").is_dir());
+    }
+
+    /// La pasada en vivo tiene que ser la rápida sin que nadie configure nada.
+    ///
+    /// Esta prueba existe porque el defecto era el contrario y nadie lo vio:
+    /// devolvía `LargeV3Turbo`, ninguna pantalla escribe el ajuste que lo
+    /// cambiaría, y así las dos pasadas usaban el modelo pesado. Se comprueba
+    /// sobre un núcleo recién abierto a propósito — sin ajustes guardados es
+    /// el estado de cualquier instalación nueva, que es justo donde fallaba.
+    #[test]
+    fn sin_ajustes_la_pasada_en_vivo_usa_el_modelo_rapido() {
+        let (n, _d) = nucleo();
+        assert_eq!(n.modelo_en_vivo(), dictar_stt::modelos::Modelo::Small);
     }
 
     #[test]

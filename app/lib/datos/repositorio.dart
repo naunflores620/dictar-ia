@@ -32,11 +32,18 @@ abstract class Repositorio {
   /// Progreso de la sesión en curso: duración y diapositivas capturadas.
   Stream<EstadoGrabacion> get estadoGrabacion;
 
-  Future<String> iniciarGrabacion({
-    required TipoSesion tipo,
-    String? topicId,
-    bool capturarPantalla,
-  });
+  /// Fallos que el núcleo reporta mientras graba, ya en texto para enseñar.
+  ///
+  /// Existe porque el núcleo los emitía y la interfaz los tiraba a
+  /// `debugPrint`, que en una compilación de release no lo ve nadie. El caso
+  /// que lo destapó: sin el modelo de Whisper descargado, el núcleo avisa con
+  /// «No se pudo cargar el modelo» y la pantalla de grabación se quedaba
+  /// diciendo «Escuchando…» para siempre. Son recuperables —la grabación
+  /// sigue y el audio se guarda—, pero callarlos convierte un problema con
+  /// solución en uno que parece que la aplicación no funciona.
+  Stream<String> get errores;
+
+  Future<String> iniciarGrabacion({required TipoSesion tipo, String? topicId});
 
   Future<void> detenerGrabacion();
 
@@ -77,6 +84,7 @@ class Progreso {
   });
 
   final String fase;
+
   /// De 0 a 1.
   final double fraccion;
   final String detalle;
@@ -151,7 +159,6 @@ class RepositorioDemo implements Repositorio {
   final _estado = StreamController<EstadoGrabacion>.broadcast();
   Timer? _reloj;
   DateTime? _inicio;
-  int _diapositivas = 0;
 
   late final List<Topic> _topics = [
     Topic(
@@ -197,7 +204,9 @@ class RepositorioDemo implements Repositorio {
       tipo: TipoSesion.cliente,
       estado: EstadoSesion.lista,
       inicio: _ahora.subtract(const Duration(days: 2)),
-      fin: _ahora.subtract(const Duration(days: 2)).add(const Duration(minutes: 52)),
+      fin: _ahora
+          .subtract(const Duration(days: 2))
+          .add(const Duration(minutes: 52)),
       titulo: 'Alcance de la integración',
       appCapturada: 'zoom',
       costeUsd: 0.019,
@@ -236,44 +245,44 @@ class RepositorioDemo implements Repositorio {
 
   @override
   Future<List<Frase>> transcripcion(String sesionId) async => const [
-        Frase(
-          inicioMs: 12000,
-          finMs: 19000,
-          texto: 'Buenos días. Hoy vamos a ver la transformada de Laplace.',
-          pista: Pista.sistema,
-          hablante: 'Profesor',
-        ),
-        Frase(
-          inicioMs: 100000,
-          finMs: 118000,
-          texto:
-              'La definimos como la integral de cero a infinito de f(t) por e '
-              'elevado a menos st, dt.',
-          pista: Pista.sistema,
-          hablante: 'Profesor',
-        ),
-        Frase(
-          inicioMs: 255000,
-          finMs: 264000,
-          texto:
-              'Esto es importante: la región de convergencia siempre cae en el examen.',
-          pista: Pista.sistema,
-          hablante: 'Profesor',
-        ),
-        Frase(
-          inicioMs: 570000,
-          finMs: 576000,
-          texto: '¿La región de convergencia depende del signo de sigma?',
-          pista: Pista.micro,
-        ),
-        Frase(
-          inicioMs: 595000,
-          finMs: 604000,
-          texto: 'Exacto, depende de la parte real de s.',
-          pista: Pista.sistema,
-          hablante: 'Profesor',
-        ),
-      ];
+    Frase(
+      inicioMs: 12000,
+      finMs: 19000,
+      texto: 'Buenos días. Hoy vamos a ver la transformada de Laplace.',
+      pista: Pista.sistema,
+      hablante: 'Profesor',
+    ),
+    Frase(
+      inicioMs: 100000,
+      finMs: 118000,
+      texto:
+          'La definimos como la integral de cero a infinito de f(t) por e '
+          'elevado a menos st, dt.',
+      pista: Pista.sistema,
+      hablante: 'Profesor',
+    ),
+    Frase(
+      inicioMs: 255000,
+      finMs: 264000,
+      texto:
+          'Esto es importante: la región de convergencia siempre cae en el examen.',
+      pista: Pista.sistema,
+      hablante: 'Profesor',
+    ),
+    Frase(
+      inicioMs: 570000,
+      finMs: 576000,
+      texto: '¿La región de convergencia depende del signo de sigma?',
+      pista: Pista.micro,
+    ),
+    Frase(
+      inicioMs: 595000,
+      finMs: 604000,
+      texto: 'Exacto, depende de la parte real de s.',
+      pista: Pista.sistema,
+      hablante: 'Profesor',
+    ),
+  ];
 
   @override
   Future<Notas?> notas(String sesionId) async {
@@ -411,14 +420,17 @@ Definición de la transformada. _Diapositiva #7_ · _[00:01:40]_
   @override
   Stream<EstadoGrabacion> get estadoGrabacion => _estado.stream;
 
+  // Los datos de demostración no tienen núcleo detrás, así que no hay fallo
+  // que reportar: nunca emite.
+  @override
+  Stream<String> get errores => const Stream.empty();
+
   @override
   Future<String> iniciarGrabacion({
     required TipoSesion tipo,
     String? topicId,
-    bool capturarPantalla = true,
   }) async {
     _inicio = DateTime.now();
-    _diapositivas = 0;
 
     const guion = [
       'Buenos días, vamos a continuar con la clase de hoy.',
@@ -432,28 +444,30 @@ Definición de la transformada. _Diapositiva #7_ · _[00:01:40]_
     _reloj = Timer.periodic(const Duration(seconds: 1), (t) {
       final transcurrido = DateTime.now().difference(_inicio!);
 
-      // Cada 12 s cambia de diapositiva; cada 4 s llega una frase nueva.
-      if (t.tick % 12 == 0) _diapositivas++;
+      // Cada 4 s llega una frase nueva.
       if (t.tick % 4 == 0 && i < guion.length) {
         final ms = transcurrido.inMilliseconds;
-        _frases.add(Frase(
-          inicioMs: ms,
-          finMs: ms + 4000,
-          texto: guion[i],
-          pista: Pista.sistema,
-          hablante: 'Profesor',
-          // Llega como provisional: es la pasada en vivo.
-          definitiva: false,
-        ));
+        _frases.add(
+          Frase(
+            inicioMs: ms,
+            finMs: ms + 4000,
+            texto: guion[i],
+            pista: Pista.sistema,
+            hablante: 'Profesor',
+            // Llega como provisional: es la pasada en vivo.
+            definitiva: false,
+          ),
+        );
         i++;
       }
 
-      _estado.add(EstadoGrabacion(
-        grabando: true,
-        transcurrido: transcurrido,
-        diapositivas: _diapositivas,
-        hablandoSistema: t.tick % 4 < 3,
-      ));
+      _estado.add(
+        EstadoGrabacion(
+          grabando: true,
+          transcurrido: transcurrido,
+          hablandoSistema: t.tick % 4 < 3,
+        ),
+      );
     });
 
     return 'ses_demo';
