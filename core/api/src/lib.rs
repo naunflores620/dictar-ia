@@ -20,6 +20,7 @@ pub mod grabacion;
 mod limpieza_transcripcion;
 pub mod proceso;
 pub mod puente;
+pub mod salud_audio;
 pub mod transcriptor;
 
 use dictar_domain::{Alert, NoteTemplate, Session, SessionId, Topic, TopicId, Utterance};

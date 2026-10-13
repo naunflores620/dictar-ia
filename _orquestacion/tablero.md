@@ -143,8 +143,8 @@ Prioridad del PO: mejorar la transcripción en vivo, a partir de [la investigaci
 
 | Tarea | Qué es | Estado | Desde |
 |---|---|---|---|
-| [AV-1](trabajo/AV-1-seguir-dispositivo/PLAN.md) | Reabrir la captura WASAPI cuando cambia o se invalida el dispositivo (cierra T-9 en Windows) | PLAN rev. 2 (el contradictor tumbó la rev. 1: política de terminación inalcanzable, canal que nunca se cierra) · **implementador en curso**, en la copia aislada `../dictar_ia-av1` | 13/10 |
-| [AV-2](trabajo/AV-2-salud-audio/PLAN.md) | Avisos en vivo de sin señal, nivel bajo, recorte y eco. Arregla además la prueba de widget rota | PLAN rev. 2 (rev. 1: umbral de voz igual al de silencio, eco sin alinear) · **implementador en curso**, en el árbol principal · **se integra con AV-1** | 13/10 |
+| [AV-1](trabajo/AV-1-seguir-dispositivo/PLAN.md) | Reabrir la captura WASAPI cuando cambia o se invalida el dispositivo (cierra T-9 en Windows) | PLAN rev. 2 más adenda (el contradictor tumbó la rev. 1) · **ronda 3 del implementador** en `../dictar_ia-av1`. La ronda 2 dejó `cargo test -p dictar-audio` con 80 en verde, la prueba (d) cumplida contra la línea base y la sesión que ya no termina sola. Ronda 3: búfer WASAPI de 3 s, porque abrir el micrófono tarda hasta 2,5 s y una reapertura dejaría sin leer la pista del sistema. Pendiente: el camino de reapertura nunca se ejecutó (un solo dispositivo y sin privilegios de administrador); guion para el PO | 13/10 |
+| [AV-2](trabajo/AV-2-salud-audio/PLAN.md) | Avisos en vivo de sin señal, nivel bajo, recorte y eco. Arregla además la prueba de widget rota | PLAN rev. 2 (rev. 1: umbral de voz igual al de silencio, eco sin alinear) · **entregada (parcial), en revisión**: el implementador declara 27 pruebas Rust y 43 de Flutter en verde, y D7 con eco en Comunicaciones y en la clase larga. Faltan D4 con optimización y las pruebas manuales (guion para el PO). Revisores: `revisor-codigo`, `verificador-pruebas` (en la copia `../dictar_ia-av2-mut`, ref `refs/revision/av-2`) y `auditor-plataforma` · **se integra con AV-1** | 13/10 |
 | [AV-3](trabajo/AV-3-nivel-y-glosario/PLAN.md) | Nivelar el audio de sistema que va a Sherpa y glosario como palabras clave, con exploración de viabilidad primero | PLAN rev. 2 (rev. 1: métrica circular, reconocedor compartido, nivelar el micrófono amplifica el eco) · **implementador en curso**, en la copia aislada `../dictar_ia-av3` | 13/10 |
 
 **Corte del 13/10:**
@@ -153,6 +153,15 @@ Prioridad del PO: mejorar la transcripción en vivo, a partir de [la investigaci
 - **AV-3** terminó la escritura, pero **no pudo compilar**: Smart App Control (Enforce) bloquea con `os error 4551` los *build scripts* que se compilan por primera vez en un `target/` nuevo. Dejó HANDOFF con las tres constantes de producción en `false`.
 - **Comprobado tras el corte:** en el árbol principal solo cambiaron los archivos de AV-2. El resto es idéntico al respaldo, salvo finales de línea.
 
+**Incidente de entorno, 13/10 ~04:00: el `target/` compartido contamina las pruebas.**
+
+- **Qué pasó:** cargo calcula el hash de los crates del workspace relativo a la raíz, así que todas las copias generan el mismo ejecutable de pruebas y se pisan. El `auditor-plataforma` de AV-1 vio 8 fallos falsos con el `target/` compartido y 80/80 con uno propio. La suposición del orquestador de que «la ruta entra en el hash» era falsa.
+- **Medidas:**
+  - para `dictar-audio`, `target/` propio por copia (sí compila);
+  - para `dictar-api`, serializar y repetir los resultados sorprendentes;
+  - se avisó a los cuatro agentes activos;
+  - todo resultado de prueba obtenido antes de esto con el `target/` compartido mientras otra copia compilaba el mismo crate queda **en duda** y se repite.
+
 **Aislamiento:** todos los crates dependen de `dictar-audio`, que edita AV-1. Para que nadie compile código a medio editar de otro, AV-1 y AV-3 trabajan en copias aisladas (git worktree) creadas desde el respaldo `73e141e`. El orquestador integra cada diff (`git diff 73e141e`) en el árbol principal al cerrarlas.
 
 Deudas nuevas que salieron de los contradictores:
@@ -160,6 +169,8 @@ Deudas nuevas que salieron de los contradictores:
 | # | Deuda | Origen |
 |---|---|---|
 | T-18 | `cli/src/grabar.rs` gira al 100 % de CPU cuando el canal se cierra (`continue` ante `Disconnected`) y no drena `rx` al parar, así que pierde las últimas tramas | Contradictor de AV-1 |
+| T-20 | **Clippy en rojo en `audio-vivo` por código de octubre** (`b7f93eb`): 3 errores en `core/api/src/transcriptor.rs` y 1 en `core/audio-capture/src/lib.rs:304`. El CI (`-D warnings`) fallaría. También: `cargo test -p dictar-api` sale 101 por un ICE de rustdoc en los doctests, así que se usa `--lib --tests`. Y Smart App Control bloquea el build script de `ring` en `target/release`; para medir con optimización, `--config profile.dev.opt-level=3` | Implementador de AV-2 |
+| T-21 | **Huecos de 1,3 a 2,1 s entre tramas en WASAPI, también con el código anterior** (medidos por AV-1 en 60 s con tono, en las dos pistas). Con un búfer de 200 ms, un hueco de ese tamaño puede significar audio perdido, no solo relleno. Causa desconocida. Las aperturas del micrófono miden de 0,7 a 2,5 s, quizá relacionado | Implementador de AV-1, ronda 2 |
 | T-19 | El micrófono no tiene aviso de `nivel_bajo`: hace falta un detector de voz propio y una medida de voz real a distancia normal para calibrarlo | Contradictor de AV-2 |
 
 Siguientes, sin plan todavía:

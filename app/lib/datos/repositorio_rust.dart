@@ -94,6 +94,7 @@ class RepositorioRust implements Repositorio {
   final _estado = StreamController<EstadoGrabacion>.broadcast();
   final _progreso = StreamController<Progreso>.broadcast();
   final _errores = StreamController<String>.broadcast();
+  final _avisosAudio = StreamController<AvisoAudio>.broadcast();
   Timer? _sondeo;
   bool _sondeando = false;
 
@@ -197,6 +198,9 @@ class RepositorioRust implements Repositorio {
 
   @override
   Stream<String> get errores => _errores.stream;
+
+  @override
+  Stream<AvisoAudio> get avisosAudio => _avisosAudio.stream;
 
   @override
   Future<String> iniciarGrabacion({
@@ -436,6 +440,19 @@ class RepositorioRust implements Repositorio {
             detalle: e.detalle ?? '',
           ),
         );
+      case 'salud':
+        // El puente no se regeneró para este evento y reutiliza campos del
+        // DTO: `track` es la pista, `fase` el código, `definitiva` si está
+        // activo y `fraccion` la medida que lo disparó.
+        _avisosAudio.add(
+          AvisoAudio(
+            pista: e.track == 'mic' ? Pista.micro : Pista.sistema,
+            codigo: e.fase ?? '',
+            activo: e.definitiva,
+            valor: e.fraccion,
+            mensaje: e.mensaje ?? '',
+          ),
+        );
       case 'error':
         // Al stream, además de a la traza: `debugPrint` solo lo ve quien
         // ejecuta desde el IDE, y estos avisos —«no se pudo cargar el
@@ -458,6 +475,7 @@ class RepositorioRust implements Repositorio {
     _estado.close();
     _progreso.close();
     _errores.close();
+    _avisosAudio.close();
   }
 
   // -- Traducción -----------------------------------------------------------

@@ -1,9 +1,53 @@
+import 'dart:async';
+
 import 'package:dictar_ia/datos/repositorio.dart';
+import 'package:dictar_ia/modelos/dominio.dart';
 import 'package:dictar_ia/pantallas/grabacion.dart';
 import 'package:dictar_ia/ventana.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+/// Repositorio de demostración al que el test le dicta los avisos de audio.
+///
+/// El núcleo real no está en una prueba de widget; lo que importa aquí es qué
+/// hace la pantalla con lo que le llega por [avisosAudio], no quién lo emite.
+class _RepoConAvisos extends RepositorioDemo {
+  final _avisos = StreamController<AvisoAudio>.broadcast();
+
+  /// Detener no termina nunca: así el test mira la pantalla **mientras** el
+  /// núcleo tarda en parar, que es cuando la banda tiene que haberse vaciado.
+  final _detenido = Completer<void>();
+
+  void emitir(AvisoAudio a) => _avisos.add(a);
+
+  @override
+  Stream<AvisoAudio> get avisosAudio => _avisos.stream;
+
+  @override
+  Future<void> detenerGrabacion() => _detenido.future;
+
+  @override
+  void dispose() {
+    _avisos.close();
+    super.dispose();
+  }
+}
+
+const _eco = AvisoAudio(
+  pista: Pista.micro,
+  codigo: 'eco',
+  activo: true,
+  mensaje: 'El micrófono recoge lo que suena por los altavoces.',
+  valor: 0.7,
+);
+
+AvisoAudio _apagado(AvisoAudio a) => AvisoAudio(
+  pista: a.pista,
+  codigo: a.codigo,
+  activo: false,
+  mensaje: a.mensaje,
+);
 
 void main() {
   group('HU-11 criterio 4 — funciones que no tienen sentido en un móvil', () {
@@ -13,7 +57,7 @@ void main() {
     // `Ventana.esEscritorio`, o sumar `TargetPlatform.android` a su lista de
     // plataformas de escritorio, no lo habría detectado nadie.
     testWidgets(
-      'un móvil en Android no ofrece capturar diapositivas ni elegir su área',
+      'un móvil en Android no ofrece elegir el área de captura manual',
       (tester) async {
         // El reset va en un `finally`, síncrono al final del propio cuerpo, y
         // no en `addTearDown`: `TestWidgetsFlutterBinding` comprueba que las
@@ -32,7 +76,7 @@ void main() {
           );
           await tester.pumpAndSettle();
 
-          expect(find.text('Área de la diapositiva'), findsNothing);
+          expect(find.text('Área para captura manual'), findsNothing);
           expect(find.text('Capturar diapositivas'), findsNothing);
         } finally {
           debugDefaultTargetPlatformOverride = null;
@@ -41,13 +85,18 @@ void main() {
     );
 
     testWidgets(
-      'en escritorio sí se ofrece capturar diapositivas y elegir su área',
+      'en escritorio sí se ofrece elegir el área de captura manual',
       (tester) async {
         // El mismo montaje que el test anterior, con la única variable que
         // importa cambiada. Sin este segundo test, la ausencia en Android
         // podría deberse a cualquier otra cosa —un `FutureBuilder` que nunca
         // resuelve, un fallo silencioso al construir la fila— y no a la
         // comprobación de plataforma que este par existe para proteger.
+        //
+        // Antes buscaba «Área de la diapositiva» y «Capturar diapositivas»:
+        // la pantalla de grabación dejó de ofrecer la captura automática y
+        // ese texto solo sobrevive en Ajustes, así que el test fallaba en
+        // escritorio por un texto que ya no existe y no por la plataforma.
         debugDefaultTargetPlatformOverride = TargetPlatform.windows;
         try {
           final repo = RepositorioDemo();
@@ -58,8 +107,10 @@ void main() {
           );
           await tester.pumpAndSettle();
 
-          expect(find.text('Área de la diapositiva'), findsOneWidget);
-          expect(find.text('Capturar diapositivas'), findsOneWidget);
+          expect(find.text('Área para captura manual'), findsOneWidget);
+          expect(find.text('Elegir'), findsOneWidget);
+          // Lo quitado no se reintroduce: la captura automática ya no existe.
+          expect(find.text('Capturar diapositivas'), findsNothing);
         } finally {
           debugDefaultTargetPlatformOverride = null;
         }
@@ -144,4 +195,110 @@ void main() {
       }
     },
   );
+  group('AV-2 — avisos de salud del audio durante la grabación', () {
+    // iOS por la misma razón que el test de arriba: no es Android (no toca el
+    // `MethodChannel` de permisos) ni escritorio (no encoge la ventana).
+    Future<void> grabar(WidgetTester tester, Repositorio repo) async {
+      await tester.pumpWidget(MaterialApp(home: PantallaGrabacion(repo: repo)));
+      await tester.tap(find.text('Empezar a grabar'));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+    }
+
+    // El evento llega por un `Stream` y se entrega en un microtask que
+    // `pump` vacía **después** de dibujar el cuadro: hace falta un segundo
+    // `pump` para ver el resultado.
+    Future<void> emitir(
+      WidgetTester tester,
+      _RepoConAvisos repo,
+      AvisoAudio a,
+    ) async {
+      repo.emitir(a);
+      await tester.pump();
+      await tester.pump();
+    }
+
+    testWidgets(
+      'la banda enseña el aviso, se puede cerrar, vuelve al reactivarse y se '
+      'vacía al detener',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        final repo = _RepoConAvisos();
+        try {
+          await grabar(tester, repo);
+          expect(find.text(_eco.mensaje), findsNothing);
+
+          await emitir(tester, repo, _eco);
+          expect(find.text(_eco.mensaje), findsOneWidget);
+
+          await tester.tap(find.byTooltip('Ocultar este aviso'));
+          await tester.pump();
+          expect(find.text(_eco.mensaje), findsNothing);
+
+          // Cerrado no es resuelto: mientras siga activo no vuelve a pintarse
+          // cada vez que el núcleo lo repite...
+          await emitir(tester, repo, _eco);
+          expect(find.text(_eco.mensaje), findsNothing);
+
+          // ...pero si se apaga y se reactiva, es otro aviso y vuelve.
+          await emitir(tester, repo, _apagado(_eco));
+          await emitir(tester, repo, _eco);
+          expect(find.text(_eco.mensaje), findsOneWidget);
+
+          // Al pulsar Detener la banda se vacía de inmediato, sin esperar a
+          // que el núcleo termine de parar.
+          await tester.tap(find.text('Detener'));
+          await tester.pump();
+          await tester.pump();
+          expect(find.text(_eco.mensaje), findsNothing);
+        } finally {
+          repo.dispose();
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets(
+      'en la disposición compacta el aviso es un punto con el texto en el '
+      'tooltip',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        final repo = _RepoConAvisos();
+        try {
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
+          await grabar(tester, repo);
+
+          tester.view.physicalSize = Size(
+            Ventana.compacto.width,
+            Ventana.compacto.height,
+          );
+          tester.view.devicePixelRatio = 1.0;
+          await tester.pump();
+          expect(find.byKey(const ValueKey('punto-aviso-audio')), findsNothing);
+
+          await emitir(tester, repo, _eco);
+          expect(
+            find.byKey(const ValueKey('punto-aviso-audio')),
+            findsOneWidget,
+          );
+          // No hay banda: no cabe en 330 px de alto.
+          expect(find.byTooltip('Ocultar este aviso'), findsNothing);
+
+          await tester.tap(find.byKey(const ValueKey('punto-aviso-audio')));
+          await tester.pump();
+          expect(find.text(_eco.mensaje), findsOneWidget);
+          // Deja correr el tiempo del tooltip: un temporizador vivo al final
+          // del test lo rompe.
+          await tester.pump(const Duration(seconds: 5));
+
+          await emitir(tester, repo, _apagado(_eco));
+          expect(find.byKey(const ValueKey('punto-aviso-audio')), findsNothing);
+        } finally {
+          repo.dispose();
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+  });
 }
