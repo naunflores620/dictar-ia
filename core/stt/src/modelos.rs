@@ -1,9 +1,9 @@
 //! Descarga y localización de los modelos de Whisper.
 //!
-//! Los modelos **no se empaquetan en el instalador**: `large-v3-turbo` pesa
-//! quince veces más que la aplicación entera. Se descargan en el primer
-//! arranque, a la carpeta de datos del usuario, y así se puede cambiar de
-//! modelo sin publicar una versión nueva.
+//! Los modelos grandes **no se empaquetan en el instalador**: `large-v3-turbo`
+//! pesa cientos de MB. Windows incluye Whisper Tiny para borradores rápidos y
+//! Vosk español para transcripción incremental ligera. Los modelos alternativos
+//! se descargan a la carpeta de datos del usuario, sin publicar otra versión.
 
 use crate::{Result, SttError};
 use std::path::{Path, PathBuf};
@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 /// Modelos que ofrece la aplicación.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Modelo {
-    /// Pasada en vivo. Lo que se ve mientras hablas es desechable, así que
-    /// prima la latencia sobre la precisión.
+    /// Borradores provisionales de baja latencia durante la captura.
+    Tiny,
+    /// Alternativa en vivo con más precisión y mayor costo que Tiny.
     Small,
     /// Pasada definitiva. Precisión cercana a `large-v3` a ~6× su velocidad, y
     /// notablemente más robusto al ruido que los modelos pequeños.
@@ -24,6 +25,7 @@ pub enum Modelo {
 impl Modelo {
     pub fn archivo(&self) -> &'static str {
         match self {
+            Modelo::Tiny => "ggml-tiny-q5_1.bin",
             Modelo::Small => "ggml-small-q5_1.bin",
             Modelo::LargeV3Turbo => "ggml-large-v3-turbo-q5_0.bin",
             Modelo::Medium => "ggml-medium-q5_0.bin",
@@ -40,6 +42,7 @@ impl Modelo {
     /// Tamaño aproximado en MB, para avisar antes de descargar.
     pub fn tamano_mb(&self) -> u32 {
         match self {
+            Modelo::Tiny => 32,
             Modelo::Small => 190,
             Modelo::LargeV3Turbo => 550,
             Modelo::Medium => 540,
@@ -48,6 +51,7 @@ impl Modelo {
 
     pub fn nombre_humano(&self) -> &'static str {
         match self {
+            Modelo::Tiny => "Tiny (borrador rápido, para la transcripción en vivo)",
             Modelo::Small => "Small (rápido, para la transcripción en vivo)",
             Modelo::LargeV3Turbo => "Large v3 Turbo (el bueno, para la pasada final)",
             Modelo::Medium => "Medium (equilibrio para equipos sin GPU)",
@@ -131,6 +135,7 @@ pub fn mensaje_ausente(modelo: Modelo) -> String {
         "{} — descárgalo con «dictar modelos --descargar {}» ({} MB)",
         ruta(modelo).display(),
         match modelo {
+            Modelo::Tiny => "tiny",
             Modelo::Small => "small",
             Modelo::LargeV3Turbo => "turbo",
             Modelo::Medium => "medium",
@@ -172,7 +177,12 @@ mod tests {
 
     #[test]
     fn cada_modelo_tiene_archivo_y_url_coherentes() {
-        for m in [Modelo::Small, Modelo::LargeV3Turbo, Modelo::Medium] {
+        for m in [
+            Modelo::Tiny,
+            Modelo::Small,
+            Modelo::LargeV3Turbo,
+            Modelo::Medium,
+        ] {
             assert!(m.archivo().ends_with(".bin"));
             assert!(m.url().ends_with(m.archivo()));
             assert!(m.tamano_mb() > 0);
@@ -222,9 +232,35 @@ mod tests {
     fn un_archivo_a_medias_no_cuenta_como_descargado() {
         // Si no, el fallo aparece mucho más tarde y con un error que no ayuda.
         let dir = tempfile::tempdir().unwrap();
+
+        // La variable tiene que ser la que mira `dir_modelos` **en esta
+        // plataforma**. Antes se ponía solo `XDG_DATA_HOME`, que en Windows no
+        // la consulta nadie: `ruta()` devolvía entonces la carpeta real del
+        // usuario y este test sobrescribía su modelo descargado —181 MB— con
+        // 1024 ceros. Y pasaba en verde, porque escribir el archivo a medias
+        // es precisamente lo que el test quiere comprobar; el daño ocurría
+        // fuera de lo que el `assert` mira.
+        //
+        // No es una hipótesis: pasó el 2026-09-10, la primera vez que estos
+        // tests se ejecutaron sobre Windows. El modelo hubo que bajarlo otra
+        // vez. Un test que escribe en la carpeta de datos real del usuario es
+        // un defecto aunque el test pase.
+        #[cfg(windows)]
+        std::env::set_var("LOCALAPPDATA", dir.path());
+        #[cfg(not(windows))]
         std::env::set_var("XDG_DATA_HOME", dir.path());
 
         let p = ruta(Modelo::Small);
+
+        // Cinturón sobre tirantes: si la redirección no funcionara en alguna
+        // plataforma futura, esto para el test antes de tocar nada del usuario
+        // en vez de borrarle medio giga en silencio.
+        assert!(
+            p.starts_with(dir.path()),
+            "la ruta de modelos no quedó redirigida al temporal: {} — \
+             abortado para no escribir en la carpeta real del usuario",
+            p.display()
+        );
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, vec![0u8; 1024]).unwrap();
 

@@ -41,6 +41,11 @@ impl Reproductor {
         Err(AudioError::NoSoportada)
     }
 
+    /// En esta plataforma la reproducción no está soportada.
+    pub fn iniciar_pausado(_dir: &Path, _desde_ms: i64) -> Result<Self> {
+        Err(AudioError::NoSoportada)
+    }
+
     /// Inalcanzable en la práctica: sin una instancia real no hay quien llame
     /// a esto, pero el método tiene que existir para que `core/api` compile.
     pub fn posicion_ms(&self) -> i64 {

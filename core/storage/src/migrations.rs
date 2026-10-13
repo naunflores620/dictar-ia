@@ -167,9 +167,9 @@ CREATE VIRTUAL TABLE utterance_fts USING fts5(
   tokenize="unicode61 remove_diacritics 2"
 );
 
--- Solo se indexa la pasada definitiva. La transcripción en vivo es desechable
--- y se sustituye entera al terminar la sesión; indexarla llenaría el índice de
--- texto condenado a desaparecer.
+-- Solo se indexa la transcripción definitiva. Las frases en vivo quedan fuera
+-- mientras son provisionales; al confirmarlas o sustituirlas, los triggers
+-- agregan al índice únicamente la versión que se conserva.
 CREATE TRIGGER utterance_ai AFTER INSERT ON utterance WHEN new.is_final = 1 BEGIN
   INSERT INTO utterance_fts(rowid, text) VALUES (new.id, new.text);
 END;

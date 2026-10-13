@@ -67,9 +67,9 @@ class _PantallaSesionState extends State<PantallaSesion> {
         _arrancarReloj();
       } catch (e) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('No se pudo reproducir: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('No se pudo reproducir: $e')));
       }
       return;
     }
@@ -120,7 +120,9 @@ class _PantallaSesionState extends State<PantallaSesion> {
       future: _datos,
       builder: (context, snap) {
         if (!snap.hasData) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
 
         final (sesion, notas, frases) = snap.data!;
@@ -211,10 +213,8 @@ class _VistaNotas extends StatelessWidget {
               FilledButton.icon(
                 onPressed: () => Navigator.of(context).pushReplacement(
                   MaterialPageRoute(
-                    builder: (_) => PantallaProceso(
-                      repo: repoProceso,
-                      sesionId: sesion.id,
-                    ),
+                    builder: (_) =>
+                        PantallaProceso(repo: repoProceso, sesionId: sesion.id),
                   ),
                 ),
                 icon: const Icon(Icons.auto_awesome),
@@ -275,7 +275,9 @@ class _PieProcedencia extends StatelessWidget {
           Expanded(
             child: Text(
               'Generado con ${notas.modelo} · \$${notas.costeUsd.toStringAsFixed(3)}',
-              style: t.textTheme.labelMedium?.copyWith(color: t.colorScheme.outline),
+              style: t.textTheme.labelMedium?.copyWith(
+                color: t.colorScheme.outline,
+              ),
             ),
           ),
           TextButton(onPressed: () {}, child: const Text('Regenerar')),
@@ -361,7 +363,9 @@ class _FilaFrase extends StatelessWidget {
                     fontWeight: FontWeight.w700,
                     // La pista del micrófono es siempre uno mismo: darle otro
                     // color hace que la conversación se lea de un vistazo.
-                    color: esMio ? t.colorScheme.tertiary : t.colorScheme.primary,
+                    color: esMio
+                        ? t.colorScheme.tertiary
+                        : t.colorScheme.primary,
                   ),
                 ),
                 Text(
@@ -400,35 +404,55 @@ class _BarraReproductor extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final progreso =
-        totalMs == 0 ? 0.0 : (posicionMs / totalMs).clamp(0.0, 1.0);
+    final progreso = totalMs == 0
+        ? 0.0
+        : (posicionMs / totalMs).clamp(0.0, 1.0);
 
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 4, 16, 8),
-        child: Row(
-          children: [
-            IconButton.filled(
-              onPressed: onPlayPausa,
-              icon: Icon(sonando ? Icons.pause : Icons.play_arrow),
-            ),
-            const SizedBox(width: 8),
-            Text(formatearTs(posicionMs),
-                style: Theme.of(context).textTheme.labelMedium),
-            Expanded(
-              child: Slider(
-                value: progreso,
-                // Arrastrar la bolita salta de verdad, no solo dibuja.
-                onChanged: totalMs == 0
-                    ? null
-                    : (v) => onSaltar((v * totalMs).round()),
+        // La altura va acotada, y no es cosmética: sin esto la pantalla entera
+        // se queda en blanco.
+        //
+        // `Scaffold` da a `bottomNavigationBar` restricciones **holgadas** en
+        // vertical —puede ocupar lo que quiera hasta el alto de la ventana— y
+        // `Slider` responde a eso estirándose hasta llenarlas. Medido en un
+        // test de 800×600: el Slider salía de 588 px de alto, la barra pasaba a
+        // ocupar de y=4 a y=600 y al cuerpo del `Scaffold` le quedaba altura
+        // **cero**. Las dos pestañas se pintaban vacías aunque hubiera notas y
+        // transcripción detrás, y encima la barra quedaba por delante de la
+        // `TabBar`, así que tampoco se podía cambiar de pestaña.
+        //
+        // Nada avisaba: ni una excepción de Flutter, ni un desbordamiento, ni
+        // un error del núcleo. Solo una pantalla en blanco.
+        child: SizedBox(
+          height: 48,
+          child: Row(
+            children: [
+              IconButton.filled(
+                onPressed: onPlayPausa,
+                icon: Icon(sonando ? Icons.pause : Icons.play_arrow),
               ),
-            ),
-            Text(
-              totalMs == 0 ? '--:--' : formatearTs(totalMs),
-              style: Theme.of(context).textTheme.labelMedium,
-            ),
-          ],
+              const SizedBox(width: 8),
+              Text(
+                formatearTs(posicionMs),
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+              Expanded(
+                child: Slider(
+                  value: progreso,
+                  // Arrastrar la bolita salta de verdad, no solo dibuja.
+                  onChanged: totalMs == 0
+                      ? null
+                      : (v) => onSaltar((v * totalMs).round()),
+                ),
+              ),
+              Text(
+                totalMs == 0 ? '--:--' : formatearTs(totalMs),
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+            ],
+          ),
         ),
       ),
     );

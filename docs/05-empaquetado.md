@@ -105,7 +105,21 @@ Filename: "{app}\dictar_ia.exe"; Description: "Ejecutar dictar_ia"; \
   Flags: nowait postinstall skipifsilent
 ```
 
-Compilar: `iscc packaging\windows\inno_setup.iss`
+Antes de crear el instalador, prepara los recursos locales de voz en la carpeta `Release`:
+
+```powershell
+pwsh -File packaging\windows\preparar_vosk.ps1
+```
+
+El script descarga los modelos español e inglés de Vosk, el modelo español streaming de
+Sherpa-ONNX y Whisper Tiny; también copia los runtimes nativos y deja las licencias y atribución
+junto al `.exe`. La transcripción en vivo funciona sin red durante las sesiones. Verifica SHA-256
+de los artefactos fijados. El workflow de release ejecuta el mismo script. Después compila el
+instalador:
+
+```powershell
+iscc packaging\windows\inno_setup.iss
+```
 
 **`PrivilegesRequired=lowest` es deliberado:** instala en el perfil del usuario, sin diálogo de
 UAC. Para una app personal es lo cómodo. Cámbialo a `admin` solo si algún día necesitas
@@ -381,18 +395,20 @@ y a la portabilidad:
 
 ---
 
-## 8. Modelos: descarga bajo demanda, nunca en el instalador
+## 8. Modelos locales
 
 | Artefacto | Tamaño |
 |---|---|
+| `sherpa-onnx-streaming-zipformer-es-kroko-2025-08-06` (Español streaming, Windows) | ~156 MB |
+| `ggml-tiny-q5_1.bin` (borrador en vivo de Whisper, Windows) | ~32 MB |
 | `ggml-large-v3-turbo-q5_0.bin` | ~550 MB |
-| `ggml-small-q5_1.bin` (pasada en vivo) | ~180 MB |
+| `ggml-small-q5_1.bin` (alternativa en vivo) | ~180 MB |
 | Silero VAD (ONNX) | ~2 MB |
 | `multilingual-e5-small` (ONNX) | ~120 MB |
 
-El modelo grande pesa **quince veces más que la aplicación**. Se descargan en el primer arranque
-con barra de progreso, verificación de hash y posibilidad de reanudar, a la carpeta de datos del
-usuario:
+Los modelos grandes se descargan bajo demanda a la carpeta de datos del usuario. Windows incluye
+Tiny, Vosk español e inglés y Sherpa-ONNX español junto al `.exe` para operar sin red.
+Los demás modelos se descargan con verificación de hash a:
 
 - Windows: `%LOCALAPPDATA%\dictar_ia\models\`
 - Linux: `~/.local/share/dictar_ia/models/`
@@ -406,7 +422,7 @@ versión nueva.
 
 | Artefacto | Tamaño |
 |---|---|
-| Instalador Windows (`.exe`) | 35–55 MB |
+| Instalador Windows (`.exe`, Tiny, Vosk y Sherpa-ONNX incluidos; compilación local) | depende de los modelos incluidos |
 | Paquete Linux (`.deb`) | 30–50 MB |
 | AppImage | 45–65 MB |
 | APK Android (fase 4) | 25–40 MB |

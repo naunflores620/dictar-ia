@@ -71,10 +71,25 @@ impl Db {
         Ok(())
     }
 
-    /// Sustituye la transcripción en vivo por la definitiva.
+    /// Confirma las frases cerradas que se guardaron durante la transcripción en vivo.
     ///
-    /// Es lo que ocurre al terminar la sesión: el texto del modelo pequeño se
-    /// descarta y entra el de `large-v3-turbo` con glosario y contexto completo.
+    /// El reconocedor ya cerró esos tramos; solo quedaban marcados como borrador
+    /// porque antes siempre se sustituían por la pasada completa de Whisper.
+    /// El trigger de búsqueda indexa las filas al cambiar `is_final` a 1.
+    pub fn confirmar_vivas(&mut self, sesion: &SessionId) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let actualizadas = tx.execute(
+            "UPDATE utterance
+             SET is_final=1, revision=revision+1
+             WHERE session_id=?1 AND is_final=0",
+            params![sesion.as_str()],
+        )?;
+        tx.commit()?;
+        Ok(actualizadas)
+    }
+
+    /// Sustituye la transcripción en vivo cuando una pasada de respaldo produce
+    /// una versión definitiva más completa.
     pub fn reemplazar_por_definitiva(
         &mut self,
         sesion: &SessionId,

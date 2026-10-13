@@ -8,7 +8,7 @@ use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ajustes {
     /// Carpeta donde se exportan los apuntes en Markdown al terminar cada
     /// sesión.
@@ -20,13 +20,16 @@ pub struct Ajustes {
     #[serde(default)]
     pub carpeta_apuntes: Option<String>,
 
-    /// Modelo de Whisper: "turbo", "medium" o "small".
+    /// Modelo de Whisper para la transcripción en vivo: "tiny", "small",
+    /// "medium" o "turbo".
     #[serde(default)]
     pub modelo: Option<String>,
 
-    /// Capturar diapositivas de la pantalla compartida.
-    #[serde(default = "verdadero")]
-    pub capturar_diapositivas: bool,
+    /// Idioma esperado por el reconocedor: un código ISO (por ejemplo, "es")
+    /// o "auto" para autodetección. Si falta en una configuración antigua,
+    /// se migra a automático para no asumir el idioma de origen de la clase.
+    #[serde(default = "idioma_predeterminado")]
+    pub idioma_transcripcion: Option<String>,
 
     /// Área de la pantalla a la que se recortan las capturas: `[x, y, w, h]`.
     ///
@@ -37,8 +40,31 @@ pub struct Ajustes {
     pub region_captura: Option<[u32; 4]>,
 }
 
-fn verdadero() -> bool {
-    true
+fn idioma_predeterminado() -> Option<String> {
+    Some("auto".to_owned())
+}
+
+impl Default for Ajustes {
+    fn default() -> Self {
+        Self {
+            carpeta_apuntes: None,
+            modelo: None,
+            idioma_transcripcion: idioma_predeterminado(),
+            region_captura: None,
+        }
+    }
+}
+
+impl Ajustes {
+    /// Idioma que debe recibir el transcriptor. "auto" y un valor ausente se
+    /// representan como `None` en la sesión para autodetectar el audio.
+    pub fn idioma_efectivo(&self) -> Option<String> {
+        match self.idioma_transcripcion.as_deref() {
+            Some(idioma) if idioma.eq_ignore_ascii_case("auto") => None,
+            Some(idioma) => Some(idioma.to_owned()),
+            None => None,
+        }
+    }
 }
 
 /// Nombre de la carpeta que se crea dentro de Documentos.
@@ -111,10 +137,7 @@ impl Ajustes {
             .and_then(|t| toml::from_str(&t).ok())
             // Unos ajustes corruptos no deben impedir arrancar: se vuelve a
             // los valores por defecto y el usuario los reconfigura.
-            .unwrap_or_else(|| Self {
-                capturar_diapositivas: true,
-                ..Default::default()
-            })
+            .unwrap_or_default()
     }
 
     pub fn guardar(&self, dir: &Path) -> Result<()> {
@@ -213,7 +236,36 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = Ajustes::cargar(dir.path());
         assert!(a.carpeta_apuntes.is_none());
-        assert!(a.capturar_diapositivas, "las diapositivas van activadas");
+        assert_eq!(a.idioma_transcripcion.as_deref(), Some("auto"));
+        assert_eq!(a.idioma_efectivo(), None);
+    }
+
+    #[test]
+    fn una_configuracion_antigua_sin_idioma_migra_a_automatico() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ajustes.toml"),
+            "capturar_diapositivas = true\n",
+        )
+        .unwrap();
+
+        let a = Ajustes::cargar(dir.path());
+        assert_eq!(a.idioma_transcripcion.as_deref(), Some("auto"));
+        assert_eq!(a.idioma_efectivo(), None);
+    }
+
+    #[test]
+    fn automatico_explicito_se_persiste_y_se_normaliza_para_la_sesion() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Ajustes {
+            idioma_transcripcion: Some("auto".into()),
+            ..Ajustes::default()
+        };
+        a.guardar(dir.path()).unwrap();
+
+        let b = Ajustes::cargar(dir.path());
+        assert_eq!(b.idioma_transcripcion.as_deref(), Some("auto"));
+        assert_eq!(b.idioma_efectivo(), None);
     }
 
     #[test]
@@ -222,7 +274,7 @@ mod tests {
         let a = Ajustes {
             carpeta_apuntes: Some("/home/x/OneDrive/Apuntes".into()),
             modelo: Some("turbo".into()),
-            capturar_diapositivas: false,
+            idioma_transcripcion: Some("es".into()),
             region_captura: Some([100, 200, 800, 600]),
         };
         a.guardar(dir.path()).unwrap();
@@ -232,7 +284,7 @@ mod tests {
             b.carpeta_apuntes.as_deref(),
             Some("/home/x/OneDrive/Apuntes")
         );
-        assert!(!b.capturar_diapositivas);
+        assert_eq!(b.idioma_transcripcion.as_deref(), Some("es"));
         assert_eq!(b.region_captura, Some([100, 200, 800, 600]));
     }
 
@@ -241,9 +293,8 @@ mod tests {
         // Preferible volver a los valores por defecto que no abrir.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("ajustes.toml"), "esto no es toml {{{").unwrap();
-
         let a = Ajustes::cargar(dir.path());
-        assert!(a.capturar_diapositivas);
+        assert_eq!(a.idioma_transcripcion.as_deref(), Some("auto"));
     }
 
     #[test]

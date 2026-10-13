@@ -37,12 +37,29 @@ use windows::Win32::System::Com::{
     COINIT_MULTITHREADED,
 };
 
-// audioclient.h. Se usan los valores crudos y no las constantes con nombre
-// del crate `windows`: son fijos en la ABI de Windows y no van a cambiar, así
-// que evitan depender de si esta versión del crate las expone como `u32`
-// puro o como un newtype que necesitaría envoltura para las operaciones a
-// nivel de bit de más abajo.
-const AUDCLNT_STREAMFLAGS_LOOPBACK: u32 = 0x0010_0000;
+// audioclient.h. El resto de valores crudos se quedan como están —son fijos en
+// la ABI y evitan depender de cómo los exponga esta versión del crate—, pero
+// el del bucle NO, y la razón está escrita con sangre.
+//
+// Decía `0x0010_0000`. Ese valor existe y es válido, solo que es
+// `AUDCLNT_STREAMFLAGS_RATEADJUST`; el del bucle es `0x0002_0000`. Al pasar el
+// flag equivocado, `Initialize` **no se queja** —RATEADJUST es aceptable— y el
+// dispositivo de salida nunca entra en modo bucle. El fallo aparece más tarde
+// y en otro sitio: `GetService::<IAudioCaptureClient>()` devuelve
+// `AUDCLNT_E_WRONG_ENDPOINT_TYPE` (0x88890003), «pides un cliente de captura
+// sobre un dispositivo de salida». Y como abrir una pista no aborta la sesión,
+// la grabación seguía adelante solo con micrófono.
+//
+// Consecuencia real, medida el 2026-09-11: en Windows **nunca se capturó la
+// voz del otro lado**. Ni en una clase de Meet ni en una reunión con cliente.
+// El archivo `system.wav` no llegó a existir una sola vez, y nada lo avisaba.
+// Es la mitad del producto —la diarización de dos pistas— caída por un dígito
+// hexadecimal.
+//
+// Por eso este se toma del crate: un número mágico mal escrito no lo caza
+// ningún test, porque no hay con qué contrastarlo. El importado sí.
+use windows::Win32::Media::Audio::AUDCLNT_STREAMFLAGS_LOOPBACK;
+
 const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 0x2;
 
 // ksmedia.h. Mismo motivo que las anteriores: identifica el subformato de un
@@ -78,12 +95,10 @@ pub fn iniciar(cfg: CaptureConfig) -> Result<(Receiver<AudioFrame>, Box<dyn Capt
     let (tx_parar, rx_parar) = mpsc::channel::<()>();
     let (tx_listo, rx_listo) = mpsc::channel::<Result<()>>();
 
-    let inicio = Instant::now();
-
     let hilo = std::thread::Builder::new()
         .name("dictar-wasapi".into())
         .spawn(move || {
-            let r = bucle(cfg, tx_frames, rx_parar, inicio, &tx_listo);
+            let r = bucle(cfg, tx_frames, rx_parar, &tx_listo);
             if let Err(e) = &r {
                 tracing::error!(error = %e, "el bucle de WASAPI terminó con error");
                 // Si falla después de haber arrancado, el receptor ya no
@@ -163,7 +178,6 @@ fn bucle(
     cfg: CaptureConfig,
     tx: Sender<AudioFrame>,
     rx_parar: Receiver<()>,
-    inicio: Instant,
     tx_listo: &Sender<Result<()>>,
 ) -> Result<()> {
     // `CoInitializeEx` es por hilo: este es el único que habla con WASAPI.
@@ -225,6 +239,11 @@ fn bucle(
         let _ = tx_listo.send(Err(e));
         return Ok(());
     }
+
+    // El reloj nace después de abrir e iniciar las pistas. Iniciarlo antes de
+    // COM/Initialize hacía que `muestras_de_relleno` convirtiera el tiempo de
+    // preparación del dispositivo en silencio al principio de cada WAV.
+    let inicio = Instant::now();
 
     tracing::info!(
         microfono = mic.is_some(),

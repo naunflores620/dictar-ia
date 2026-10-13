@@ -54,11 +54,19 @@ jobs:
       # bindings con bindgen, que busca libclang.dll por esta variable. Sin
       # ella el build.rs falla antes de compilar una sola línea de Rust. CMake
       # y MSVC, que ese mismo build.rs necesita para whisper.cpp, ya están.
+      # Y junto a eso, el toolchain que dice cómo compilar whisper.cpp con
+      # MSVC. Sin él el paquete se genera igual y arranca igual, pero con
+      # whisper sin AVX2 y sin `/O2` —el crate `cmake` pisa los flags de
+      # release por defecto de CMake—, lo que multiplica por once el tiempo de
+      # transcripción: medido, 368 s contra 32 s sobre el mismo audio. Es la
+      # clase de defecto que ningún test caza porque todo pasa en verde.
       - name: dependencias del sistema (Windows)
         if: matrix.plataforma == 'windows'
         shell: pwsh
         run: |
           "LIBCLANG_PATH=$env:ProgramFiles\LLVM\bin" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CMAKE_TOOLCHAIN_FILE=$env:GITHUB_WORKSPACE\packaging\windows\msvc-toolchain.cmake" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: compilar el núcleo
@@ -73,6 +81,16 @@ jobs:
         run: |
           flutter pub get
           flutter build ${{ matrix.plataforma }} --release
+
+      # Los motores de borrador viven en el equipo: Sherpa/Vosk cubren Español,
+      # Vosk Inglés y Tiny Automático. Los modelos y licencias quedan en el instalador
+      # para que la captura y transcripción no dependan de red durante la clase.
+      - name: incluir modelos locales de transcripción (Windows)
+        if: matrix.plataforma == 'windows'
+        shell: pwsh
+        run: |
+          $release = 'app\build\windows\x64\runner\Release'
+          & packaging\windows\preparar_vosk.ps1 -ReleaseDir $release
 
       # ---- Empaquetado -----------------------------------------------------
       - name: paquete .deb
@@ -104,7 +122,36 @@ jobs:
         run: |
           $dll = "app\build\windows\x64\runner\Release\dictar_api.dll"
           if (-not (Test-Path $dll)) {
-            throw "No se generó $dll: el instalador quedaría sin núcleo."
+            throw "No se generó ${dll}: el instalador quedaría sin núcleo."
+          }
+          $release = Split-Path $dll
+          foreach ($runtimeDll in @('libvosk.dll', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll')) {
+            if (-not (Test-Path (Join-Path $release $runtimeDll))) {
+              throw "Falta el runtime Vosk requerido: $runtimeDll"
+            }
+          }
+          foreach ($runtimeDll in @('sherpa-onnx-c-api.dll', 'sherpa-onnx-cxx-api.dll', 'onnxruntime.dll', 'onnxruntime_providers_shared.dll')) {
+            if (-not (Test-Path (Join-Path $release $runtimeDll))) {
+              throw "Falta el runtime Sherpa-ONNX requerido: $runtimeDll"
+            }
+          }
+          $sherpaModel = Join-Path $release 'models\sherpa-onnx-streaming-zipformer-es-kroko-2025-08-06'
+          foreach ($modelFile in @('encoder.onnx', 'decoder.onnx', 'joiner.onnx', 'tokens.txt')) {
+            if (-not (Test-Path (Join-Path $sherpaModel $modelFile))) {
+              throw "Falta el archivo de modelo Sherpa-ONNX: $modelFile"
+            }
+          }
+          if (-not (Test-Path (Join-Path $release 'Sherpa-Spanish-MODEL-ATTRIBUTION.txt'))) {
+            throw 'Falta la atribución CC-BY-SA del modelo Sherpa-ONNX.'
+          }
+          if (-not (Test-Path (Join-Path $release 'models\vosk-model-small-es-0.42\am\final.mdl'))) {
+            throw 'Falta el modelo español de Vosk en el paquete Windows.'
+          }
+          if (-not (Test-Path (Join-Path $release 'models\vosk-model-small-en-us-0.15\am\final.mdl'))) {
+            throw 'Falta el modelo inglés de Vosk en el paquete Windows.'
+          }
+          if (-not (Test-Path (Join-Path $release 'models\ggml-tiny-q5_1.bin'))) {
+            throw 'Falta el modelo Whisper Tiny en el paquete Windows.'
           }
           Write-Host "OK: $((Get-Item $dll).Length) bytes"
 

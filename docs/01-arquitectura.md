@@ -30,10 +30,7 @@ drástica frente a un diseño orientado a aulas físicas.
 - **Transcripción en vivo útil.** Estás delante del PC durante la clase: poder releer lo que se
   dijo hace diez minutos, o buscar un término mientras el profesor sigue hablando, tiene valor
   real. En una grabadora de bolsillo no lo tenía.
-- **Captura automática de diapositivas.** El profesor comparte pantalla. Detectando el cambio de
-  diapositiva se guarda una captura anclada al segundo exacto, y los apuntes salen con las
-  diapositivas intercaladas en su sitio. Es la diferencia entre una transcripción y unos
-  apuntes de verdad.
+- **Captura manual de diapositivas.** Durante la clase se puede guardar una lamina bajo demanda y anclarla al segundo exacto. No hay captura periodica en segundo plano.
 
 ---
 
@@ -70,44 +67,13 @@ Detalles que importan en sesiones de dos horas:
 - **Detección de la app activa.** Si hay una ventana de Meet, Zoom o Teams abierta, proponerla
   automáticamente. Un botón menos antes de empezar la clase.
 
-### 2.2 Captura automática de diapositivas
+### 2.2 Captura manual de diapositivas
 
-El profesor comparte pantalla; esa información se pierde por completo si solo grabas audio. En
-clases con fórmulas, diagramas o código, la transcripción sola es insuficiente: "como veis
-aquí" no significa nada dentro de un texto.
+La app no toma capturas en segundo plano durante una sesion. La captura automatica periodica y el detector de movimiento fueron retirados para evitar trabajo de pantalla mientras se transcribe audio.
 
-**Mecanismo:**
+Durante la grabacion, la persona puede pulsar **Capturar diapositiva** cuando una lamina sea relevante. La aplicacion guarda la imagen y su marca temporal; la region elegida permite limitar la captura a la diapositiva. No hay OCR automatico conectado a esta accion.
 
-```
-Cada 2 s → captura de la ventana compartida a baja resolución
-         → hash perceptual (dHash) de la región central estable
-         → distancia de Hamming con el hash anterior
-              ├─ < umbral  → misma diapositiva, descartar
-              └─ ≥ umbral  → diapositiva nueva:
-                              guardar captura a resolución completa
-                              anclar a ts_ms
-                              OCR → texto indexable + términos al glosario
-```
-
-Puntos finos que deciden si esto funciona o molesta:
-
-- **Ignorar la miniatura de la webcam y el cursor.** Comparar solo una región central estable,
-  o exigir que el cambio afecte a un porcentaje mínimo del área. Si no, cada movimiento de la
-  cara del profesor cuenta como diapositiva nueva.
-- **Estabilización temporal.** Confirmar el cambio en dos capturas consecutivas antes de
-  guardar; así las transiciones y animaciones no generan cuatro capturas de la misma lámina.
-- **Deduplicación al final.** Si el profesor vuelve a una diapositiva anterior, referenciar la
-  captura existente en lugar de duplicarla.
-- **Solo mientras grabas**, con indicador visible. Capturar la pantalla es intrusivo y debe
-  serlo de forma evidente.
-
-Coste: una clase de 2 h con 60 diapositivas ≈ 30–60 MB en WebP. Crates: `xcap` para captura
-multiplataforma, `image` + `img_hash` para el hashing.
-
-El OCR alimenta dos cosas: la búsqueda (encontrar la diapositiva donde salía cierta ecuación) y
-el **glosario de la asignatura** (§2.4), porque las diapositivas están llenas de la terminología
-exacta que Whisper necesita conocer.
-
+El coste de captura ocurre unicamente cuando se solicita desde la interfaz.
 ### 2.3 Caso secundario: reuniones presenciales
 
 Aquí sí aparece el problema acústico: distancia al interlocutor, reverberación de la sala, ruido
@@ -194,7 +160,7 @@ flowchart TB
     subgraph CAP["Captura — escritorio"]
         MIC[Micrófono → pista 'mic']
         LOOP[Loopback del sistema → pista 'system']
-        SCR[Captura de pantalla<br/>detección de diapositiva]
+        SCR[Captura de pantalla<br/>captura manual de diapositivas]
     end
 
     subgraph IMP["Entrada secundaria"]
@@ -496,9 +462,9 @@ reales sin ningún modelo de audio.
 
 1. Abrir la app y pulsar grabar. Detecta la ventana de Meet/Zoom activa y propone capturarla; el
    tipo de sesión y la asignatura se sugieren por el horario si está configurado.
-2. Arrancan las dos pistas de audio + la captura de pantalla.
+2. Arrancan las dos pistas de audio.
 3. Durante la clase: transcripción en vivo con hablante y reloj, resumen rodante cada 10 min,
-   diapositivas apareciendo en la línea de tiempo. Botón de marcador para señalar "esto es
+   capturas manuales de diapositivas bajo demanda. Botón de marcador para señalar "esto es
    importante" sin interrumpir.
 4. Al detener: re-transcripción con `large-v3-turbo` + glosario, luego map-reduce de apuntes.
 5. Notificación al terminar. Los `alert` detectados van al panel general de pendientes.
@@ -553,7 +519,6 @@ fuera de los apuntes finales.
 | Métrica | Objetivo |
 |---|---|
 | Captura de audio (2 pistas) + VAD | < 10 % de un núcleo |
-| Captura de pantalla + hashing | < 5 % de un núcleo |
 | STT en vivo (`whisper small` Q5) | 1–2 núcleos |
 | RAM total | < 700 MB |
 

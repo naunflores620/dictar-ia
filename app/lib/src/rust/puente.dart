@@ -98,11 +98,11 @@ Future<AjustesDto> obtenerAjustes() =>
 Future<void> guardarAjustes({
   String? carpetaApuntes,
   String? modelo,
-  required bool capturarDiapositivas,
+  String? idiomaTranscripcion,
 }) => Nucleo.instance.api.cratePuenteGuardarAjustes(
   carpetaApuntes: carpetaApuntes,
   modelo: modelo,
-  capturarDiapositivas: capturarDiapositivas,
+  idiomaTranscripcion: idiomaTranscripcion,
 );
 
 /// Carpetas de sincronización detectadas en el equipo, para sugerirlas.
@@ -143,7 +143,6 @@ Future<String> iniciarGrabacion({
   String? topicId,
   String? titulo,
   required bool capturarSistema,
-  required bool capturarDiapositivas,
   required bool soloLocal,
   required PlatformInt64 ahoraMs,
 }) => Nucleo.instance.api.cratePuenteIniciarGrabacion(
@@ -151,7 +150,6 @@ Future<String> iniciarGrabacion({
   topicId: topicId,
   titulo: titulo,
   capturarSistema: capturarSistema,
-  capturarDiapositivas: capturarDiapositivas,
   soloLocal: soloLocal,
   ahoraMs: ahoraMs,
 );
@@ -202,13 +200,13 @@ class AjustesDto {
   /// Documentos. La interfaz enseña esta.
   final String? carpetaEfectiva;
   final String? modelo;
-  final bool capturarDiapositivas;
+  final String? idiomaTranscripcion;
 
   const AjustesDto({
     this.carpetaApuntes,
     this.carpetaEfectiva,
     this.modelo,
-    required this.capturarDiapositivas,
+    this.idiomaTranscripcion,
   });
 
   @override
@@ -216,7 +214,7 @@ class AjustesDto {
       carpetaApuntes.hashCode ^
       carpetaEfectiva.hashCode ^
       modelo.hashCode ^
-      capturarDiapositivas.hashCode;
+      idiomaTranscripcion.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -226,7 +224,7 @@ class AjustesDto {
           carpetaApuntes == other.carpetaApuntes &&
           carpetaEfectiva == other.carpetaEfectiva &&
           modelo == other.modelo &&
-          capturarDiapositivas == other.capturarDiapositivas;
+          idiomaTranscripcion == other.idiomaTranscripcion;
 }
 
 class AvisoDto {
@@ -287,6 +285,7 @@ class EventoDto {
   final String? texto;
   final PlatformInt64 inicioMs;
   final PlatformInt64 finMs;
+  final PlatformInt64 estableHastaUtf16;
   final bool definitiva;
   final String? fase;
   final double fraccion;
@@ -304,6 +303,7 @@ class EventoDto {
     this.texto,
     required this.inicioMs,
     required this.finMs,
+    required this.estableHastaUtf16,
     required this.definitiva,
     this.fase,
     required this.fraccion,
@@ -326,6 +326,7 @@ class EventoDto {
       texto.hashCode ^
       inicioMs.hashCode ^
       finMs.hashCode ^
+      estableHastaUtf16.hashCode ^
       definitiva.hashCode ^
       fase.hashCode ^
       fraccion.hashCode ^
@@ -347,6 +348,7 @@ class EventoDto {
           texto == other.texto &&
           inicioMs == other.inicioMs &&
           finMs == other.finMs &&
+          estableHastaUtf16 == other.estableHastaUtf16 &&
           definitiva == other.definitiva &&
           fase == other.fase &&
           fraccion == other.fraccion &&

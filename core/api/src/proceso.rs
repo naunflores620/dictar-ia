@@ -1,25 +1,27 @@
-//! Procesado de una sesión: de los WAV a los apuntes.
+//! Cierre de una sesión: confirmar el texto en vivo o transcribir por lotes,
+//! y después generar los apuntes.
 //!
-//! Se ejecuta en segundo plano y por lotes, no durante la clase. Con 4,6×
-//! tiempo real medido, diez horas de clase son unas dos horas de trabajo: se
-//! lanza al cerrar el portátil y por la mañana están los apuntes.
+//! El lote se reserva para grabaciones importadas, falta de texto vivo o una
+//! cola final sin cubrir. Una sesión en vivo con cobertura suficiente conserva
+//! sus tramos y evita volver a decodificar todo el audio.
 
 use crate::eventos::{Evento, FaseProceso};
+use crate::limpieza_transcripcion::deduplicar_solape;
 use crate::{ApiError, Nucleo, Result};
 use dictar_audio::wav::leer_wav;
 use dictar_domain::alert;
 use dictar_domain::notes::NotesPayload;
 use dictar_domain::transcript::GlossarySource;
 use dictar_domain::{EpochMs, SessionId, SessionStatus, Track};
-use dictar_notes::{fecha, NotesGenerator, SessionContext};
+use dictar_notes::{NotesGenerator, SessionContext, fecha};
 use dictar_storage::notes_store::NewNotes;
 use dictar_storage::transcript::NewUtterance;
+use dictar_stt::SttOpciones;
 use dictar_stt::modelos::{self, Modelo};
 use dictar_stt::whisper::Transcriptor;
-use dictar_stt::SttOpciones;
-use dictar_vad::segmentador::Segmentador;
-use std::sync::mpsc::Sender;
+use dictar_vad::segmentador::{SOLAPE_MS, Segmentador};
 use std::sync::Arc;
+use std::sync::mpsc::Sender;
 
 /// Cola sin transcribir que se tolera antes de rehacer el tramo final.
 ///
@@ -29,10 +31,17 @@ use std::sync::Arc;
 /// silencio de la despedida, y no merece rehacerse.
 pub(crate) const COLA_SIN_CUBRIR_MS: i64 = 60_000;
 
+/// Desfase de reloj tolerado entre el WAV y el último timestamp reconocido.
+pub(crate) const DESFASE_TIMESTAMPS_TOLERADO_MS: i64 = 2_000;
+
 /// Si la transcripción en vivo dejó un tramo final sin cubrir.
 pub(crate) fn falta_cobertura(duracion_ms: Option<i64>, fin_transcrito_ms: i64) -> bool {
     duracion_ms
-        .map(|d| d.saturating_sub(fin_transcrito_ms) > COLA_SIN_CUBRIR_MS)
+        .map(|d| {
+            fin_transcrito_ms < 0
+                || fin_transcrito_ms.saturating_sub(d) > DESFASE_TIMESTAMPS_TOLERADO_MS
+                || d.saturating_sub(fin_transcrito_ms) > COLA_SIN_CUBRIR_MS
+        })
         .unwrap_or(false)
 }
 
@@ -75,21 +84,52 @@ impl Nucleo {
         let fin_transcrito = vivas.iter().map(|u| u.end_ms).max().unwrap_or(0);
 
         if !vivas.is_empty() {
-            if falta_cobertura(sesion.duracion_ms(), fin_transcrito) {
-                // La transcripción en vivo no llegó al final: un cierre a
-                // medias, o el modelo se cayó a mitad de clase. Se transcribe
-                // solo el tramo que falta, sin tirar lo ya hecho — unas notas
-                // que cubrieran media clase en silencio serían peores que
-                // esperar un poco más.
-                tracing::info!(fin_transcrito, "completando el tramo final");
-                self.con_db(|db| db.cambiar_estado(id, SessionStatus::Transcribing))?;
-
-                let nuevas = self.transcribir_lote(id, &sesion, modelo, fin_transcrito, &emitir)?;
-                if !nuevas.is_empty() {
-                    self.con_db(|db| db.insertar_frases(id, &nuevas))?;
+            let duracion = sesion.duracion_ms();
+            let cobertura_temporal = duracion
+                .map(|d| d > 0 && !falta_cobertura(Some(d), fin_transcrito))
+                .unwrap_or(false);
+            let falta_microfono = match Self::hay_voz_independiente_en_microfono(&self.dir_audio(id)) {
+                Ok(hay_voz) => hay_voz,
+                Err(error) => {
+                    tracing::warn!(%error, "no se pudo comprobar la pista de micrófono; se conserva la pasada de respaldo");
+                    true
                 }
+            };
+            let cobertura_suficiente = cobertura_temporal && !falta_microfono;
+
+            if cobertura_suficiente {
+                // La hipótesis en vivo ya llegó hasta el final de la sesión.
+                // Reprocesar todos los WAV con Turbo repetiría minutos de CPU
+                // y volvería a sustituir los mismos tramos; se confirma el
+                // texto existente y se continúa con las notas.
+                let confirmadas = self.con_db(|db| db.confirmar_vivas(id))?;
+                tracing::info!(
+                    sesion = %id,
+                    frases = confirmadas,
+                    fin_transcrito,
+                    duracion_ms = duracion.unwrap_or_default(),
+                    mic_pendiente = falta_microfono,
+                    "transcripción en vivo confirmada sin repetir la pasada completa"
+                );
             } else {
-                tracing::info!(frases = vivas.len(), "transcripción ya hecha en vivo");
+                tracing::info!(
+                    fin_transcrito,
+                    duracion_ms = duracion.unwrap_or_default(),
+                    mic_pendiente = falta_microfono,
+                    "transcripción en vivo incompleta, fuera de rango o falta voz de micrófono; se ejecuta la pasada final de respaldo"
+                );
+                // Si falta más de un minuto al final, o no se conoce la
+                // duración, la pasada de mayor calidad intenta recuperar la
+                // cobertura. Este camino también conserva grabaciones cuyo
+                // reconocedor en vivo dejó de funcionar.
+                self.con_db(|db| db.cambiar_estado(id, SessionStatus::Transcribing))?;
+                let definitivas = self.transcribir_lote(id, &sesion, modelo, 0, &emitir)?;
+                if !definitivas.is_empty() {
+                    self.con_db(|db| db.reemplazar_por_definitiva(id, &definitivas))?;
+                } else {
+                    tracing::warn!(sesion = %id, "la pasada final no produjo frases; se confirman las frases disponibles");
+                    self.con_db(|db| db.confirmar_vivas(id))?;
+                }
             }
             return self.solo_notas(id, &sesion, ahora, progreso).await;
         }
@@ -109,6 +149,41 @@ impl Nucleo {
 
         self.con_db(|db| db.reemplazar_por_definitiva(id, &frases))?;
         self.solo_notas(id, &sesion, ahora, progreso).await
+    }
+
+    /// Indica si el micrófono conserva voz que la ruta en vivo no haya reconocido.
+    ///
+    /// En una sesión con loopback, la captura en vivo prioriza sistema y puede
+    /// omitir el micrófono para no duplicar por altavoces. Solo se permite cerrar
+    /// rápido si el WAV no contiene voz o si, tras atenuar un retorno confirmado,
+    /// no queda voz independiente. Ante una correlación ausente o un error se
+    /// conserva la pasada completa para no descartar intervenciones del usuario.
+    fn hay_voz_independiente_en_microfono(dir: &std::path::Path) -> Result<bool> {
+        let mic = dir.join("mic.wav");
+        let sistema = dir.join("system.wav");
+        if !mic.is_file() || !sistema.is_file() {
+            return Ok(false);
+        }
+
+        let (mut pcm_mic, _) = leer_wav(&mic)?;
+        if !Self::tiene_voz(&pcm_mic) {
+            return Ok(false);
+        }
+
+        let Some(retorno) = dictar_audio::detectar_retorno_en_wav(&mic, &sistema)? else {
+            return Ok(true);
+        };
+        retorno.atenuar_microfono(&mut pcm_mic);
+        Ok(Self::tiene_voz(&pcm_mic))
+    }
+
+    fn tiene_voz(pcm: &[f32]) -> bool {
+        let mut segmentador = Segmentador::nuevo(Track::Mic);
+        let mut segmentos = segmentador.empujar(pcm, 0);
+        if let Some(ultimo) = segmentador.finalizar() {
+            segmentos.push(ultimo);
+        }
+        segmentos.iter().any(|s| s.merece_transcribirse())
     }
 
     /// Espera a que el transcriptor en vivo termine lo que le quedó en cola.
@@ -187,6 +262,28 @@ impl Nucleo {
 
         let dir = self.dir_audio(id);
         let mut trabajos = Vec::new();
+        let retorno = {
+            let mic = dir.join("mic.wav");
+            let sistema = dir.join("system.wav");
+            if mic.is_file() && sistema.is_file() {
+                match dictar_audio::detectar_retorno_en_wav(&mic, &sistema) {
+                    Ok(retorno) => retorno,
+                    Err(error) => {
+                        tracing::warn!(%error, "no se pudo analizar el retorno acústico; se transcriben las dos pistas sin atenuar");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(retorno) = &retorno {
+            tracing::info!(
+                correlacion = retorno.correlacion,
+                retardo_ms = retorno.retardo_ms,
+                "retorno acústico detectado; se atenuará solo durante la transcripción"
+            );
+        }
 
         for track in [Track::Mic, Track::System] {
             let ruta = dir.join(format!("{}.wav", track.as_str()));
@@ -194,7 +291,12 @@ impl Nucleo {
                 continue;
             }
 
-            let (pcm, _sr) = leer_wav(&ruta)?;
+            let (mut pcm, _sr) = leer_wav(&ruta)?;
+            if track == Track::Mic {
+                if let Some(retorno) = &retorno {
+                    retorno.atenuar_microfono(&mut pcm);
+                }
+            }
             let mut seg = Segmentador::nuevo(track);
             let mut segmentos = seg.empujar(&pcm, 0);
             if let Some(u) = seg.finalizar() {
@@ -236,7 +338,7 @@ impl Nucleo {
 
         let quien_sistema = self.nombre_interlocutor(sesion);
         let total = trabajos.len();
-        let mut frases = Vec::new();
+        let mut frases: Vec<NewUtterance> = Vec::new();
 
         for (i, s) in trabajos.iter().enumerate() {
             emitir(Evento::progreso(
@@ -245,18 +347,22 @@ impl Nucleo {
                 format!("segmento {} de {total}", i + 1),
             ));
 
-            // El contexto previo mejora la continuidad entre segmentos: Whisper
-            // acierta más con los nombres propios si acaba de verlos.
-            opciones.contexto_previo = frases.last().map(|u: &NewUtterance| {
-                u.text
-                    .chars()
-                    .rev()
-                    .take(200)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect()
-            });
+            // El contexto previo mejora la continuidad entre segmentos de la misma pista:
+            // Whisper acierta más con los nombres propios si acaba de verlos.
+            opciones.contexto_previo = frases
+                .iter()
+                .rev()
+                .find(|u| u.track == s.track && !dictar_stt::limpieza::es_alucinacion(&u.text))
+                .map(|u: &NewUtterance| {
+                    u.text
+                        .chars()
+                        .rev()
+                        .take(200)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect()
+                });
 
             let fragmentos = trans.transcribir(&s.pcm, &opciones)?;
 
@@ -267,6 +373,7 @@ impl Nucleo {
                 tracing::info!(descartados = en_bucle, "bucle del decodificador");
             }
 
+            let mut frases_segmento = Vec::new();
             for idx in indices {
                 let f = &fragmentos[idx];
                 if dictar_stt::limpieza::es_alucinacion(&f.texto) {
@@ -286,11 +393,29 @@ impl Nucleo {
                     is_final: true,
                 };
 
-                emitir(Evento::frase(
-                    id, s.track, u.start_ms, u.end_ms, &u.text, true,
-                ));
-                frases.push(u);
+                frases_segmento.push(u);
             }
+
+            let descartadas =
+                deduplicar_solape(&frases, &mut frases_segmento, s.inicio_ms, SOLAPE_MS);
+            if descartadas > 0 {
+                tracing::info!(
+                    descartadas,
+                    "frases duplicadas en el solape entre segmentos"
+                );
+            }
+
+            for frase in &frases_segmento {
+                emitir(Evento::frase(
+                    id,
+                    s.track,
+                    frase.start_ms,
+                    frase.end_ms,
+                    &frase.text,
+                    true,
+                ));
+            }
+            frases.extend(frases_segmento);
         }
 
         frases.sort_by_key(|u| u.start_ms);

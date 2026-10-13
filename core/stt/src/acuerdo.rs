@@ -28,22 +28,17 @@ impl AcuerdoLocal {
 
     /// Incorpora una hipótesis nueva.
     ///
-    /// Devuelve `(confirmado_nuevo, provisional)`: lo primero ya no cambiará y
-    /// se puede escribir en firme; lo segundo se pinta atenuado porque todavía
-    /// puede corregirse.
+    /// Devuelve `(estable_actual, provisional)`: lo primero coincide en las
+    /// dos últimas hipótesis y lo segundo todavía puede corregirse. Si una
+    /// hipótesis posterior contradice parte del prefijo estable, este se
+    /// recorta y el evento reemplaza la frase visible completa; conservarlo a
+    /// ciegas duplicaría el texto corregido.
     pub fn actualizar(&mut self, hipotesis: &str) -> (String, String) {
         let palabras: Vec<String> = hipotesis.split_whitespace().map(String::from).collect();
 
         // Prefijo común con la hipótesis anterior: eso es lo que dos pasadas
         // independientes han dicho igual.
         let acuerdo = prefijo_comun(&self.anterior, &palabras);
-
-        // Solo interesa lo que va más allá de lo ya emitido.
-        let nuevas: Vec<String> = if acuerdo.len() > self.confirmadas.len() {
-            acuerdo[self.confirmadas.len()..].to_vec()
-        } else {
-            Vec::new()
-        };
 
         self.confirmadas = acuerdo;
         self.anterior = palabras.clone();
@@ -53,7 +48,7 @@ impl AcuerdoLocal {
             .map(|p| p.join(" "))
             .unwrap_or_default();
 
-        (nuevas.join(" "), provisional)
+        (self.confirmadas.join(" "), provisional)
     }
 
     /// Cierra el flujo dando por buena la última hipótesis entera.
@@ -147,8 +142,25 @@ mod tests {
         assert_eq!(firme1, "uno dos tres");
 
         let (firme2, _) = a.actualizar("uno dos tres cuatro cinco");
-        // Solo lo nuevo: repetir "uno dos tres" duplicaría la transcripción.
-        assert_eq!(firme2, "cuatro");
+        // Devuelve el prefijo estable actual; la UI reemplaza la frase y no
+        // concatena este texto con el estable anterior.
+        assert_eq!(firme2, "uno dos tres cuatro");
+    }
+
+    #[test]
+    fn una_correccion_del_prefijo_no_duplica_el_texto_estable() {
+        let mut a = AcuerdoLocal::nuevo();
+        a.actualizar("el profesor habla");
+        let (estable, provisional) = a.actualizar("el profesor explica");
+        assert_eq!(estable, "el profesor");
+        assert_eq!(provisional, "explica");
+
+        // Una revisión puede contradecir palabras ya mostradas como estables.
+        // La frase actual sustituye el borrador hasta volver a concordar.
+        let (estable, provisional) = a.actualizar("la profesora explica");
+        assert_eq!(estable, "");
+        assert_eq!(provisional, "la profesora explica");
+        assert_eq!(format!("{estable} {provisional}").trim(), provisional);
     }
 
     #[test]

@@ -45,10 +45,10 @@ Se graba el micrófono y el loopback del sistema por separado. De ahí salen gra
 diarización exacta (tú vs. profesor/cliente) sin ningún modelo, mejor transcripción al no haber
 voces solapadas, y control independiente de cada pista.
 
-**2. Captura automática de diapositivas.**
-Muestreo de pantalla + hash perceptual: cuando cambia la lámina, se guarda una captura anclada
-al segundo exacto y se le pasa OCR. Los apuntes salen con las diapositivas intercaladas en su
-sitio. Es la diferencia entre una transcripción y unos apuntes de verdad.
+**2. Captura manual de diapositivas.**
+La pantalla no se muestrea durante la grabación. Si hace falta guardar una diapositiva, la
+persona la captura desde el control de la sesión; también puede elegir previamente el área que
+se guardará.
 
 **3. Whisper local por defecto, no cloud.**
 150 h por semestre cuestan ~$40 en transcripción cloud y **$0** en local. Al proveedor de IA
@@ -56,9 +56,10 @@ solo va texto ya transcrito, que cuesta ~$2,60 el semestre entero — menos que 
 audio nunca sale del equipo.
 
 **4. Doble pasada de transcripción.**
-Modelo pequeño en vivo durante la clase (desechable, para poder releer lo que se dijo hace diez
-minutos) y `large-v3-turbo` al terminar, con glosario y contexto completo (el bueno). Es lo que
-hace que la experiencia de Notion se sienta buena.
+Whisper Tiny actualiza los borradores durante la clase y `large-v3-turbo` vuelve a transcribir
+al terminar, con glosario y contexto completo. En Windows, Español usa Sherpa-ONNX streaming
+local, con Vosk como respaldo, e Inglés usa Vosk para los parciales; Whisper realiza la pasada
+definitiva. Automático conserva Whisper Tiny en vivo.
 
 **5. Glosario que aprende por asignatura.**
 El OCR de las diapositivas y los términos recurrentes de clases anteriores alimentan el
@@ -188,8 +189,8 @@ demostración en lugar de quedarse en blanco.
 
 ## Siguiente paso
 
-La captura de diapositivas por cambio de pantalla y la transcripción en vivo durante la clase ya
-están hechas, no son "siguiente paso". Lo que sí queda:
+La captura de diapositivas es manual desde el control de la sesión; no se muestrea la pantalla en
+segundo plano. La transcripción en vivo durante la clase ya está conectada. Lo que sí queda:
 
 - **Conectar dos botones de la interfaz al núcleo que ya existe.** En
   `app/lib/pantallas/inicio.dart`, "Importar audio de una reunión presencial" y el buscador son
