@@ -135,6 +135,42 @@ No sustituyen a ningún `REVIEW-*.md`: son un adelanto, y los revisores deben re
    `keyring::` (líneas 267, 308, 312, 327 y las del test) caen dentro de ramas positivas:
    Android no ve el crate por ningún camino.
 
+## Tanda «audio en vivo» — 2026-10-13
+
+Prioridad del PO: mejorar la transcripción en vivo, a partir de [la investigación de Notion](../docs/investigacion-notion-reuniones-2026-10-12.md) §6 bis. Las tres tareas declaran archivos disjuntos y pueden ir en paralelo.
+
+**Respaldo previo:** antes de empezar, el árbol de trabajo (72 archivos de octubre sin commitear) se guardó en `refs/respaldo/antes-audio-vivo-2026-10-13` (`73e141e`), sin tocar ramas ni índice. Para recuperar un archivo: `git show refs/respaldo/antes-audio-vivo-2026-10-13:<ruta>`.
+
+| Tarea | Qué es | Estado | Desde |
+|---|---|---|---|
+| [AV-1](trabajo/AV-1-seguir-dispositivo/PLAN.md) | Reabrir la captura WASAPI cuando cambia o se invalida el dispositivo (cierra T-9 en Windows) | PLAN rev. 2 (el contradictor tumbó la rev. 1: política de terminación inalcanzable, canal que nunca se cierra) · **implementador en curso**, en la copia aislada `../dictar_ia-av1` | 13/10 |
+| [AV-2](trabajo/AV-2-salud-audio/PLAN.md) | Avisos en vivo de sin señal, nivel bajo, recorte y eco. Arregla además la prueba de widget rota | PLAN rev. 2 (rev. 1: umbral de voz igual al de silencio, eco sin alinear) · **implementador en curso**, en el árbol principal · **se integra con AV-1** | 13/10 |
+| [AV-3](trabajo/AV-3-nivel-y-glosario/PLAN.md) | Nivelar el audio de sistema que va a Sherpa y glosario como palabras clave, con exploración de viabilidad primero | PLAN rev. 2 (rev. 1: métrica circular, reconocedor compartido, nivelar el micrófono amplifica el eco) · **implementador en curso**, en la copia aislada `../dictar_ia-av3` | 13/10 |
+
+**Corte del 13/10:**
+
+- **AV-1 y AV-2** murieron por `rate_limit` («resets 1:50am») a mitad de implementación. No dejaron HANDOFF. Su código está escrito en parte y **no se ha verificado que compile**.
+- **AV-3** terminó la escritura, pero **no pudo compilar**: Smart App Control (Enforce) bloquea con `os error 4551` los *build scripts* que se compilan por primera vez en un `target/` nuevo. Dejó HANDOFF con las tres constantes de producción en `false`.
+- **Comprobado tras el corte:** en el árbol principal solo cambiaron los archivos de AV-2. El resto es idéntico al respaldo, salvo finales de línea.
+
+**Aislamiento:** todos los crates dependen de `dictar-audio`, que edita AV-1. Para que nadie compile código a medio editar de otro, AV-1 y AV-3 trabajan en copias aisladas (git worktree) creadas desde el respaldo `73e141e`. El orquestador integra cada diff (`git diff 73e141e`) en el árbol principal al cerrarlas.
+
+Deudas nuevas que salieron de los contradictores:
+
+| # | Deuda | Origen |
+|---|---|---|
+| T-18 | `cli/src/grabar.rs` gira al 100 % de CPU cuando el canal se cierra (`continue` ante `Disconnected`) y no drena `rx` al parar, así que pierde las últimas tramas | Contradictor de AV-1 |
+| T-19 | El micrófono no tiene aviso de `nivel_bajo`: hace falta un detector de voz propio y una medida de voz real a distancia normal para calibrarlo | Contradictor de AV-2 |
+
+Siguientes, sin plan todavía:
+
+- **AV-4:** micrófono en vivo sin eco.
+- **AV-5:** captura por proceso.
+- **AV-6:** reducción de ruido.
+- **AV-7:** corte de frases y puntuación.
+
+Dependen de una **referencia humana de 10 min**, que tiene que dar el PO.
+
 ## En curso
 
 | Tarea | Qué es | Estado | Desde |
