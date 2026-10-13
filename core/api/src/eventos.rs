@@ -51,6 +51,22 @@ pub enum Evento {
         avisos: usize,
     },
 
+    /// Un aviso de salud del audio que aparece o desaparece mientras se graba.
+    ///
+    /// Se emite solo en los cambios, no en cada trama: la interfaz guarda el
+    /// estado y lo limpia ella misma al empezar y al detener la sesión.
+    Salud {
+        /// `"mic"` o `"system"`, como `Track::as_str`.
+        pista: String,
+        /// Identificador estable del aviso, por ejemplo `"eco"`.
+        codigo: String,
+        activo: bool,
+        /// Medida que disparó el aviso (correlación, RMS, segundos...), solo
+        /// informativa.
+        valor: f32,
+        mensaje: String,
+    },
+
     /// Algo falló, pero la sesión no se pierde.
     Error { mensaje: String, recuperable: bool },
 }

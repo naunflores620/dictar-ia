@@ -114,7 +114,12 @@ pub struct ProcesadaDto {
 /// sobre `tipo`.
 #[derive(Debug, Clone)]
 pub struct EventoDto {
-    /// "niveles" | "frase" | "progreso" | "terminada" | "error"
+    /// "niveles" | "frase" | "progreso" | "terminada" | "salud" | "error"
+    ///
+    /// El tipo "salud" reutiliza campos con otro significado, para no tener
+    /// que regenerar el puente: `track` es la pista, `fase` el código del
+    /// aviso, `definitiva` si está activo, `fraccion` la medida que lo
+    /// disparó y `mensaje` el texto para el usuario.
     pub tipo: String,
 
     // Niveles
@@ -215,6 +220,21 @@ impl From<Evento> for EventoDto {
                 tipo: "terminada".into(),
                 coste_usd,
                 avisos: avisos as i64,
+                ..Default::default()
+            },
+            Evento::Salud {
+                pista,
+                codigo,
+                activo,
+                valor,
+                mensaje,
+            } => EventoDto {
+                tipo: "salud".into(),
+                track: Some(pista),
+                fase: Some(codigo),
+                definitiva: activo,
+                fraccion: valor,
+                mensaje: Some(mensaje),
                 ..Default::default()
             },
             Evento::Error { mensaje, .. } => EventoDto {
@@ -759,6 +779,28 @@ mod tests {
         assert_eq!(e.nivel_sistema, 0.8);
         assert_eq!(e.transcurrido_ms, 5000);
         assert!(e.texto.is_none());
+    }
+
+    #[test]
+    fn un_aviso_de_salud_cruza_con_cada_dato_en_su_campo_reutilizado() {
+        // El puente no se regeneró para este evento: si alguien cambia qué
+        // campo lleva cada dato, Dart leería el código como pista y no habría
+        // ningún error de compilación que lo avisara.
+        let e: EventoDto = Evento::Salud {
+            pista: "system".into(),
+            codigo: "eco".into(),
+            activo: true,
+            valor: 0.7,
+            mensaje: "texto".into(),
+        }
+        .into();
+
+        assert_eq!(e.tipo, "salud");
+        assert_eq!(e.track.as_deref(), Some("system"));
+        assert_eq!(e.fase.as_deref(), Some("eco"));
+        assert!(e.definitiva);
+        assert_eq!(e.fraccion, 0.7);
+        assert_eq!(e.mensaje.as_deref(), Some("texto"));
     }
 
     #[test]

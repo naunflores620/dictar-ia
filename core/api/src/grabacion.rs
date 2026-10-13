@@ -7,6 +7,7 @@
 //! consecuencias.
 
 use crate::eventos::Evento;
+use crate::salud_audio::SaludAudio;
 use crate::transcriptor::TranscriptorVivo;
 use crate::{ApiError, Nucleo, Result};
 use dictar_audio::wav::EscritorPistas;
@@ -165,6 +166,7 @@ impl Nucleo {
             let trans = transcriptor.clone();
             let tx_hilo = tx_ev.clone();
             let priorizar_sistema = opts.capturar_sistema;
+            let capturar_sistema = opts.capturar_sistema;
             std::thread::Builder::new()
                 .name("dictar-escritura".into())
                 .spawn(move || {
@@ -176,6 +178,7 @@ impl Nucleo {
                         trans,
                         priorizar_sistema,
                         usar_vosk,
+                        SaludAudio::nueva(inicio, capturar_sistema),
                     ) {
                         tracing::error!(error = %e, "el hilo de escritura falló");
                         let _ = tx_hilo.send(Evento::Error {
@@ -293,6 +296,7 @@ impl Nucleo {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bucle_escritura(
     dir: PathBuf,
     rx: Receiver<dictar_audio::AudioFrame>,
@@ -301,6 +305,7 @@ fn bucle_escritura(
     transcriptor: Option<Arc<TranscriptorVivo>>,
     priorizar_sistema: bool,
     usar_vosk: bool,
+    mut salud: SaludAudio,
 ) -> Result<()> {
     use dictar_vad::segmentador::Segmentador;
     use std::collections::HashMap;
@@ -332,6 +337,12 @@ fn bucle_escritura(
                     .entry(frame.track)
                     .or_default()
                     .registrar(&frame);
+
+                // Con el audio ya en disco. Los avisos son un lujo de la
+                // interfaz: nunca pueden ir antes que la escritura.
+                for cambio in salud.trama(&frame, Instant::now()) {
+                    let _ = tx.send(cambio.a_evento());
+                }
 
                 if frame.track == Track::System {
                     ultima_trama_sistema = Some(Instant::now());
@@ -403,6 +414,14 @@ fn bucle_escritura(
             // La captura soltó el canal: se detuvo antes que nosotros. NO se
             // hace el cierre aquí sino tras el bucle, común a las dos salidas.
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+
+        // En cada vuelta, también cuando `recv_timeout` venció sin trama:
+        // «el micrófono dejó de enviar» y «el loopback está mudo» son, por
+        // definición, avisos de que no llega nada. El vaciado de después del
+        // bucle no alimenta esto: ya no hay interfaz a la que avisar.
+        for cambio in salud.tick(Instant::now()) {
+            let _ = tx.send(cambio.a_evento());
         }
 
         if ultimo_evento.elapsed() >= Duration::from_millis(150) {
@@ -584,8 +603,7 @@ fn volcar_metricas_captura(dir: &std::path::Path, metricas: &mut HashMap<Track, 
             continue;
         };
         let resultado = (|| -> std::io::Result<()> {
-            let mut linea = serde_json::to_vec(&dato)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let mut linea = serde_json::to_vec(&dato).map_err(std::io::Error::other)?;
             linea.push(b'\n');
             OpenOptions::new()
                 .create(true)

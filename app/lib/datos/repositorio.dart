@@ -43,6 +43,11 @@ abstract class Repositorio {
   /// solución en uno que parece que la aplicación no funciona.
   Stream<String> get errores;
 
+  /// Avisos de salud del audio durante la grabación: cada evento dice que un
+  /// aviso aparece (`activo`) o desaparece. El núcleo no emite la desaparición
+  /// al parar; quien escucha limpia su estado al empezar y al detener.
+  Stream<AvisoAudio> get avisosAudio;
+
   Future<String> iniciarGrabacion({required TipoSesion tipo, String? topicId});
 
   Future<void> detenerGrabacion();
@@ -424,6 +429,10 @@ Definición de la transformada. _Diapositiva #7_ · _[00:01:40]_
   // que reportar: nunca emite.
   @override
   Stream<String> get errores => const Stream.empty();
+
+  // Sin núcleo detrás no hay audio que vigilar: nunca emite.
+  @override
+  Stream<AvisoAudio> get avisosAudio => const Stream.empty();
 
   @override
   Future<String> iniciarGrabacion({

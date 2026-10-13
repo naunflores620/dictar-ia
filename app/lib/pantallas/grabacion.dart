@@ -32,6 +32,19 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
   StreamSubscription<Frase>? _subFrases;
   StreamSubscription<EstadoGrabacion>? _subEstado;
   StreamSubscription<String>? _subErrores;
+  StreamSubscription<AvisoAudio>? _subAvisos;
+
+  /// Avisos de salud del audio activos ahora, por [AvisoAudio.clave].
+  ///
+  /// El núcleo avisa solo de los cambios y no emite la desaparición al parar,
+  /// así que este estado se vacía al empezar y al detener: sin eso, un aviso
+  /// de la sesión anterior seguiría pintado en la siguiente.
+  final _avisosAudio = <String, AvisoAudio>{};
+
+  /// Avisos que el usuario cerró. Siguen ocultos mientras el aviso siga
+  /// activo, y vuelven a aparecer si se apaga y se reactiva: cerrarlos para
+  /// siempre taparía justo el segundo fallo.
+  final _avisosCerrados = <String>{};
 
   /// Último fallo reportado por el núcleo, o `null` si todo va bien.
   ///
@@ -61,6 +74,7 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
     _subFrases?.cancel();
     _subEstado?.cancel();
     _subErrores?.cancel();
+    _subAvisos?.cancel();
     _scroll.dispose();
     super.dispose();
   }
@@ -80,7 +94,10 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
       return;
     }
 
-    setState(() => _iniciando = true);
+    setState(() {
+      _iniciando = true;
+      _vaciarAvisos();
+    });
 
     _subFrases = widget.repo.fraseEnVivo.listen((f) {
       if (!mounted) return;
@@ -96,6 +113,9 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
     _subErrores = widget.repo.errores.listen((m) {
       if (mounted) setState(() => _fallo = m);
     });
+
+    _subAvisos?.cancel();
+    _subAvisos = widget.repo.avisosAudio.listen(_aplicarAviso);
 
     _sesionId = await widget.repo.iniciarGrabacion(
       tipo: _tipo,
@@ -321,7 +341,20 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
   /// tuviera que acordarse de pulsar «procesar» después, acabaría con clases
   /// grabadas y sin apuntes, que es tener el trabajo hecho a medias.
   Future<void> _detener() async {
-    await widget.repo.detenerGrabacion();
+    // Antes de esperar al núcleo: detener tarda, y durante ese rato la banda
+    // seguiría hablando de una grabación que el usuario ya dio por acabada.
+    _subAvisos?.cancel();
+    _subAvisos = null;
+    setState(_vaciarAvisos);
+
+    try {
+      await widget.repo.detenerGrabacion();
+    } catch (_) {
+      // Si el núcleo no pudo parar, la grabación sigue: que los avisos sigan
+      // llegando en vez de dejar la pantalla grabando sin banda.
+      if (mounted) _subAvisos = widget.repo.avisosAudio.listen(_aplicarAviso);
+      rethrow;
+    }
     await Android.detenerServicio();
     await Ventana.modoNormal();
     await _subFrases?.cancel();
@@ -343,6 +376,30 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
       ),
     );
   }
+
+  void _vaciarAvisos() {
+    _avisosAudio.clear();
+    _avisosCerrados.clear();
+  }
+
+  void _aplicarAviso(AvisoAudio a) {
+    if (!mounted) return;
+    setState(() {
+      if (a.activo) {
+        if (!_avisosAudio.containsKey(a.clave)) _avisosCerrados.remove(a.clave);
+        _avisosAudio[a.clave] = a;
+      } else {
+        _avisosAudio.remove(a.clave);
+        _avisosCerrados.remove(a.clave);
+      }
+    });
+  }
+
+  /// Avisos que se enseñan en la banda: los activos que nadie cerró.
+  List<AvisoAudio> get _avisosVisibles => [
+    for (final a in _avisosAudio.values)
+      if (!_avisosCerrados.contains(a.clave)) a,
+  ];
 
   void _bajarAlFinal() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -537,6 +594,14 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
 
   bool get _esCompacto => MediaQuery.sizeOf(context).height < _altoCompacto;
 
+  /// En la disposición compacta no cabe una banda: el aviso se pinta como un
+  /// punto sobre el indicador de su pista, con el texto en el *tooltip*. El
+  /// botón de cerrar de la banda no aplica aquí: un punto no estorba.
+  List<AvisoAudio> _avisosDe(Pista p) => [
+    for (final a in _avisosAudio.values)
+      if (a.pista == p) a,
+  ];
+
   Widget _enCurso() => _esCompacto ? _enCursoCompacto() : _enCursoAmplio();
 
   /// Disposición para la ventana encogida sobre la videollamada.
@@ -569,9 +634,17 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
                 ),
               ),
               const Spacer(),
-              _Nivel(etiqueta: 'Tú', activo: _estado.hablandoMicro),
+              _Nivel(
+                etiqueta: 'Tú',
+                activo: _estado.hablandoMicro,
+                avisos: _avisosDe(Pista.micro),
+              ),
               const SizedBox(width: 10),
-              _Nivel(etiqueta: 'Sistema', activo: _estado.hablandoSistema),
+              _Nivel(
+                etiqueta: 'Sistema',
+                activo: _estado.hablandoSistema,
+                avisos: _avisosDe(Pista.sistema),
+              ),
             ],
           ),
           const SizedBox(height: 10),
@@ -622,6 +695,10 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
     return Column(
       children: [
         _Cabecera(estado: _estado),
+        _BandaAvisos(
+          avisos: _avisosVisibles,
+          alCerrar: (a) => setState(() => _avisosCerrados.add(a.clave)),
+        ),
         const Divider(height: 1),
         Expanded(
           child: _transcripcion.frases.isEmpty
@@ -718,16 +795,76 @@ class _Cabecera extends StatelessWidget {
       '${(d.inSeconds % 60).toString().padLeft(2, '0')}';
 }
 
+/// Los avisos de salud del audio activos, uno por línea, con un botón para
+/// cerrar cada uno. Sin avisos no ocupa nada.
+class _BandaAvisos extends StatelessWidget {
+  const _BandaAvisos({required this.avisos, required this.alCerrar});
+
+  final List<AvisoAudio> avisos;
+  final void Function(AvisoAudio) alCerrar;
+
+  @override
+  Widget build(BuildContext context) {
+    if (avisos.isEmpty) return const SizedBox.shrink();
+    final c = Theme.of(context).colorScheme;
+
+    return Column(
+      children: [
+        for (final a in avisos)
+          Container(
+            width: double.infinity,
+            color: a.esGrave ? c.errorContainer : c.tertiaryContainer,
+            padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
+            child: Row(
+              children: [
+                Icon(
+                  a.esGrave ? Icons.error_outline : Icons.warning_amber_rounded,
+                  size: 18,
+                  color: a.esGrave
+                      ? c.onErrorContainer
+                      : c.onTertiaryContainer,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    a.mensaje,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: a.esGrave
+                          ? c.onErrorContainer
+                          : c.onTertiaryContainer,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Ocultar este aviso',
+                  icon: const Icon(Icons.close, size: 18),
+                  onPressed: () => alCerrar(a),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 class _Nivel extends StatelessWidget {
-  const _Nivel({required this.etiqueta, required this.activo});
+  const _Nivel({
+    required this.etiqueta,
+    required this.activo,
+    this.avisos = const [],
+  });
 
   final String etiqueta;
   final bool activo;
 
+  /// Avisos de salud de esta pista, para el punto de la disposición compacta.
+  final List<AvisoAudio> avisos;
+
   @override
   Widget build(BuildContext context) {
     final c = Theme.of(context).colorScheme;
-    return Row(
+    final nivel = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         AnimatedContainer(
@@ -742,6 +879,30 @@ class _Nivel extends StatelessWidget {
         const SizedBox(width: 5),
         Text(etiqueta, style: Theme.of(context).textTheme.labelSmall),
       ],
+    );
+
+    if (avisos.isEmpty) return nivel;
+
+    final grave = avisos.any((a) => a.esGrave);
+    return Tooltip(
+      message: avisos.map((a) => a.mensaje).join('\n'),
+      triggerMode: TooltipTriggerMode.tap,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          nivel,
+          const SizedBox(width: 4),
+          Container(
+            key: const ValueKey('punto-aviso-audio'),
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: grave ? c.error : c.tertiary,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
