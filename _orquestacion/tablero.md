@@ -137,6 +137,14 @@ No sustituyen a ningún `REVIEW-*.md`: son un adelanto, y los revisores deben re
 
 ## Tanda «audio en vivo» — 2026-10-13
 
+> **Estado a las 04:20:**
+>
+> - AV-1, AV-2 y AV-3 están **integradas** en la rama `audio-vivo` (`4f777ba`, `682f4cc` y `51f929f`).
+> - El PO pidió priorizar un ejecutable: se cortó la verificación por mutación y AV-3 no pasó revisores.
+> - El instalador está en `dist/`, y las pruebas para el PO en [`trabajo/PRUEBAS-PO-2026-10-14.md`](trabajo/PRUEBAS-PO-2026-10-14.md).
+> - **Ninguna HU de la tanda se da por cerrada** hasta esas pruebas.
+> - Las copias `../dictar_ia-av1`, `-av3`, `-av1-mut` y `-av2-mut` siguen existiendo; se borran tras la prueba del PO.
+
 Prioridad del PO: mejorar la transcripción en vivo, a partir de [la investigación de Notion](../docs/investigacion-notion-reuniones-2026-10-12.md) §6 bis. Las tres tareas declaran archivos disjuntos y pueden ir en paralelo.
 
 **Respaldo previo:** antes de empezar, el árbol de trabajo (72 archivos de octubre sin commitear) se guardó en `refs/respaldo/antes-audio-vivo-2026-10-13` (`73e141e`), sin tocar ramas ni índice. Para recuperar un archivo: `git show refs/respaldo/antes-audio-vivo-2026-10-13:<ruta>`.
