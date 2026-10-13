@@ -143,3 +143,11 @@ El caso «sin dispositivo y sin aviso» lo cubre **AV-2**:
 | 8. `Cargo.toml` innecesario; reutilizar `id_de_endpoint_por_defecto` | Aceptada |
 | Premisa: paquetes SILENT o ninguno | Aceptada como Paso 0 medido |
 | Premisa: el hueco final no se rellena | Aceptada; relleno final en D3 |
+
+## Adenda del orquestador (13/10, tras la primera entrega)
+
+1. **`debe_terminar`:** la sesión **nunca** termina sola por el estado de los dispositivos, ni siquiera con todas las pistas pedidas en `Ausente`. `Ausente` sigue vigilando D1 y, si aparece un id por defecto distinto de `id_fallido`, pasa a Reabriendo. Solo `detener()` termina la sesión. El implementador había propuesto que «todas Ausente» terminara la sesión; se descarta por coherencia con la justificación de D2. El aviso al usuario lo da AV-2.
+2. **Criterio de duración, ahora relativo.** La línea base medida muestra que el código anterior ya deja los WAV entre 0,85 y 1,45 s por debajo de `sesion_ms`, así que el «± 0,5 s» frente a la sesión era inalcanzable por razones ajenas a AV-1. Ahora:
+   - en (d), la duración de cada WAV con el código nuevo = la de la línea base ± 0,2 s en la misma prueba;
+   - en (a) y (b), lo que falta respecto de `sesion_ms` no supera lo que faltaba en la línea base + 0,3 s.
+3. **Incidente registrado.** Antes de recibir la indicación de compartir `target/`, el implementador rodeó Smart App Control en su propia copia borrando y volviendo a enlazar el paquete bloqueado. Lo declaró él mismo en HANDOFF. No se repite.
