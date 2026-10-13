@@ -11,6 +11,7 @@ use crate::limpieza_transcripcion::{conservar_historial_reciente, deduplicar_sol
 use dictar_domain::{SessionId, Track};
 use dictar_storage::transcript::NewUtterance;
 use dictar_stt::modelos::{self, Modelo};
+use dictar_stt::nivel::{interpretar_interruptor, Nivelador};
 use dictar_stt::whisper::Transcriptor;
 use dictar_stt::SttOpciones;
 use dictar_vad::segmentador::{Segmento, SOLAPE_MS};
@@ -280,7 +281,7 @@ fn bucle(
 
     #[cfg(target_os = "windows")]
     if idioma_en_vivo.as_deref() == Some("es") {
-        match crear_reconocedores_sherpa() {
+        match crear_reconocedores_sherpa(&glosario) {
             Ok(resultado) => {
                 reconocedores = Some(resultado);
                 motor_en_vivo = "sherpa-onnx-streaming-zipformer-es-kroko-2025-08-06";
@@ -310,6 +311,18 @@ fn bucle(
             }
         }
     }
+
+    // Solo la pista de sistema y solo con Sherpa: el micrófono recoge además el
+    // eco de los altavoces (correlación 0,71–0,74 medida) y amplificarlo lo
+    // subiría tanto como a la voz, y para Vosk no hay medición que lo respalde.
+    let mut nivelador_sistema = if reconocedores.is_some()
+        && motor_en_vivo.starts_with("sherpa")
+        && nivelar_desde_entorno(&eventos)
+    {
+        Some(Nivelador::nuevo())
+    } else {
+        None
+    };
 
     let mut trans = if reconocedores.is_none() {
         let Some(ruta) = ruta_modelo.as_ref() else {
@@ -442,6 +455,7 @@ fn bucle(
                         &eventos,
                         &quien_sistema,
                         estado,
+                        nivelador_para(frame.track, &mut nivelador_sistema),
                     )
                 } else {
                     Ok(())
@@ -854,11 +868,70 @@ fn crear_reconocedores_vosk(idioma: &str) -> dictar_stt::Result<HashMap<Track, R
     ]))
 }
 
+/// Valor de producción de la nivelación de la pista de sistema con Sherpa.
+///
+/// Sigue en `false` hasta que `sherpa_live_eval` demuestre, con las reglas de
+/// decisión de AV-3, que mejora; ver el HANDOFF de esa tarea.
+const NIVELAR_SISTEMA_POR_DEFECTO: bool = false;
+const VAR_NIVELAR: &str = "DICTAR_STT_NIVELAR";
+
+/// Único sitio donde se lee `DICTAR_STT_NIVELAR`. Un valor que no sea 0 o 1 se
+/// avisa a la interfaz y se usa el de producción, en vez de medir sin saberlo
+/// una configuración distinta de la pedida.
+fn nivelar_desde_entorno(eventos: &Sender<Evento>) -> bool {
+    let valor = std::env::var(VAR_NIVELAR).ok();
+    match interpretar_interruptor(VAR_NIVELAR, valor.as_deref(), NIVELAR_SISTEMA_POR_DEFECTO) {
+        Ok(nivelar) => nivelar,
+        Err(mensaje) => {
+            tracing::warn!(%mensaje, "interruptor de nivelación ignorado");
+            let _ = eventos.send(Evento::Error {
+                mensaje,
+                recuperable: true,
+            });
+            NIVELAR_SISTEMA_POR_DEFECTO
+        }
+    }
+}
+
+/// El nivelador que corresponde a una pista: solo la de sistema tiene uno.
+fn nivelador_para(track: Track, sistema: &mut Option<Nivelador>) -> Option<&mut Nivelador> {
+    match track {
+        Track::System => sistema.as_mut(),
+        Track::Mic => None,
+    }
+}
+
+/// Audio que se entrega al motor: una copia nivelada si hay nivelador, o el
+/// original sin copiar. El WAV ya se escribió antes y no pasa por aquí.
+fn audio_para_motor<'a>(
+    pcm: &'a [f32],
+    nivelador: Option<&mut Nivelador>,
+) -> std::borrow::Cow<'a, [f32]> {
+    match nivelador {
+        Some(nivelador) => {
+            let mut copia = pcm.to_vec();
+            nivelador.procesar(&mut copia);
+            std::borrow::Cow::Owned(copia)
+        }
+        None => std::borrow::Cow::Borrowed(pcm),
+    }
+}
+
 #[cfg(target_os = "windows")]
-fn crear_reconocedores_sherpa() -> dictar_stt::Result<HashMap<Track, ReconocedorVivo>> {
+fn crear_reconocedores_sherpa(
+    glosario: &str,
+) -> dictar_stt::Result<HashMap<Track, ReconocedorVivo>> {
     let modelo = dictar_stt::sherpa::modelo_es_compartido()?;
-    let mic = dictar_stt::sherpa::SherpaModelo::nuevo_flujo(&modelo);
-    let sistema = dictar_stt::sherpa::SherpaModelo::nuevo_flujo(&modelo);
+    let terminos = modelo.preparar_terminos(glosario);
+    if modelo.opciones().palabras_clave {
+        tracing::info!(
+            cargados = terminos.aceptados.len(),
+            rechazados = terminos.rechazados.len(),
+            "palabras clave de Sherpa preparadas"
+        );
+    }
+    let mic = dictar_stt::sherpa::SherpaModelo::nuevo_flujo_con_terminos(&modelo, &terminos);
+    let sistema = dictar_stt::sherpa::SherpaModelo::nuevo_flujo_con_terminos(&modelo, &terminos);
     Ok(HashMap::from([
         (Track::Mic, ReconocedorVivo::Sherpa(mic)),
         (Track::System, ReconocedorVivo::Sherpa(sistema)),
@@ -894,6 +967,7 @@ impl EstadoIncremental {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn procesar_bloque_incremental(
     motor: &mut ReconocedorVivo,
     frame: &dictar_audio::AudioFrame,
@@ -902,10 +976,11 @@ fn procesar_bloque_incremental(
     eventos: &Sender<Evento>,
     quien_sistema: &str,
     estado: &mut EstadoIncremental,
+    nivelador: Option<&mut Nivelador>,
 ) -> dictar_stt::Result<()> {
     const INTERVALO_ACUERDO_MS: i64 = 500;
 
-    let (texto, cerrado) = motor.aceptar(&frame.pcm)?;
+    let (texto, cerrado) = motor.aceptar(&audio_para_motor(&frame.pcm, nivelador))?;
     let fin = frame.timestamp_ms + frame.duracion_ms();
     if cerrado {
         let inicio = estado.inicio_ms.unwrap_or(frame.timestamp_ms);
@@ -1099,5 +1174,50 @@ fn registrar_metrica(ruta: &Path, dato: serde_json::Value) {
         .and_then(|mut archivo| writeln!(archivo, "{dato}"));
     if let Err(error) = resultado {
         tracing::warn!(error = %error, "no se pudo guardar la métrica STT");
+    }
+}
+
+#[cfg(test)]
+mod tests_nivelacion {
+    use super::*;
+
+    fn tono_suave(muestras: usize) -> Vec<f32> {
+        (0..muestras)
+            .map(|i| 0.01 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 16_000.0).sin())
+            .collect()
+    }
+
+    #[test]
+    fn el_microfono_nunca_recibe_nivelador_aunque_haya_uno_para_el_sistema() {
+        // Nivelar el micrófono amplificaría el eco de los altavoces (correlación
+        // 0,71–0,74 medida) tanto como la voz.
+        let mut sistema = Some(Nivelador::nuevo());
+        assert!(nivelador_para(Track::Mic, &mut sistema).is_none());
+        assert!(nivelador_para(Track::System, &mut sistema).is_some());
+        let mut ninguno = None;
+        assert!(nivelador_para(Track::System, &mut ninguno).is_none());
+    }
+
+    #[test]
+    fn sin_nivelador_el_motor_recibe_el_audio_original_sin_copiarlo() {
+        let pcm = tono_suave(1_024);
+        let entregado = audio_para_motor(&pcm, None);
+        assert!(matches!(entregado, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(&*entregado, &pcm[..]);
+    }
+
+    #[test]
+    fn con_nivelador_el_motor_recibe_una_copia_mas_fuerte_y_el_original_no_cambia() {
+        let original = tono_suave(16_000 * 8);
+        let guardado = original.clone();
+        let mut nivelador = Nivelador::nuevo();
+        let mut ultimo = Vec::new();
+        // Bloques de 1024 como los de la captura real.
+        for bloque in original.chunks(1_024) {
+            ultimo = audio_para_motor(bloque, Some(&mut nivelador)).into_owned();
+        }
+        assert_eq!(original, guardado, "el audio de origen no debe tocarse");
+        let pico = |v: &[f32]| v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(pico(&ultimo) > pico(&original[original.len() - ultimo.len()..]) * 1.5);
     }
 }
