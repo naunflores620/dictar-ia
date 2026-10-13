@@ -34,6 +34,7 @@
 use crate::mezcla::{a_mono, Remuestreador};
 use crate::{AudioError, AudioFrame, Result, SAMPLE_RATE};
 use dictar_domain::Track;
+use std::time::Duration;
 
 /// Formato nativo con el que WASAPI entrega las muestras del dispositivo.
 ///
@@ -128,20 +129,430 @@ pub fn pistas_a_grabar(microfono_abierto: bool, sistema_abierto: bool) -> Result
     Ok(pistas)
 }
 
-/// Si, tras el sondeo de esta vuelta del bucle, sigue habiendo alguna pista
-/// viva para seguir capturando -- o si ya no queda ninguna y hay que
-/// terminar la sesión.
+/// Cada cuánto se pregunta cuál es el dispositivo por defecto.
+pub const INTERVALO_DE_SONDEO: Duration = Duration::from_secs(1);
+
+/// Cuántos sondeos seguidos tienen que ver el mismo id nuevo antes de creer
+/// que el cambio es real. Con uno solo, un auricular Bluetooth que alterna
+/// entre su perfil estéreo y el de manos libres al abrirse el micrófono haría
+/// reabrir las dos pistas en cada vaivén.
+pub const SONDEOS_PARA_CONFIRMAR: u32 = 2;
+
+/// Tiempo mínimo entre dos reaperturas de la misma pista provocadas por un
+/// cambio de dispositivo. Es el segundo seguro contra el vaivén anterior: aun
+/// con el id confirmado, no se reabre más de una vez cada 5 s.
+pub const ENFRIAMIENTO_DE_REAPERTURA: Duration = Duration::from_secs(5);
+
+/// Durante este tiempo desde que la pista se queda sin dispositivo se
+/// reintenta rápido (cada [`REINTENTO_RAPIDO`]); pasado, cada
+/// [`REINTENTO_LENTO`]. Un dispositivo que vuelve suele hacerlo en segundos;
+/// uno que no ha vuelto en un minuto no merece abrir y cerrar el motor de
+/// audio cada 2 s durante el resto de la clase.
+pub const PRIMER_MINUTO: Duration = Duration::from_secs(60);
+pub const REINTENTO_RAPIDO: Duration = Duration::from_secs(2);
+pub const REINTENTO_LENTO: Duration = Duration::from_secs(5);
+
+/// Separación mínima entre dos avisos mientras una pista sigue reabriendo.
+pub const AVISO_MAXIMO_CADA: Duration = Duration::from_secs(30);
+
+/// En qué punto está una pista de captura. Los tiempos son `Duration` desde el
+/// inicio de la sesión (el mismo reloj monótono que fecha las tramas), así la
+/// lógica se prueba sin dormir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EstadoPista {
+    /// Hay un cliente abierto sobre `id_dispositivo`.
+    Viva { id_dispositivo: String },
+    /// No hay cliente: se perdió el dispositivo o nunca se pudo abrir. El
+    /// contador de muestras vive aquí, y no en la `PistaCapturada` que ya no
+    /// existe, para que ni los reintentos fallidos ni el tiempo que pase
+    /// puedan reiniciarlo: es lo que permite rellenar el hueco al volver.
+    Reabriendo {
+        desde: Duration,
+        muestras_emitidas: u64,
+        ultimo_intento: Option<Duration>,
+        intentos: u32,
+    },
+    /// Falló de forma permanente con ese dispositivo (formato que no se sabe
+    /// leer): reintentar con él no sirve. Solo vuelve si el dispositivo por
+    /// defecto pasa a ser otro.
+    Ausente {
+        id_fallido: Option<String>,
+        muestras_emitidas: u64,
+    },
+    /// La configuración no pidió esta pista.
+    NoPedida,
+}
+
+/// Lo que el sondeo del dispositivo por defecto le pide hacer al llamador.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Veredicto {
+    Nada,
+    /// El dispositivo por defecto cambió de forma estable: hay que cerrar el
+    /// cliente actual (si lo hay) y abrir otro.
+    Reabrir,
+}
+
+/// La máquina de estados de una pista, sin COM. `wasapi_src` ejecuta lo que
+/// ella decide.
+pub struct ControlPista {
+    estado: EstadoPista,
+    ultimo_sondeo: Duration,
+    candidato: Option<(String, u32)>,
+    ultima_apertura: Option<Duration>,
+    ultimo_aviso: Duration,
+}
+
+impl ControlPista {
+    fn con_estado(estado: EstadoPista, ahora: Duration) -> Self {
+        Self {
+            estado,
+            ultimo_sondeo: ahora,
+            candidato: None,
+            ultima_apertura: None,
+            ultimo_aviso: ahora,
+        }
+    }
+
+    pub fn no_pedida() -> Self {
+        Self::con_estado(EstadoPista::NoPedida, Duration::ZERO)
+    }
+
+    /// Una pista que acaba de abrirse sobre `id_dispositivo`.
+    pub fn viva(id_dispositivo: String, ahora: Duration) -> Self {
+        let mut c = Self::con_estado(EstadoPista::Viva { id_dispositivo }, ahora);
+        c.ultima_apertura = Some(ahora);
+        c
+    }
+
+    /// Una pista pedida que no se pudo abrir al arrancar, por un motivo que
+    /// puede pasar: empieza con el contador a cero, de modo que el relleno
+    /// cubra desde el inicio de la sesión en cuanto aparezca el dispositivo.
+    pub fn sin_abrir_al_arrancar(ahora: Duration) -> Self {
+        Self::con_estado(
+            EstadoPista::Reabriendo {
+                desde: ahora,
+                muestras_emitidas: 0,
+                ultimo_intento: Some(ahora),
+                intentos: 1,
+            },
+            ahora,
+        )
+    }
+
+    /// Una pista pedida cuyo dispositivo por defecto no sirve de forma
+    /// permanente ya desde el arranque.
+    pub fn ausente_desde_el_arranque(id_fallido: String, ahora: Duration) -> Self {
+        Self::con_estado(
+            EstadoPista::Ausente {
+                id_fallido: Some(id_fallido),
+                muestras_emitidas: 0,
+            },
+            ahora,
+        )
+    }
+
+    pub fn estado(&self) -> &EstadoPista {
+        &self.estado
+    }
+
+    pub fn es_viva(&self) -> bool {
+        matches!(self.estado, EstadoPista::Viva { .. })
+    }
+
+    /// Muestras ya emitidas por una pista que no tiene cliente. Es lo que hay
+    /// que pasarle a [`PistaCapturada::continuar`] al reabrir.
+    pub fn contador(&self) -> u64 {
+        match self.estado {
+            EstadoPista::Reabriendo {
+                muestras_emitidas, ..
+            }
+            | EstadoPista::Ausente {
+                muestras_emitidas, ..
+            } => muestras_emitidas,
+            EstadoPista::Viva { .. } | EstadoPista::NoPedida => 0,
+        }
+    }
+
+    /// Desde cuándo está sin dispositivo, si lo está. Para el registro.
+    pub fn sin_dispositivo_desde(&self) -> Option<Duration> {
+        match self.estado {
+            EstadoPista::Reabriendo { desde, .. } => Some(desde),
+            _ => None,
+        }
+    }
+
+    /// Sondeo del dispositivo por defecto (D1). `id_por_defecto` solo se
+    /// invoca cuando toca sondear, para que el llamador no haga una llamada
+    /// COM por vuelta del bucle; devuelve `None` si el sondeo falló.
+    ///
+    /// Un fallo del sondeo —por ejemplo una reenumeración en curso— no cambia
+    /// nada: es peor perder una pista sana por un tropiezo del sistema que
+    /// esperar un segundo más.
+    pub fn sondear(
+        &mut self,
+        ahora: Duration,
+        id_por_defecto: impl FnOnce() -> Option<String>,
+    ) -> Veredicto {
+        // Una pista que está reabriendo ya prueba el dispositivo por defecto
+        // en cada reintento, y una no pedida no tiene nada que seguir.
+        if !matches!(
+            self.estado,
+            EstadoPista::Viva { .. } | EstadoPista::Ausente { .. }
+        ) {
+            return Veredicto::Nada;
+        }
+        if ahora.saturating_sub(self.ultimo_sondeo) < INTERVALO_DE_SONDEO {
+            return Veredicto::Nada;
+        }
+        self.ultimo_sondeo = ahora;
+
+        let Some(id) = id_por_defecto() else {
+            // Un fallo corta la racha: «dos sondeos seguidos» no puede saltar
+            // por encima de uno que no supo responder.
+            self.candidato = None;
+            return Veredicto::Nada;
+        };
+
+        let en_uso: Option<&str> = match &self.estado {
+            EstadoPista::Viva { id_dispositivo } => Some(id_dispositivo),
+            EstadoPista::Ausente { id_fallido, .. } => id_fallido.as_deref(),
+            _ => None,
+        };
+        if en_uso == Some(id.as_str()) {
+            self.candidato = None;
+            return Veredicto::Nada;
+        }
+
+        let veces = match &mut self.candidato {
+            Some((visto, n)) if *visto == id => {
+                *n += 1;
+                *n
+            }
+            otro => {
+                *otro = Some((id, 1));
+                1
+            }
+        };
+        if veces < SONDEOS_PARA_CONFIRMAR {
+            return Veredicto::Nada;
+        }
+
+        // El enfriamiento solo frena a una pista que está sirviendo: una
+        // ausente no tiene nada que proteger de un vaivén.
+        let enfriando = self.es_viva()
+            && self
+                .ultima_apertura
+                .is_some_and(|t| ahora.saturating_sub(t) < ENFRIAMIENTO_DE_REAPERTURA);
+        if enfriando {
+            return Veredicto::Nada;
+        }
+        Veredicto::Reabrir
+    }
+
+    /// Pasa a «reabriendo». Es idempotente a propósito: un error de lectura y
+    /// un cambio de dispositivo pueden coincidir en la misma vuelta, y tiene
+    /// que haber un solo cierre y una sola reapertura. Devuelve `false` si ya
+    /// no estaba viva (ni ausente) y no hizo nada.
+    ///
+    /// `muestras_viva` es el contador de la `PistaCapturada` **después** de
+    /// vaciarla: leerlo antes dejaría fuera la cola del remuestreador, y esas
+    /// muestras se rellenarían otra vez como silencio.
+    pub fn empezar_reapertura(&mut self, ahora: Duration, muestras_viva: u64) -> bool {
+        // Una pista que se acaba de abrir y ya vuelve a fallar no debe
+        // reintentar de inmediato: abriría y cerraría el motor de audio sin
+        // pausa, con dos registros por vuelta. Se trata como un intento
+        // fallido y entra en el calendario de 2 s / 5 s. Un fallo de una
+        // pista que llevaba rato sirviendo sí reintenta enseguida.
+        let recien_abierta = self.es_viva()
+            && self
+                .ultima_apertura
+                .is_some_and(|t| ahora.saturating_sub(t) < ENFRIAMIENTO_DE_REAPERTURA);
+        let muestras_emitidas = match self.estado {
+            EstadoPista::Viva { .. } => muestras_viva,
+            EstadoPista::Ausente {
+                muestras_emitidas, ..
+            } => muestras_emitidas,
+            EstadoPista::Reabriendo { .. } | EstadoPista::NoPedida => return false,
+        };
+        self.estado = EstadoPista::Reabriendo {
+            desde: ahora,
+            muestras_emitidas,
+            ultimo_intento: recien_abierta.then_some(ahora),
+            intentos: 0,
+        };
+        self.candidato = None;
+        self.ultimo_aviso = ahora;
+        true
+    }
+
+    /// Si ya toca intentar abrir: de inmediato tras `empezar_reapertura`, y
+    /// después cada 2 s durante el primer minuto y cada 5 s a partir de ahí.
+    pub fn toca_reintentar(&self, ahora: Duration) -> bool {
+        let EstadoPista::Reabriendo {
+            desde,
+            ultimo_intento,
+            ..
+        } = &self.estado
+        else {
+            return false;
+        };
+        match ultimo_intento {
+            None => true,
+            Some(t) => {
+                ahora.saturating_sub(*t) >= intervalo_de_reintento(ahora.saturating_sub(*desde))
+            }
+        }
+    }
+
+    pub fn intento_fallido(&mut self, ahora: Duration) {
+        if let EstadoPista::Reabriendo {
+            ultimo_intento,
+            intentos,
+            ..
+        } = &mut self.estado
+        {
+            *ultimo_intento = Some(ahora);
+            *intentos += 1;
+        }
+    }
+
+    /// El dispositivo por defecto no sirve de forma permanente.
+    pub fn fallo_permanente(&mut self, id_fallido: String) {
+        if let EstadoPista::Reabriendo {
+            muestras_emitidas, ..
+        } = self.estado
+        {
+            self.estado = EstadoPista::Ausente {
+                id_fallido: Some(id_fallido),
+                muestras_emitidas,
+            };
+            self.candidato = None;
+        }
+    }
+
+    /// La reapertura salió bien.
+    pub fn al_abrir(&mut self, id_dispositivo: String, ahora: Duration) {
+        if matches!(self.estado, EstadoPista::Reabriendo { .. }) {
+            self.estado = EstadoPista::Viva { id_dispositivo };
+            self.candidato = None;
+            self.ultima_apertura = Some(ahora);
+            self.ultimo_sondeo = ahora;
+        }
+    }
+
+    /// Si toca un aviso más mientras la pista sigue sin dispositivo: como
+    /// mucho uno cada 30 s, para que un dispositivo ausente toda la tarde no
+    /// llene el registro.
+    pub fn toca_avisar(&mut self, ahora: Duration) -> bool {
+        if !matches!(self.estado, EstadoPista::Reabriendo { .. }) {
+            return false;
+        }
+        if ahora.saturating_sub(self.ultimo_aviso) >= AVISO_MAXIMO_CADA {
+            self.ultimo_aviso = ahora;
+            return true;
+        }
+        false
+    }
+
+    /// El silencio que falta para que esta pista dure lo que la sesión, si no
+    /// tiene cliente al detenerse, en tramas de como mucho 1 s.
+    ///
+    /// Una pista viva no entra aquí: `cerrar_pista` solo emite la cola de su
+    /// remuestreador, así que un loopback que termina en silencio sale más
+    /// corto que la sesión (deuda anterior a AV-1, ver HANDOFF).
+    pub fn relleno_final(&self, track: Track, fin_ms: i64) -> Vec<AudioFrame> {
+        if !matches!(
+            self.estado,
+            EstadoPista::Reabriendo { .. } | EstadoPista::Ausente { .. }
+        ) {
+            return Vec::new();
+        }
+        let ya = self.contador();
+        silencio_en_tramas(track, ya, muestras_de_relleno(fin_ms, ya, 0))
+    }
+}
+
+/// Duración máxima de una trama de silencio de relleno. Una pista pedida que
+/// nunca abrió en una clase de 2 h necesita 115 millones de muestras (~460 MB)
+/// de silencio: en una sola `AudioFrame`, justo al detener, sería el pico de
+/// memoria de toda la sesión. En tramas de 1 s `EscritorPistas` las escribe
+/// en streaming.
+pub const TRAMA_DE_RELLENO_MAX: u64 = SAMPLE_RATE as u64;
+
+/// `faltan` muestras de silencio como tramas de [`TRAMA_DE_RELLENO_MAX`] como
+/// mucho. `ya_emitidas` es el contador de la pista antes del relleno: de él
+/// salen los `timestamp_ms` (el instante en que termina cada trama).
+pub fn silencio_en_tramas(track: Track, ya_emitidas: u64, faltan: u64) -> Vec<AudioFrame> {
+    let mut tramas = Vec::new();
+    let mut hechas = 0u64;
+    while hechas < faltan {
+        let n = (faltan - hechas).min(TRAMA_DE_RELLENO_MAX);
+        hechas += n;
+        tramas.push(AudioFrame {
+            track,
+            pcm: vec![0.0; n as usize],
+            timestamp_ms: ((ya_emitidas + hechas) * 1000 / SAMPLE_RATE as u64) as i64,
+        });
+    }
+    tramas
+}
+
+/// Convierte la posición QPC de `IAudioCaptureClient::GetBuffer`, que viene en
+/// unidades de 100 ns, a milisegundos.
+pub fn qpc_a_ms(qpc_100ns: u64) -> i64 {
+    (qpc_100ns / 10_000) as i64
+}
+
+/// Fecha de un bloque cuando WASAPI no da posición QPC utilizable: el bloque
+/// terminó de capturarse hace tanto como tardan en sonar las tramas que aún
+/// esperan detrás de él.
+pub fn fecha_por_pendientes(leido_ms: i64, tramas_pendientes: u32, frecuencia: u32) -> i64 {
+    let pendientes_ms = tramas_pendientes as i64 * 1000 / frecuencia.max(1) as i64;
+    (leido_ms - pendientes_ms).max(0)
+}
+
+/// Pone a cada bloque la fecha en que se **capturó**, en el reloj de la
+/// sesión, y no la del momento en que el hilo llegó a leerlo.
 ///
-/// Es la misma pregunta que `pistas_a_grabar` responde al arrancar
-/// (`microfono_abierto`/`sistema_abierto` ahí), pero para cuando una pista
-/// muere sola a mitad de grabación: la apertura real y el sondeo COM viven
-/// en `wasapi_src` y no se pueden probar aquí sin envolver COM entero, pero
-/// la política sí -- seguir con lo que quede, o terminar si no queda nada.
-/// Sin este corte, el bucle de `wasapi_src` seguiría sondeando cada 10 ms
-/// sin producir ningún `AudioFrame` más y sin soltar el `Sender` que cierra
-/// el canal: la sesión aparentaría seguir grabando sin grabar nada.
-pub fn alguna_pista_sigue_viva(microfono_vivo: bool, sistema_vivo: bool) -> bool {
-    microfono_vivo || sistema_vivo
+/// Importa desde que el búfer es de 3 s: si el hilo se bloquea (abrir un
+/// cliente tarda hasta 2,5 s) el audio de ese tiempo se queda esperando, y
+/// fecharlo al drenar lo pondría todo en el instante de la lectura:
+/// `muestras_de_relleno` rellenaría el bloqueo entero con silencio y luego
+/// anexaría el audio retenido, dejando la pista adelantada para siempre.
+///
+/// La posición QPC de WASAPI está en el reloj de rendimiento del sistema,
+/// que no es el de `Instant`. Sin una API de QPC a mano se calibra el desfase
+/// entre los dos como el **mínimo** observado de «lectura − captura»: una
+/// lectura nunca es anterior a la captura, así que el mínimo es la lectura
+/// más puntual y el que más se acerca al desfase real. Se comparte entre las
+/// dos pistas y las reaperturas, que usan el mismo reloj.
+#[derive(Debug, Default)]
+pub struct RelojCaptura {
+    desfase_ms: Option<i64>,
+}
+
+impl RelojCaptura {
+    /// Fecha (fin del bloque, en ms de la sesión) de un bloque de `tramas`
+    /// cuya primera trama se capturó en `qpc_100ns` y que se leyó en
+    /// `leido_ms`. Nunca devuelve algo posterior a la lectura.
+    pub fn fechar(&mut self, qpc_100ns: u64, tramas: u32, frecuencia: u32, leido_ms: i64) -> i64 {
+        let duracion_ms = tramas as i64 * 1000 / frecuencia.max(1) as i64;
+        let fin_ms = qpc_a_ms(qpc_100ns) + duracion_ms;
+        let desfase = leido_ms - fin_ms;
+        let minimo = self.desfase_ms.map_or(desfase, |m| m.min(desfase));
+        self.desfase_ms = Some(minimo);
+        (fin_ms + minimo).clamp(0, leido_ms.max(0))
+    }
+}
+
+/// Cada cuánto se reintenta abrir una pista que lleva `en_reabriendo` sin
+/// dispositivo.
+pub fn intervalo_de_reintento(en_reabriendo: Duration) -> Duration {
+    if en_reabriendo < PRIMER_MINUTO {
+        REINTENTO_RAPIDO
+    } else {
+        REINTENTO_LENTO
+    }
 }
 
 /// Bytes que ocupa una muestra en el formato nativo del dispositivo.
@@ -223,18 +634,48 @@ impl PistaCapturada {
         formato: FormatoNativo,
         frecuencia: u32,
     ) -> Result<Self> {
+        Self::continuar(track, canales, formato, frecuencia, 0)
+    }
+
+    /// Una pista nueva que sigue la línea de tiempo de otra anterior.
+    ///
+    /// Al reabrir un dispositivo (AV-1) la pista no empieza en cero: el WAV
+    /// lleva ya `muestras_emitidas` escritas, y el primer paquete del cliente
+    /// nuevo tiene que medirse contra ese contador para que
+    /// [`muestras_de_relleno`] convierta el hueco en silencio. Con `nueva`, la
+    /// pista creía llevar cero muestras y rellenaba la sesión entera otra vez.
+    pub fn continuar(
+        track: Track,
+        canales: usize,
+        formato: FormatoNativo,
+        frecuencia: u32,
+        muestras_emitidas: u64,
+    ) -> Result<Self> {
         Ok(Self {
             track,
             canales: canales.max(1),
             formato,
             remuestreador: Remuestreador::nuevo(frecuencia)?,
-            muestras_emitidas: 0,
+            muestras_emitidas,
         })
     }
 
-    /// Muestras (a 16 kHz) ya entregadas por esta pista. Solo para pruebas.
+    /// Muestras (a 16 kHz) ya entregadas por esta pista. `wasapi_src` lo lee
+    /// después de [`PistaCapturada::vaciar`] para pasárselo a la pista que
+    /// reabre.
     pub fn muestras_emitidas(&self) -> u64 {
         self.muestras_emitidas
+    }
+
+    /// Rellena de silencio, en tramas acotadas, hasta el instante `hasta_ms`
+    /// y avanza el contador. Se usa al reabrir: el hueco entero de la pista
+    /// sin dispositivo sale en tramas de 1 s y el primer paquete del cliente
+    /// nuevo solo rellena lo que dure la propia apertura.
+    pub fn rellenar_hasta(&mut self, hasta_ms: i64) -> Vec<AudioFrame> {
+        let faltan = muestras_de_relleno(hasta_ms, self.muestras_emitidas, 0);
+        let tramas = silencio_en_tramas(self.track, self.muestras_emitidas, faltan);
+        self.muestras_emitidas += faltan;
+        tramas
     }
 
     /// Procesa un paquete de bytes nativos recién leído de WASAPI.
@@ -476,66 +917,635 @@ mod tests {
         assert!(matches!(err, AudioError::SinDispositivo(_)));
     }
 
-    // -- alguna_pista_sigue_viva --------------------------------------------
+    // -- La sesión no termina sola por el estado de los dispositivos --------
 
-    #[test]
-    fn una_pista_muerta_no_frena_a_la_otra() {
-        // Antes de extraer esta política a una función pura, la decisión
-        // vivía como control de flujo directo dentro del bucle COM de
-        // `wasapi_src`, sin ninguna prueba posible sin hardware: el AC 7 de
-        // la HU pide cubrir "el manejo del cambio de dispositivo por
-        // defecto" y no había forma de hacerlo.
-        assert!(alguna_pista_sigue_viva(true, false));
-        assert!(alguna_pista_sigue_viva(false, true));
+    fn seg(s: u64) -> Duration {
+        Duration::from_secs(s)
+    }
+
+    /// Una pista en cada uno de los cuatro estados, construida por los
+    /// caminos de producción.
+    fn pista_en(estado: &str) -> ControlPista {
+        let mut c = ControlPista::viva("a".into(), Duration::ZERO);
+        match estado {
+            "viva" => {}
+            "reabriendo" => {
+                c.empezar_reapertura(seg(1), 100);
+            }
+            "ausente" => {
+                c.empezar_reapertura(seg(1), 100);
+                c.fallo_permanente("a".into());
+            }
+            "no_pedida" => c = ControlPista::no_pedida(),
+            otro => panic!("estado desconocido {otro}"),
+        }
+        c
     }
 
     #[test]
-    fn con_las_dos_pistas_vivas_la_sesion_sigue() {
-        // El caso más frecuente —una grabación sana— y el único que faltaba
-        // por cubrir. No es redundante: `||` y `!=` dan el mismo resultado en
-        // las otras tres combinaciones, así que sin esta línea una mutación
-        // de `||` a `!=` pasaría las demás pruebas en verde y haría que el
-        // bucle terminara de inmediato justo cuando todo va bien.
-        assert!(alguna_pista_sigue_viva(true, true));
+    fn ninguna_combinacion_de_estados_termina_la_sesion_y_la_ausente_sigue_vigilando() {
+        // Antes existía `alguna_pista_sigue_viva` y después `debe_terminar`;
+        // las dos cortaban la grabación por el estado de los dispositivos, y
+        // una clase solo ocurre una vez. Ahora la sesión termina únicamente
+        // cuando la persona la detiene, así que no hay función que decida
+        // terminar. Lo que sí se puede fijar es lo que lo hace posible: en
+        // las 16 combinaciones de dos pistas, cada una responde sola al
+        // sondeo según su estado (viva y ausente ven un id distinto y piden
+        // reabrir; reabriendo y no pedida no tienen nada que sondear), y
+        // dos pistas ausentes a la vez siguen pudiendo volver.
+        let estados = ["viva", "reabriendo", "ausente", "no_pedida"];
+        let esperado = |e: &str| match e {
+            "viva" | "ausente" => Veredicto::Reabrir,
+            _ => Veredicto::Nada,
+        };
+        let mut combinaciones = 0;
+        for a in estados {
+            for b in estados {
+                combinaciones += 1;
+                let mut pa = pista_en(a);
+                let mut pb = pista_en(b);
+                // Dos sondeos seguidos, pasado el enfriamiento, con otro id.
+                for t in [10, 11] {
+                    let ra = pa.sondear(seg(t), || Some("otro".into()));
+                    let rb = pb.sondear(seg(t), || Some("otro".into()));
+                    if t == 11 {
+                        assert_eq!(ra, esperado(a), "pista A en {a} (con B en {b})");
+                        assert_eq!(rb, esperado(b), "pista B en {b} (con A en {a})");
+                    }
+                }
+            }
+        }
+        assert_eq!(combinaciones, 16);
+    }
+
+    // -- ControlPista: transiciones -------------------------------------------
+
+    #[test]
+    fn un_error_de_lectura_lleva_a_reabriendo_con_el_contador_leido_tras_vaciar() {
+        // 48 kHz: el remuestreador retiene muestras que solo salen al
+        // vaciarlo. Leer el contador antes de `vaciar` lo dejaba corto, y esas
+        // muestras se rellenaban de nuevo como silencio al reabrir.
+        let mut pista = PistaCapturada::nueva(Track::Mic, 1, FormatoNativo::F32, 48_000).unwrap();
+        let medio_segundo: Vec<u8> = (0..24_000).flat_map(|_| 0.5_f32.to_le_bytes()).collect();
+        pista.procesar_paquete(500, &medio_segundo).unwrap();
+        let antes_de_vaciar = pista.muestras_emitidas();
+        pista.vaciar(500).unwrap();
+        let despues_de_vaciar = pista.muestras_emitidas();
+        assert!(
+            despues_de_vaciar > antes_de_vaciar,
+            "la cola no estaba vacía"
+        );
+
+        let mut control = ControlPista::viva("micro".into(), Duration::ZERO);
+        assert!(control.empezar_reapertura(seg(10), pista.muestras_emitidas()));
+
+        assert_eq!(control.contador(), despues_de_vaciar);
+        assert!(!control.es_viva());
     }
 
     #[test]
-    fn sin_ninguna_pista_viva_el_bucle_termina() {
-        // Antes de este arreglo, `wasapi_src::bucle` no tenía ningún
-        // `break` para este caso: el hilo seguía vivo sondeando cada 10 ms
-        // sin producir ningún `AudioFrame` más y sin cerrar el canal, así
-        // que la sesión aparentaba seguir grabando sin grabar nada.
-        assert!(!alguna_pista_sigue_viva(false, false));
+    fn un_error_y_un_cambio_de_dispositivo_a_la_vez_reabren_una_sola_vez() {
+        // El cierre y la reapertura son por evento, no por causa: si los dos
+        // disparadores coinciden, el segundo no puede volver a cerrar ni
+        // reiniciar el contador.
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        assert!(control.empezar_reapertura(seg(10), 1_000));
+        assert!(!control.empezar_reapertura(seg(10), 99_999));
+        assert_eq!(control.contador(), 1_000);
     }
 
     #[test]
-    fn una_sesion_de_una_sola_pista_termina_si_esa_pista_muere() {
-        // Antes arrancaba con `pistas_a_grabar(true, false)`, el mismo par
-        // que ya fija `sin_dispositivo_de_salida_se_graba_solo_el_microfono`.
-        // Medido por mutación (verificador-pruebas, T-15/T-16), ese
-        // `assert_eq!` deja `pistas_al_arrancar` en exactamente `[Mic]`, así
-        // que `.contains(&Track::System)` no podía dar otra cosa que
-        // `false`: ninguna mutación pasaba ese `assert_eq!` y a la vez movía
-        // el resultado. La prueba entera quedaba 100% redundante con esa otra
-        // y con `sin_ninguna_pista_viva_el_bucle_termina`.
-        //
-        // Arrancar aquí con el sistema en vez del micrófono no es cosmético:
-        // ninguna otra prueba del archivo fija el resultado exacto de la
-        // rama `if sistema_abierto` en solitario, así que un
-        // `pistas.push(Track::Mic)` por error ahí —en vez de
-        // `Track::System`— pasaría todas las demás pruebas en verde y solo
-        // esta lo detectaría.
-        let pistas_al_arrancar = pistas_a_grabar(false, true).unwrap();
-        assert_eq!(pistas_al_arrancar, vec![Track::System]);
+    fn reabrir_deja_la_pista_viva_sobre_el_dispositivo_nuevo() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(10), 1_000);
+        control.al_abrir("b".into(), seg(11));
+        assert_eq!(
+            control.estado(),
+            &EstadoPista::Viva {
+                id_dispositivo: "b".into()
+            }
+        );
+    }
 
-        // `microfono_vivo` se deriva de lo que devolvió `pistas_a_grabar`, no
-        // se escribe a mano: si algún día `pistas_a_grabar(false, true)`
-        // empezara a incluir `Mic` por error, esta prueba lo notaría también
-        // por este lado.
-        let microfono_vivo = pistas_al_arrancar.contains(&Track::Mic);
-        let sistema_vivo = false; // la única pista pedida, y murió
+    #[test]
+    fn los_reintentos_fallidos_nunca_reinician_el_contador() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(10), 7_000);
+        for t in [12, 14, 16, 18] {
+            control.intento_fallido(seg(t));
+        }
+        assert_eq!(control.contador(), 7_000);
+        match control.estado() {
+            EstadoPista::Reabriendo { intentos, .. } => assert_eq!(*intentos, 4),
+            otro => panic!("esperaba Reabriendo, hay {otro:?}"),
+        }
+    }
 
-        assert!(!alguna_pista_sigue_viva(microfono_vivo, sistema_vivo));
+    #[test]
+    fn un_fallo_permanente_deja_la_pista_ausente_con_el_contador_intacto() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(10), 7_000);
+        control.fallo_permanente("a".into());
+        assert_eq!(
+            control.estado(),
+            &EstadoPista::Ausente {
+                id_fallido: Some("a".into()),
+                muestras_emitidas: 7_000,
+            }
+        );
+        // Una ausente no reintenta por su cuenta: solo la saca de ahí otro
+        // dispositivo por defecto.
+        assert!(!control.toca_reintentar(seg(600)));
+    }
+
+    #[test]
+    fn una_pista_pedida_que_no_abrio_al_arrancar_empieza_reabriendo_desde_cero() {
+        // El relleno tiene que cubrir desde el inicio de la sesión, no desde
+        // el momento en que aparezca el dispositivo.
+        let control = ControlPista::sin_abrir_al_arrancar(Duration::ZERO);
+        assert_eq!(control.contador(), 0);
+        assert!(matches!(
+            control.estado(),
+            EstadoPista::Reabriendo {
+                intentos: 1,
+                ultimo_intento: Some(_),
+                ..
+            }
+        ));
+        assert!(!control.toca_reintentar(Duration::from_millis(1_999)));
+        assert!(control.toca_reintentar(seg(2)));
+    }
+
+    #[test]
+    fn una_pista_que_nunca_se_pidio_no_se_toca() {
+        let mut control = ControlPista::no_pedida();
+        assert!(!control.empezar_reapertura(seg(10), 5));
+        assert!(!control.toca_reintentar(seg(100)));
+        assert!(!control.toca_avisar(seg(100)));
+        assert_eq!(
+            control.sondear(seg(100), || panic!("no debe sondear")),
+            Veredicto::Nada
+        );
+        assert_eq!(control.estado(), &EstadoPista::NoPedida);
+    }
+
+    // -- ControlPista: calendario de reintentos -------------------------------
+
+    #[test]
+    fn el_primer_intento_tras_perder_el_dispositivo_es_inmediato() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(10), 0);
+        assert!(control.toca_reintentar(seg(10)));
+    }
+
+    #[test]
+    fn en_el_primer_minuto_se_reintenta_cada_dos_segundos() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(100), 0);
+        control.intento_fallido(seg(100));
+
+        assert!(!control.toca_reintentar(Duration::from_millis(101_999)));
+        assert!(control.toca_reintentar(seg(102)), "la frontera cuenta: >=");
+    }
+
+    #[test]
+    fn pasado_el_primer_minuto_se_reintenta_cada_cinco_segundos() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(100), 0);
+        // Último intento justo al cumplirse el minuto: ya cuenta el ritmo lento.
+        control.intento_fallido(seg(160));
+
+        assert!(!control.toca_reintentar(Duration::from_millis(164_999)));
+        assert!(control.toca_reintentar(seg(165)));
+    }
+
+    #[test]
+    fn el_ritmo_cambia_exactamente_a_los_sesenta_segundos() {
+        // La frontera del umbral, con `>=` como en el resto: 59,999 s sigue
+        // siendo ritmo rápido, 60 s ya es lento.
+        assert_eq!(
+            intervalo_de_reintento(Duration::from_millis(59_999)),
+            seg(2)
+        );
+        assert_eq!(intervalo_de_reintento(seg(60)), seg(5));
+    }
+
+    #[test]
+    fn el_aviso_de_una_pista_reabriendo_sale_como_mucho_cada_treinta_segundos() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(100), 0);
+
+        assert!(!control.toca_avisar(Duration::from_millis(129_999)));
+        assert!(control.toca_avisar(seg(130)));
+        assert!(
+            !control.toca_avisar(seg(131)),
+            "el aviso reinicia la cuenta"
+        );
+        assert!(control.toca_avisar(seg(160)));
+    }
+
+    // -- ControlPista: sondeo del dispositivo por defecto (D1) ----------------
+
+    fn sondeo(control: &mut ControlPista, t: Duration, id: &str) -> Veredicto {
+        control.sondear(t, || Some(id.to_string()))
+    }
+
+    #[test]
+    fn un_id_nuevo_que_aparece_en_un_solo_sondeo_no_reabre() {
+        // Es el vaivén de los auriculares Bluetooth entre sus dos perfiles:
+        // con un solo sondeo bastando, se reabría en cada alternancia.
+        let mut control = ControlPista::viva("estereo".into(), Duration::ZERO);
+        assert_eq!(
+            sondeo(&mut control, seg(10), "manos-libres"),
+            Veredicto::Nada
+        );
+        assert_eq!(sondeo(&mut control, seg(11), "estereo"), Veredicto::Nada);
+        assert_eq!(
+            sondeo(&mut control, seg(12), "manos-libres"),
+            Veredicto::Nada
+        );
+    }
+
+    #[test]
+    fn el_mismo_id_nuevo_en_dos_sondeos_seguidos_si_reabre() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        assert_eq!(sondeo(&mut control, seg(10), "b"), Veredicto::Nada);
+        assert_eq!(sondeo(&mut control, seg(11), "b"), Veredicto::Reabrir);
+    }
+
+    #[test]
+    fn dos_ids_nuevos_distintos_seguidos_no_cuentan_como_el_mismo() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        assert_eq!(sondeo(&mut control, seg(10), "b"), Veredicto::Nada);
+        assert_eq!(sondeo(&mut control, seg(11), "c"), Veredicto::Nada);
+        assert_eq!(sondeo(&mut control, seg(12), "c"), Veredicto::Reabrir);
+    }
+
+    #[test]
+    fn un_sondeo_que_falla_no_cambia_nada_y_corta_la_racha() {
+        // Una reenumeración en curso devuelve error un instante: no es motivo
+        // para tocar una pista sana, ni para dar por «seguido» lo que no lo es.
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        assert_eq!(sondeo(&mut control, seg(10), "b"), Veredicto::Nada);
+        assert_eq!(control.sondear(seg(11), || None), Veredicto::Nada);
+        assert_eq!(sondeo(&mut control, seg(12), "b"), Veredicto::Nada);
+        assert!(control.es_viva());
+    }
+
+    #[test]
+    fn no_se_sondea_mas_de_una_vez_por_segundo() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        let llamadas = std::cell::Cell::new(0);
+        for ms in [1_000, 1_300, 1_999] {
+            control.sondear(Duration::from_millis(ms), || {
+                llamadas.set(llamadas.get() + 1);
+                Some("a".into())
+            });
+        }
+        // El de 1 000 ms cae justo en la frontera y sí cuenta; los otros dos
+        // están a menos de un segundo del anterior.
+        assert_eq!(llamadas.get(), 1);
+        control.sondear(Duration::from_millis(2_000), || {
+            llamadas.set(llamadas.get() + 1);
+            Some("a".into())
+        });
+        assert_eq!(llamadas.get(), 2);
+    }
+
+    #[test]
+    fn dos_reaperturas_de_la_misma_pista_no_pueden_ir_a_menos_de_cinco_segundos() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        // La pista se acaba de reabrir en el segundo 20.
+        control.empezar_reapertura(seg(19), 0);
+        control.al_abrir("b".into(), seg(20));
+
+        // El dispositivo vuelve a cambiar y se confirma enseguida, pero aún
+        // no han pasado 5 s desde la apertura.
+        assert_eq!(sondeo(&mut control, seg(21), "a"), Veredicto::Nada);
+        assert_eq!(sondeo(&mut control, seg(22), "a"), Veredicto::Nada);
+        assert_eq!(sondeo(&mut control, seg(24), "a"), Veredicto::Nada);
+        // A los 5 s justos se puede, y la racha acumulada sigue valiendo.
+        assert_eq!(sondeo(&mut control, seg(25), "a"), Veredicto::Reabrir);
+    }
+
+    #[test]
+    fn una_pista_ausente_vuelve_cuando_el_dispositivo_por_defecto_es_otro() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(10), 4_000);
+        control.fallo_permanente("a".into());
+
+        // Con el mismo dispositivo que falló, nada.
+        assert_eq!(sondeo(&mut control, seg(11), "a"), Veredicto::Nada);
+        assert_eq!(sondeo(&mut control, seg(12), "a"), Veredicto::Nada);
+        // Con otro, tras la confirmación de siempre.
+        assert_eq!(sondeo(&mut control, seg(13), "b"), Veredicto::Nada);
+        assert_eq!(sondeo(&mut control, seg(14), "b"), Veredicto::Reabrir);
+
+        // Y reabre conservando el contador de la ausencia.
+        assert!(control.empezar_reapertura(seg(14), 0));
+        assert_eq!(control.contador(), 4_000);
+        assert!(control.toca_reintentar(seg(14)));
+    }
+
+    #[test]
+    fn una_pista_ausente_puede_volver_dentro_de_los_cinco_segundos_de_su_ultima_apertura() {
+        // La espera de 5 s protege a una pista que está sirviendo de un
+        // vaivén; una ausente no tiene nada que proteger y no debe esperar.
+        // Sin esta distinción una ausente recién fallada tardaba 5 s de más
+        // en volver con un dispositivo bueno.
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(19), 0);
+        control.al_abrir("b".into(), seg(20));
+        control.empezar_reapertura(seg(20), 100);
+        control.fallo_permanente("b".into());
+
+        assert_eq!(sondeo(&mut control, seg(21), "c"), Veredicto::Nada);
+        assert_eq!(sondeo(&mut control, seg(22), "c"), Veredicto::Reabrir);
+    }
+
+    #[test]
+    fn una_apertura_que_falla_al_leer_enseguida_no_reintenta_de_inmediato() {
+        // Abre bien y la primera lectura devuelve DEVICE_INVALIDATED: sin esto
+        // cada vuelta reiniciaba el calendario y el bucle abría y cerraba el
+        // motor de audio sin pausa, con dos registros por vuelta.
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(10), 0);
+        control.al_abrir("a".into(), seg(11));
+        assert!(control.empezar_reapertura(Duration::from_millis(11_300), 0));
+
+        assert!(!control.toca_reintentar(Duration::from_millis(11_300)));
+        assert!(!control.toca_reintentar(Duration::from_millis(13_299)));
+        assert!(control.toca_reintentar(Duration::from_millis(13_300)));
+    }
+
+    #[test]
+    fn una_pista_que_servia_desde_hace_rato_reintenta_enseguida_al_fallar() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        assert!(control.empezar_reapertura(seg(60), 0));
+        assert!(control.toca_reintentar(seg(60)));
+    }
+
+    #[test]
+    fn una_pista_que_ya_esta_reabriendo_no_sondea() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(10), 0);
+        assert_eq!(
+            control.sondear(seg(20), || panic!("los reintentos ya prueban el defecto")),
+            Veredicto::Nada
+        );
+    }
+
+    // -- relleno final (D3) ------------------------------------------------------
+
+    fn muestras_de(tramas: &[AudioFrame]) -> usize {
+        tramas.iter().map(|t| t.pcm.len()).sum()
+    }
+
+    #[test]
+    fn una_pista_sin_dispositivo_al_detener_se_rellena_hasta_el_final_de_la_sesion() {
+        // Antes `cerrar_pista` solo emitía la cola del remuestreador: el WAV
+        // de una pista que murió a los 10 s de una sesión de 60 s duraba 10 s
+        // y todo lo que venía detrás de él en la mezcla quedaba desplazado.
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(10), 160_000);
+
+        let tramas = control.relleno_final(Track::System, 60_000);
+
+        assert_eq!(muestras_de(&tramas), 50 * 16_000);
+        assert!(tramas.iter().all(|t| t.track == Track::System));
+        assert!(tramas.iter().all(|t| t.pcm.iter().all(|&m| m == 0.0)));
+        assert_eq!(tramas.last().unwrap().timestamp_ms, 60_000);
+    }
+
+    #[test]
+    fn el_relleno_final_sale_en_tramas_de_como_mucho_un_segundo() {
+        // Una pista pedida que nunca abrió en una clase de 2 h necesita
+        // ~460 MB de silencio en una sola trama, justo al detener.
+        let control = ControlPista::sin_abrir_al_arrancar(Duration::ZERO);
+
+        let tramas = control.relleno_final(Track::System, 600 * 1_000);
+
+        assert_eq!(muestras_de(&tramas), 600 * 16_000);
+        assert!(tramas
+            .iter()
+            .all(|t| t.pcm.len() as u64 <= TRAMA_DE_RELLENO_MAX));
+        // Los timestamps avanzan: cada trama termina donde acaba su silencio.
+        assert!(tramas
+            .windows(2)
+            .all(|w| w[0].timestamp_ms < w[1].timestamp_ms));
+    }
+
+    #[test]
+    fn el_relleno_en_tramas_conserva_la_cola_corta() {
+        // 2,5 s: dos tramas enteras y una de medio segundo, sin perder ni
+        // inventar muestras.
+        let tramas = silencio_en_tramas(Track::Mic, 0, 40_000);
+        let largos: Vec<usize> = tramas.iter().map(|t| t.pcm.len()).collect();
+        assert_eq!(largos, vec![16_000, 16_000, 8_000]);
+        assert_eq!(tramas[2].timestamp_ms, 2_500);
+        assert!(silencio_en_tramas(Track::Mic, 0, 0).is_empty());
+    }
+
+    #[test]
+    fn una_pista_ausente_tambien_se_rellena_al_detener() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(10), 160_000);
+        control.fallo_permanente("a".into());
+        let tramas = control.relleno_final(Track::Mic, 12_000);
+        assert_eq!(muestras_de(&tramas), 2 * 16_000);
+    }
+
+    #[test]
+    fn no_hay_relleno_final_para_una_pista_viva_ni_para_una_no_pedida() {
+        let viva = ControlPista::viva("a".into(), Duration::ZERO);
+        assert!(viva.relleno_final(Track::Mic, 60_000).is_empty());
+        assert!(ControlPista::no_pedida()
+            .relleno_final(Track::Mic, 60_000)
+            .is_empty());
+    }
+
+    #[test]
+    fn no_hay_relleno_final_si_la_pista_ya_cubre_la_sesion() {
+        let mut control = ControlPista::viva("a".into(), Duration::ZERO);
+        control.empezar_reapertura(seg(10), 60 * 16_000);
+        assert!(control.relleno_final(Track::Mic, 60_000).is_empty());
+    }
+
+    #[test]
+    fn una_pista_pedida_que_nunca_abrio_se_rellena_desde_el_cero() {
+        let control = ControlPista::sin_abrir_al_arrancar(Duration::ZERO);
+        let tramas = control.relleno_final(Track::System, 3_000);
+        assert_eq!(muestras_de(&tramas), 3 * 16_000);
+    }
+
+    #[test]
+    fn rellenar_hasta_al_reabrir_avanza_el_contador_y_acota_las_tramas() {
+        // La pista lleva 1 s y reabre a los 600 s: el hueco (10 min) no puede
+        // salir como una sola trama de cientos de MB dentro del primer paquete.
+        let mut pista =
+            PistaCapturada::continuar(Track::Mic, 1, FormatoNativo::F32, SAMPLE_RATE, 16_000)
+                .unwrap();
+
+        let tramas = pista.rellenar_hasta(600_000);
+
+        assert!(tramas
+            .iter()
+            .all(|t| t.pcm.len() as u64 <= TRAMA_DE_RELLENO_MAX));
+        assert_eq!(muestras_de(&tramas), 599 * 16_000);
+        assert_eq!(pista.muestras_emitidas(), 600 * 16_000);
+        // Ya al día: un segundo `rellenar_hasta` no duplica nada.
+        assert!(pista.rellenar_hasta(600_000).is_empty());
+    }
+
+    // -- B-1: fechar por el instante de captura -------------------------------
+
+    #[test]
+    fn la_posicion_qpc_de_wasapi_viene_en_cien_nanosegundos() {
+        assert_eq!(qpc_a_ms(0), 0);
+        assert_eq!(qpc_a_ms(9_999), 0);
+        assert_eq!(qpc_a_ms(10_000), 1);
+        assert_eq!(qpc_a_ms(25_000_000), 2_500);
+    }
+
+    #[test]
+    fn sin_qpc_la_fecha_resta_lo_que_aun_esta_pendiente_en_el_bufer() {
+        // 48 000 tramas pendientes a 48 kHz = 1 s: el bloque que se acaba de
+        // leer terminó de capturarse un segundo antes de la lectura.
+        assert_eq!(fecha_por_pendientes(5_000, 48_000, 48_000), 4_000);
+        assert_eq!(fecha_por_pendientes(5_000, 0, 48_000), 5_000);
+        // Nunca sale negativa.
+        assert_eq!(fecha_por_pendientes(500, 48_000, 48_000), 0);
+    }
+
+    #[test]
+    fn el_primer_bloque_se_fecha_en_el_instante_de_su_lectura() {
+        let mut reloj = RelojCaptura::default();
+        // Sin historial no se sabe el desfase entre relojes: se confía en la
+        // lectura, que es lo que hacía el código anterior.
+        assert_eq!(reloj.fechar(123_456_000_000, 480, 48_000, 2_000), 2_000);
+    }
+
+    #[test]
+    fn un_bloque_leido_tarde_se_fecha_en_su_captura_y_no_en_su_lectura() {
+        let mut reloj = RelojCaptura::default();
+        let base_qpc: u64 = 777_000_000_000; // 100 ns; el origen no importa
+        let t = |ms: u64| base_qpc + ms * 10_000;
+        // Lectura puntual: el bloque de 10 ms que termina en t=1 000 ms se
+        // lee en t=1 002 ms. Calibra el desfase (2 ms) y, sin historial, se
+        // fecha en la lectura.
+        assert_eq!(reloj.fechar(t(990), 480, 48_000, 1_002), 1_002);
+        // Un bloqueo del hilo de 2 500 ms: el bloque que terminó de
+        // capturarse en t=1 500 ms se lee en t=3 502 ms. Con la fecha de la
+        // lectura iba 2 s adelantado; ahora sale 1 502 (captura + los 2 ms
+        // de desfase mínimo observado).
+        assert_eq!(reloj.fechar(t(1_490), 480, 48_000, 3_502), 1_502);
+    }
+
+    #[test]
+    fn una_rafaga_tras_un_bloqueo_no_adelanta_la_pista() {
+        // El caso de B-1 con la lógica real de la pista: paquetes de 10 ms a
+        // 48 kHz; el hilo se bloquea 2,5 s y luego drena de golpe lo retenido
+        // en el búfer de 3 s. Antes se fechaban todos con el instante del
+        // drenaje y la pista quedaba ≈2,48 s adelantada para siempre.
+        let mut pista = PistaCapturada::nueva(Track::Mic, 1, FormatoNativo::F32, 48_000).unwrap();
+        let mut reloj = RelojCaptura::default();
+        let diez_ms: Vec<u8> = (0..480).flat_map(|_| 0.5_f32.to_le_bytes()).collect();
+        let qpc = |ms_fin: u64| (ms_fin - 10) * 10_000 + 500_000_000;
+
+        // 1 s normal: el paquete que termina en t se lee en t + 2 ms.
+        for i in 1..=100u64 {
+            let t = i * 10;
+            let ts = reloj.fechar(qpc(t), 480, 48_000, t as i64 + 2);
+            pista.procesar_paquete(ts, &diez_ms).unwrap();
+        }
+        // Bloqueo: de t=1 000 a t=3 500 ms nadie lee. Se drena todo a t=3 502.
+        for i in 101..=350u64 {
+            let t = i * 10;
+            let ts = reloj.fechar(qpc(t), 480, 48_000, 3_502);
+            pista.procesar_paquete(ts, &diez_ms).unwrap();
+        }
+        // 1 s normal más.
+        for i in 351..=450u64 {
+            let t = i * 10;
+            let ts = reloj.fechar(qpc(t), 480, 48_000, t as i64 + 2);
+            pista.procesar_paquete(ts, &diez_ms).unwrap();
+        }
+
+        // Se capturaron 4 500 ms de audio: 72 000 muestras. El remuestreador
+        // retiene como mucho un bloque (~341 de salida); lo que no puede
+        // haber es el desfase de 2,5 s (40 000 muestras).
+        let emitidas = pista.muestras_emitidas() as i64;
+        assert!(
+            (72_000 - 400..=72_000 + 400).contains(&emitidas),
+            "la pista lleva {emitidas} muestras de 72 000"
+        );
+    }
+
+    // -- PistaCapturada::continuar ----------------------------------------------
+
+    #[test]
+    fn continuar_conserva_el_contador_de_muestras() {
+        let pista =
+            PistaCapturada::continuar(Track::Mic, 1, FormatoNativo::F32, SAMPLE_RATE, 123_456)
+                .unwrap();
+        assert_eq!(pista.muestras_emitidas(), 123_456);
+    }
+
+    #[test]
+    fn un_hueco_de_n_ms_al_reabrir_produce_n_ms_de_silencio() {
+        // La pista llevaba 1 s emitido (16 000 muestras). Reabre y su primer
+        // paquete, de 100 ms, llega en el instante 2 100 ms: el 1,0 s que
+        // falta entre medias tiene que salir como silencio, antes del audio.
+        let mut pista =
+            PistaCapturada::continuar(Track::Mic, 1, FormatoNativo::F32, SAMPLE_RATE, 16_000)
+                .unwrap();
+        let cien_ms: Vec<u8> = (0..1_600).flat_map(|_| 0.5_f32.to_le_bytes()).collect();
+
+        let frame = pista.procesar_paquete(2_100, &cien_ms).unwrap().unwrap();
+
+        assert_eq!(frame.pcm.len(), 16_000 + 1_600);
+        assert!(frame.pcm[..16_000].iter().all(|&m| m == 0.0));
+        assert!(frame.pcm[16_000..].iter().all(|&m| m == 0.5));
+        assert_eq!(pista.muestras_emitidas(), 2_100 * 16);
+    }
+
+    #[test]
+    fn un_primer_paquete_tras_reabrir_sin_salida_del_remuestreador_no_pierde_ni_duplica() {
+        // A 48 kHz el remuestreador solo emite bloques completos de 1 024
+        // muestras: el primer paquete de una pista recién reabierta puede no
+        // producir nada. El hueco, aun así, no se puede perder (el paquete
+        // llega con su timestamp), y cuando el remuestreador por fin emita no
+        // se puede contar otra vez lo ya rellenado.
+        let mut pista =
+            PistaCapturada::continuar(Track::Mic, 1, FormatoNativo::F32, 48_000, 16_000).unwrap();
+        let diez_ms: Vec<u8> = (0..480).flat_map(|_| 0.5_f32.to_le_bytes()).collect();
+
+        // 1 500 ms: esperadas 24 000, emitidas 16 000, el paquete aún no
+        // aporta nada.
+        let primero = pista.procesar_paquete(1_500, &diez_ms).unwrap().unwrap();
+        assert_eq!(primero.pcm.len(), 8_000);
+        assert!(primero.pcm.iter().all(|&m| m == 0.0));
+
+        // Diez milisegundos después, 1 000 muestras más: ya hay bloque.
+        let mil_muestras: Vec<u8> = (0..1_000).flat_map(|_| 0.5_f32.to_le_bytes()).collect();
+        let segundo = pista
+            .procesar_paquete(1_510, &mil_muestras)
+            .unwrap()
+            .expect("el bloque completo sale ahora");
+
+        // La cuenta es exacta, sin margen para el relleno: a los 1 510 ms
+        // la pista debería llevar 24 160 muestras y ya lleva 24 000, pero el
+        // bloque de 1 024 muestras de entrada a 48 kHz trae 339 de salida
+        // (1 024 / 3 = 341, menos el retardo del filtro), que cubren esas 160
+        // con holgura. Por eso este
+        // paquete no añade relleno propio: toda su salida es audio. Si el
+        // relleno se contara dos veces (o se perdiera el hueco del primer
+        // paquete) la longitud saldría de este rango.
+        assert_eq!(segundo.pcm.len(), 339);
+        assert_eq!(
+            pista.muestras_emitidas(),
+            16_000 + 8_000 + segundo.pcm.len() as u64
+        );
     }
 
     // La prueba de la rama `NoSoportada` para una tercera plataforma vive en

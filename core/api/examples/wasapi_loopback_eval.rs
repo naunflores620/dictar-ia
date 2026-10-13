@@ -8,6 +8,15 @@
 //! cargo run --release -p dictar-api --example wasapi_loopback_eval -- \
 //!   <system.wav> <directorio-salida> [segundos]
 //!   wasapi_loopback_eval --devices
+//!
+//! Modo AV-1, sin modelo ni transcripción: graba las dos pistas durante N
+//! segundos, deja `system.wav` y `mic.wav` en el directorio y cuenta, segundo
+//! a segundo, cuánta señal llegó. Sirve para comprobar que la grabación sigue
+//! al dispositivo por defecto cuando cambia o desaparece.
+//! cargo run --release -p dictar-api --example wasapi_loopback_eval -- \
+//!   --seguir-dispositivo <directorio-salida> [segundos] [--tono]
+//! Con `--tono` el propio ejemplo reproduce un tono por la salida por defecto,
+//! para que la prueba no dependa de abrir un navegador.
 
 #[cfg(not(target_os = "windows"))]
 fn main() {
@@ -28,6 +37,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args = std::env::args_os().skip(1);
     let primer_arg = args.next().ok_or("falta ruta a system.wav")?;
+    if primer_arg == "--seguir-dispositivo" {
+        let resto: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
+        return seguir_dispositivo(&resto);
+    }
     if primer_arg == "--devices" {
         let dispositivos = dictar_audio::dispositivos()?;
         println!(
@@ -358,4 +371,242 @@ fn acumular(
     if !pcm.is_empty() && (suma_frame / pcm.len() as f64).sqrt() < 0.001 {
         *silenciosos += 1;
     }
+}
+
+/// Subscriber mínimo escrito a mano: `dictar-api` no depende de
+/// `tracing-subscriber` y este ejemplo no puede tocar el `Cargo.toml`. Sin
+/// él, las transiciones de AV-1 (que solo existen como registros) no se verían.
+#[cfg(target_os = "windows")]
+struct RegistroEnConsola {
+    inicio: std::time::Instant,
+    nivel_audio: tracing::Level,
+}
+
+#[cfg(target_os = "windows")]
+impl tracing::Subscriber for RegistroEnConsola {
+    fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+        // En `tracing` «más detallado» es «mayor»: TRACE > DEBUG > INFO.
+        let tope = if m.target().starts_with("dictar_audio") {
+            self.nivel_audio
+        } else {
+            tracing::Level::INFO
+        };
+        *m.level() <= tope
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, e: &tracing::Event<'_>) {
+        struct Texto(String);
+        impl tracing::field::Visit for Texto {
+            fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+                if f.name() == "message" {
+                    self.0.insert_str(0, &format!("{v:?} "));
+                } else {
+                    self.0.push_str(&format!("{}={v:?} ", f.name()));
+                }
+            }
+        }
+        let mut t = Texto(String::new());
+        e.record(&mut t);
+        println!(
+            "[{:>7.2}s] {:<5} {}: {}",
+            self.inicio.elapsed().as_secs_f32(),
+            e.metadata().level(),
+            e.metadata().target(),
+            t.0.trim_end()
+        );
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// Acumula el RMS por segundo de **posición en el WAV** (no de llegada): es lo
+/// que el criterio de AV-1 mide, porque el WAV es lo que se queda en disco.
+#[cfg(target_os = "windows")]
+#[derive(Default)]
+struct PistaMedida {
+    muestras: u64,
+    por_segundo: Vec<(f64, u64)>,
+    tramas_en_la_ventana: u64,
+    muestras_en_la_ventana: u64,
+    suma_en_la_ventana: f64,
+    ultima_llegada_ms: Option<u128>,
+    mayor_intervalo_entre_tramas_ms: u128,
+}
+
+#[cfg(target_os = "windows")]
+impl PistaMedida {
+    fn anotar(&mut self, pcm: &[f32], ahora_ms: u128) {
+        for &m in pcm {
+            let seg = (self.muestras / dictar_audio::SAMPLE_RATE as u64) as usize;
+            if self.por_segundo.len() <= seg {
+                self.por_segundo.resize(seg + 1, (0.0, 0));
+            }
+            let cuadrado = if m.is_finite() {
+                (m as f64).powi(2)
+            } else {
+                0.0
+            };
+            self.por_segundo[seg].0 += cuadrado;
+            self.por_segundo[seg].1 += 1;
+            self.suma_en_la_ventana += cuadrado;
+            self.muestras += 1;
+        }
+        self.tramas_en_la_ventana += 1;
+        self.muestras_en_la_ventana += pcm.len() as u64;
+        if let Some(antes) = self.ultima_llegada_ms {
+            self.mayor_intervalo_entre_tramas_ms =
+                self.mayor_intervalo_entre_tramas_ms.max(ahora_ms - antes);
+        }
+        self.ultima_llegada_ms = Some(ahora_ms);
+    }
+
+    fn rms_de_ventana(&self) -> f64 {
+        if self.muestras_en_la_ventana == 0 {
+            0.0
+        } else {
+            (self.suma_en_la_ventana / self.muestras_en_la_ventana as f64).sqrt()
+        }
+    }
+
+    fn cerrar_ventana(&mut self) {
+        self.tramas_en_la_ventana = 0;
+        self.muestras_en_la_ventana = 0;
+        self.suma_en_la_ventana = 0.0;
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn seguir_dispositivo(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    use dictar_audio::{wav::EscritorPistas, AudioFrame, CaptureConfig, SAMPLE_RATE};
+    use dictar_domain::Track;
+    use std::time::{Duration, Instant};
+
+    let dir = std::path::PathBuf::from(args.first().ok_or("falta directorio de salida")?);
+    let segundos: u64 = args
+        .get(1)
+        .filter(|a| !a.starts_with("--"))
+        .map(|s| s.parse())
+        .transpose()?
+        .unwrap_or(60);
+    let con_tono = args.iter().any(|a| a == "--tono");
+
+    let nivel_audio = match std::env::var("RUST_LOG") {
+        Ok(v) if v.contains("dictar_audio=trace") => tracing::Level::TRACE,
+        Ok(v) if v.contains("dictar_audio=debug") => tracing::Level::DEBUG,
+        _ => tracing::Level::INFO,
+    };
+    tracing::subscriber::set_global_default(RegistroEnConsola {
+        inicio: Instant::now(),
+        nivel_audio,
+    })?;
+
+    std::fs::create_dir_all(&dir)?;
+
+    // El tono se escribe como un `system.wav` más y se reproduce con el mismo
+    // reproductor que usa la aplicación, por la salida por defecto.
+    let reproductor = if con_tono {
+        let dir_tono = dir.join("tono");
+        let mut w = EscritorPistas::nuevo(&dir_tono)?;
+        let total = (segundos + 5) * SAMPLE_RATE as u64;
+        let pcm: Vec<f32> = (0..total)
+            .map(|i| {
+                let fase = 2.0 * std::f32::consts::PI * 440.0 * i as f32 / SAMPLE_RATE as f32;
+                0.3 * fase.sin()
+            })
+            .collect();
+        w.escribir(&AudioFrame {
+            track: Track::System,
+            pcm,
+            timestamp_ms: 0,
+        })?;
+        w.cerrar()?;
+        Some(dictar_audio::reproductor::Reproductor::iniciar_pausado(
+            &dir_tono, 0,
+        )?)
+    } else {
+        None
+    };
+
+    let mut escritor = EscritorPistas::nuevo(&dir)?;
+    let (rx, captura) = dictar_audio::iniciar(CaptureConfig::default())?;
+    if let Some(r) = &reproductor {
+        r.pausar(false);
+    }
+    println!("grabando {segundos} s en {}", dir.display());
+
+    let inicio = Instant::now();
+    let limite = Duration::from_secs(segundos);
+    // [sistema, micrófono]
+    let mut pistas = [PistaMedida::default(), PistaMedida::default()];
+    let mut ventana = 1u64;
+    let recibir = |frame: AudioFrame,
+                   escritor: &mut EscritorPistas,
+                   pistas: &mut [PistaMedida; 2]|
+     -> Result<(), Box<dyn std::error::Error>> {
+        escritor.escribir(&frame)?;
+        let i = if frame.track == Track::System { 0 } else { 1 };
+        pistas[i].anotar(&frame.pcm, inicio.elapsed().as_millis());
+        Ok(())
+    };
+
+    while inicio.elapsed() < limite {
+        if let Ok(frame) = rx.recv_timeout(Duration::from_millis(50)) {
+            recibir(frame, &mut escritor, &mut pistas)?;
+        }
+        if inicio.elapsed() >= Duration::from_secs(ventana) {
+            println!(
+                "t={ventana:>3}s  sistema: {:>3} tramas rms={:.4}   mic: {:>3} tramas rms={:.4}",
+                pistas[0].tramas_en_la_ventana,
+                pistas[0].rms_de_ventana(),
+                pistas[1].tramas_en_la_ventana,
+                pistas[1].rms_de_ventana(),
+            );
+            pistas[0].cerrar_ventana();
+            pistas[1].cerrar_ventana();
+            ventana += 1;
+        }
+    }
+
+    drop(reproductor);
+    captura.detener()?;
+    // `detener` vuelca la cola del remuestreador y el relleno final: hay que
+    // recogerlos todos antes de cerrar los WAV, o la duración sale corta.
+    while let Ok(frame) = rx.try_recv() {
+        recibir(frame, &mut escritor, &mut pistas)?;
+    }
+    let sesion_ms = inicio.elapsed().as_millis();
+    let dur_sistema = escritor.duracion_ms(Track::System);
+    let dur_mic = escritor.duracion_ms(Track::Mic);
+    escritor.cerrar()?;
+
+    println!("--- resumen ---");
+    println!("sesion_ms={sesion_ms}");
+    println!(
+        "system.wav duracion_ms={dur_sistema} muestras={}",
+        pistas[0].muestras
+    );
+    println!(
+        "mic.wav    duracion_ms={dur_mic} muestras={}",
+        pistas[1].muestras
+    );
+    println!(
+        "mayor_intervalo_entre_tramas_ms sistema={} mic={}",
+        pistas[0].mayor_intervalo_entre_tramas_ms, pistas[1].mayor_intervalo_entre_tramas_ms
+    );
+    println!("--- RMS por segundo de posicion en el WAV (segundo: sistema / mic) ---");
+    let filas = pistas[0].por_segundo.len().max(pistas[1].por_segundo.len());
+    let rms = |p: &PistaMedida, s: usize| -> String {
+        match p.por_segundo.get(s) {
+            Some((suma, n)) if *n > 0 => format!("{:.4}", (suma / *n as f64).sqrt()),
+            _ => "  -   ".into(),
+        }
+    };
+    for s in 0..filas {
+        println!("{s:>3}: {} / {}", rms(&pistas[0], s), rms(&pistas[1], s));
+    }
+    Ok(())
 }
