@@ -266,6 +266,37 @@ Conviene no perderlo de vista al priorizar:
 
 ---
 
+## 6 bis. La transcripción en vivo: dónde flaquea y qué tomar de Notion
+
+*Añadido el 13/10/2026 tras revisar el camino del audio en vivo.*
+
+**Lo que no se puede copiar.** La calidad en vivo de Notion sale de un modelo grande en la nube (AssemblyAI [INF]), que tolera volumen bajo, ruido y vocabulario técnico. dictar_ia usa un modelo local pequeño (Sherpa Kroko, un hilo). Por eso lo que más rinde es **cuidar lo que le llega al modelo**.
+
+**Debilidades encontradas en el código:**
+
+1. **El audio del sistema sale de un solo dispositivo y no sigue los cambios.** `wasapi_src.rs:430` abre el loopback sobre la salida por defecto (`eRender, eConsole`) al empezar. Si el navegador suena por otra salida, o el usuario cambia a auriculares a mitad de clase, la pista Sistema queda en silencio o muere (deuda T-9).
+2. **El micrófono no se transcribe en vivo mientras llegan tramas del sistema** (`grabacion.rs:340-356`). La compuerta depende de que lleguen tramas, no de que haya voz. En reuniones, la voz propia no aparece en vivo.
+3. **Sherpa recibe el audio crudo** (`core/stt/src/sherpa.rs`), sin nivelar ni reducir ruido. Las clases medidas tienen RMS de 0,04–0,05 (≈ −26 dBFS) en Comunicaciones.
+4. **El glosario de la asignatura solo llega a Whisper** (`transcriptor.rs:368`). Sherpa usa `greedy_search` sin palabras clave.
+5. **Las frases cortan tarde:** 1,2 s de pausa o 20 s de duración (`sherpa.rs`, reglas de endpoint).
+6. **No hay aviso en vivo** de pista sin señal, nivel bajo o eco.
+
+**Qué tomar de Notion, y tareas:**
+
+| Tarea | Qué | Inspiración en Notion |
+|---|---|---|
+| **AV-1** | Reabrir la captura cuando cambia el dispositivo por defecto o el actual se invalida, sin perder la línea de tiempo | Chromium/Notion siguen la salida activa del sistema |
+| **AV-2** | Indicador de salud del audio durante la grabación: sin señal, nivel bajo, recorte y eco | Ventana «Estado de altavoces y micrófono» |
+| **AV-3** | Nivelar el audio que va a Sherpa (no el WAV) y llevar el glosario al vivo | Control de ganancia de Chromium y términos clave de los motores en la nube |
+| AV-4 | Transcribir el micrófono en vivo sin eco (cancelación con la pista del sistema como referencia, o compuerta por correlación) | Transcribe ambas fuentes y etiqueta por micrófono activo |
+| AV-5 | Captura del audio de un proceso (`PROCESS_LOOPBACK`) elegido automáticamente por las sesiones de audio activas | `getProcessesAccessingSpeakers` del addon nativo |
+| AV-6 | Reducción de ruido opcional en el micrófono (`online_speech_denoiser` de sherpa-onnx 1.13.8) | Supresión de ruido de Chromium |
+| AV-7 | Ajustar el corte de frases y añadir puntuación en vivo (`online_punctuation`) | Texto por frases y puntuado |
+
+AV-1 a AV-3 forman la primera tanda; sus planes están en `_orquestacion/trabajo/AV-*`. AV-4 a AV-7 dependen de medir con una referencia humana: **10 min de clase transcritos a mano** para calcular el WER (tasa de error por palabra) antes y después de cada cambio.
+
+---
+
 ## 7. Nuevas HU propuestas
 
 Para añadir a [06-historias-de-usuario.md](06-historias-de-usuario.md) si el PO está de acuerdo. HU-14 a HU-18 ya existen en el [plan de Windows](plan-correccion-calidad-windows.md).
