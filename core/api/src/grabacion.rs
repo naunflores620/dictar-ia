@@ -7,11 +7,16 @@
 //! consecuencias.
 
 use crate::eventos::Evento;
+use crate::salud_audio::SaludAudio;
 use crate::transcriptor::TranscriptorVivo;
 use crate::{ApiError, Nucleo, Result};
 use dictar_audio::wav::EscritorPistas;
 use dictar_audio::{CaptureConfig, CaptureSession};
 use dictar_domain::{EpochMs, Session, SessionId, SessionKind, SessionSource, TopicId, Track};
+use serde_json::json;
+use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -29,8 +34,6 @@ pub struct OpcionesGrabacion {
     /// Marca la sesión como confidencial: nunca se enviará a un proveedor
     /// externo, aunque la configuración global lo permita.
     pub solo_local: bool,
-    /// Guardar una captura cada vez que cambia la diapositiva compartida.
-    pub capturar_diapositivas: bool,
 }
 
 impl Default for OpcionesGrabacion {
@@ -41,7 +44,6 @@ impl Default for OpcionesGrabacion {
             titulo: None,
             capturar_sistema: true,
             solo_local: false,
-            capturar_diapositivas: true,
         }
     }
 }
@@ -53,10 +55,6 @@ pub struct Grabacion {
     /// Transcripción en vivo. Al terminar la clase la transcripción ya está
     /// hecha, así que detener solo cuesta el resumen.
     transcriptor: Option<Arc<TranscriptorVivo>>,
-    /// Captura de diapositivas, si se pidió. Vive aparte del audio: si falla,
-    /// la grabación sigue. Nunca al revés.
-    pantalla: Option<dictar_screen::SesionCaptura>,
-    laminas: Option<std::sync::mpsc::Receiver<dictar_screen::SlideCapturada>>,
     // La ruta del audio no se guarda aquí: se deriva del id con
     // `Nucleo::dir_audio`, y tener dos fuentes de verdad para lo mismo es
     // justo como acaban desincronizándose.
@@ -96,6 +94,7 @@ impl Nucleo {
         sesion.topic_id = opts.topic_id.clone();
         sesion.title = opts.titulo.clone();
         sesion.solo_local = opts.solo_local;
+        sesion.language = self.ajustes().idioma_efectivo();
 
         let dir_audio = self.dir_datos().join("audio").join(sesion.id.as_str());
         sesion.audio_path = Some(dir_audio.to_string_lossy().into_owned());
@@ -108,7 +107,8 @@ impl Nucleo {
             ..Default::default()
         };
 
-        let (rx_audio, captura) = dictar_audio::iniciar(cfg)?;
+        let inicio_captura = Instant::now();
+        let usar_vosk = matches!(sesion.language.as_deref(), Some("es" | "en"));
         let (tx_ev, rx_ev) = mpsc::channel::<Evento>();
 
         // Transcripción en vivo. Si el modelo no está descargado se avisa y se
@@ -123,11 +123,13 @@ impl Nucleo {
         let transcriptor = match TranscriptorVivo::iniciar(
             sesion.id.clone(),
             self.dir_datos().join("dictar.db"),
-            self.modelo_configurado(),
+            self.modelo_en_vivo(),
             glosario,
             sesion.language.clone(),
             self.nombre_interlocutor(&sesion),
             tx_ev.clone(),
+            inicio_captura,
+            dir_audio.join("stt_metrics.jsonl"),
         ) {
             Ok(t) => Some(Arc::new(t)),
             Err(e) => {
@@ -140,6 +142,21 @@ impl Nucleo {
             }
         };
 
+        // En Windows Español, TranscriptorVivo espera a que el modelo streaming
+        // esté cargado. Abrimos WASAPI después de ese punto, para que la clase
+        // no empiece con decenas de segundos de transcripción atrasada.
+        let (rx_audio, captura) = dictar_audio::iniciar(cfg)?;
+        let inicio_captura = Instant::now();
+        if let Some(t) = &transcriptor {
+            t.marcar_inicio_captura(inicio_captura);
+        }
+        sesion.started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(i64::MAX as u128) as i64;
+        self.con_db(|db| db.actualizar_sesion(&sesion))?;
+
         let parar = Arc::new(AtomicBool::new(false));
         let inicio = Instant::now();
 
@@ -148,10 +165,21 @@ impl Nucleo {
             let parar = parar.clone();
             let trans = transcriptor.clone();
             let tx_hilo = tx_ev.clone();
+            let priorizar_sistema = opts.capturar_sistema;
+            let capturar_sistema = opts.capturar_sistema;
             std::thread::Builder::new()
                 .name("dictar-escritura".into())
                 .spawn(move || {
-                    if let Err(e) = bucle_escritura(dir, rx_audio, tx_hilo.clone(), parar, trans) {
+                    if let Err(e) = bucle_escritura(
+                        dir,
+                        rx_audio,
+                        tx_hilo.clone(),
+                        parar,
+                        trans,
+                        priorizar_sistema,
+                        usar_vosk,
+                        SaludAudio::nueva(inicio, capturar_sistema),
+                    ) {
                         tracing::error!(error = %e, "el hilo de escritura falló");
                         let _ = tx_hilo.send(Evento::Error {
                             mensaje: e.to_string(),
@@ -164,33 +192,10 @@ impl Nucleo {
                 .map_err(|e| ApiError::Config(e.to_string()))?
         };
 
-        // La captura de pantalla es opcional y no puede tumbar la grabación:
-        // si falla —no hay servidor gráfico, el portal deniega el permiso— se
-        // avisa y se sigue grabando el audio, que es lo importante.
-        let (laminas, pantalla) = if opts.capturar_diapositivas {
-            match dictar_screen::iniciar(
-                dir_audio.join("diapositivas"),
-                dictar_screen::ConfigCaptura {
-                    region: self.region_captura(),
-                    ..Default::default()
-                },
-            ) {
-                Ok((rx, ses)) => (Some(rx), Some(ses)),
-                Err(e) => {
-                    tracing::warn!(error = %e, "sin captura de diapositivas; se graba solo el audio");
-                    (None, None)
-                }
-            }
-        } else {
-            (None, None)
-        };
-
         let id = sesion.id.clone();
         *self.grabacion.lock().unwrap() = Some(Grabacion {
             session_id: id.clone(),
             transcriptor,
-            pantalla,
-            laminas,
             captura: Some(captura),
             parar,
             hilo: Some(hilo),
@@ -213,30 +218,6 @@ impl Nucleo {
         // los últimos segundos se perderían.
         if let Some(c) = grab.captura.take() {
             let _ = c.detener();
-        }
-        if let Some(p) = grab.pantalla.take() {
-            p.detener();
-        }
-
-        // Las diapositivas se vuelcan a la base al cerrar, no según llegan:
-        // durante la clase el hilo de escritura no debe tocar SQLite, que es
-        // donde la interfaz está leyendo.
-        let mut laminas = 0;
-        if let Some(rx) = grab.laminas.take() {
-            while let Ok(s) = rx.try_recv() {
-                let ruta = s.ruta.to_string_lossy().into_owned();
-                if self
-                    .con_db(|db| {
-                        db.insertar_diapositiva(&grab.session_id, &ruta, s.ts_ms, &s.phash)
-                    })
-                    .is_ok()
-                {
-                    laminas += 1;
-                }
-            }
-        }
-        if laminas > 0 {
-            tracing::info!(laminas, "diapositivas guardadas");
         }
         grab.parar.store(true, Ordering::SeqCst);
         if let Some(h) = grab.hilo.take() {
@@ -284,10 +265,8 @@ impl Nucleo {
 
     /// Guarda una captura de la pantalla en la sesión que se está grabando.
     ///
-    /// Es la vía manual: el usuario decide el momento, así que el encuadre y
-    /// la lámina son los correctos por definición. La detección automática
-    /// nunca acertará siempre —hay clases sin diapositivas y presentaciones
-    /// con vídeo dentro—, y esta opción no depende de ella.
+    /// Es la vía manual: el usuario decide el momento. No se toman capturas
+    /// automáticas durante la grabación.
     pub fn capturar_diapositiva(&self) -> Result<PathBuf> {
         let g = self.grabacion.lock().unwrap();
         let Some(grab) = g.as_ref() else {
@@ -317,12 +296,16 @@ impl Nucleo {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bucle_escritura(
     dir: PathBuf,
     rx: Receiver<dictar_audio::AudioFrame>,
     tx: Sender<Evento>,
     parar: Arc<AtomicBool>,
     transcriptor: Option<Arc<TranscriptorVivo>>,
+    priorizar_sistema: bool,
+    usar_vosk: bool,
+    mut salud: SaludAudio,
 ) -> Result<()> {
     use dictar_vad::segmentador::Segmentador;
     use std::collections::HashMap;
@@ -337,6 +320,10 @@ fn bucle_escritura(
     let mut nivel_sis = 0.0f32;
     let mut ultimo_evento = Instant::now();
     let mut ultimo_flush = Instant::now();
+    let mut ultimo_borrador: HashMap<Track, Instant> = HashMap::new();
+    let inicio_transcripcion = Instant::now();
+    let mut ultima_trama_sistema: Option<Instant> = None;
+    let mut metricas_captura = HashMap::<Track, VentanaCaptura>::new();
 
     loop {
         // Espera acotada: permite comprobar la señal de parada aunque una pista
@@ -346,15 +333,84 @@ fn bucle_escritura(
                 // Lo primero, siempre: a disco. La transcripción va después y
                 // puede fallar; el audio no.
                 escritor.escribir(&frame)?;
+                metricas_captura
+                    .entry(frame.track)
+                    .or_default()
+                    .registrar(&frame);
 
-                if let Some(t) = &transcriptor {
-                    let seg = segmentadores
-                        .entry(frame.track)
-                        .or_insert_with(|| Segmentador::nuevo(frame.track));
+                // Con el audio ya en disco. Los avisos son un lujo de la
+                // interfaz: nunca pueden ir antes que la escritura.
+                for cambio in salud.trama(&frame, Instant::now()) {
+                    let _ = tx.send(cambio.a_evento());
+                }
 
-                    for cerrado in seg.empujar(&frame.pcm, frame.timestamp_ms) {
-                        if cerrado.merece_transcribirse() {
+                if frame.track == Track::System {
+                    ultima_trama_sistema = Some(Instant::now());
+                }
+
+                // Cuando hay audio de escritorio, esa pista es la referencia
+                // limpia del profesor. El micrófono puede traer la misma voz
+                // retrasada por los altavoces: se conserva completo en WAV,
+                // pero no se transcribe en vivo mientras exista la pista de
+                // sistema. La pasada final procesa ambas y elimina la
+                // diafonía por contenido. Si el loopback no aparece al
+                // arrancar o deja de entregar tramas, el micrófono queda
+                // como respaldo.
+                let transcribir_pista = match frame.track {
+                    Track::System => true,
+                    Track::Mic => {
+                        !priorizar_sistema
+                            || (ultima_trama_sistema
+                                .map(|t| t.elapsed() >= Duration::from_secs(1))
+                                .unwrap_or(true)
+                                && inicio_transcripcion.elapsed() >= Duration::from_secs(1))
+                    }
+                };
+
+                // El motor incremental (Sherpa/Vosk) recibe el micrófono
+                // siempre: la compuerta de arriba era para no pagar un segundo
+                // Whisper sobre el eco, y el filtro de eco del transcriptor
+                // (`ContextoEco`) ya descarta las frases que repiten al sistema.
+                // Sin esto, el micrófono no tenía ni una frase en vivo y el
+                // cierre lo transcribía entero por lotes. Los segmentos VAD
+                // (camino Whisper) conservan la compuerta.
+                if usar_vosk && !transcribir_pista {
+                    if let Some(t) = &transcriptor {
+                        t.encolar_bloque(frame.clone());
+                    }
+                }
+
+                if transcribir_pista {
+                    if let Some(t) = &transcriptor {
+                        if usar_vosk {
+                            t.encolar_bloque(frame.clone());
+                        }
+                        let seg = segmentadores
+                            .entry(frame.track)
+                            .or_insert_with(|| Segmentador::nuevo(frame.track));
+
+                        let cerrados = seg.empujar(&frame.pcm, frame.timestamp_ms);
+                        let cerro_segmento = !cerrados.is_empty();
+                        for cerrado in cerrados {
+                            ultimo_borrador.remove(&frame.track);
                             t.encolar(cerrado);
+                        }
+
+                        let reloj = Instant::now();
+                        let vencio = ultimo_borrador
+                            .get(&frame.track)
+                            .map(|t| t.elapsed() >= Duration::from_secs(3))
+                            .unwrap_or(true);
+                        // La vista previa clona el buffer acumulado. Si Whisper
+                        // sigue ocupado, la hipótesis se descartaría de todos
+                        // modos; comprobar pendientes primero evita esa copia.
+                        if vencio && !cerro_segmento && t.pendientes() == 0 {
+                            if let Some(vista) = seg.vista_previa() {
+                                if vista.duracion_ms() >= 2_000 && vista.merece_transcribirse() {
+                                    t.encolar_hipotesis(vista);
+                                    ultimo_borrador.insert(frame.track, reloj);
+                                }
+                            }
                         }
                     }
                 }
@@ -373,6 +429,14 @@ fn bucle_escritura(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
+        // En cada vuelta, también cuando `recv_timeout` venció sin trama:
+        // «el micrófono dejó de enviar» y «el loopback está mudo» son, por
+        // definición, avisos de que no llega nada. El vaciado de después del
+        // bucle no alimenta esto: ya no hay interfaz a la que avisar.
+        for cambio in salud.tick(Instant::now()) {
+            let _ = tx.send(cambio.a_evento());
+        }
+
         if ultimo_evento.elapsed() >= Duration::from_millis(150) {
             let _ = tx.send(Evento::Niveles {
                 mic: nivel_mic,
@@ -388,6 +452,7 @@ fn bucle_escritura(
         // la clase entera.
         if ultimo_flush.elapsed() >= Duration::from_secs(5) {
             escritor.sincronizar()?;
+            volcar_metricas_captura(&dir, &mut metricas_captura);
             ultimo_flush = Instant::now();
         }
 
@@ -408,25 +473,60 @@ fn bucle_escritura(
     // ser el resumen del profesor o el acuerdo final con el cliente.
     while let Ok(frame) = rx.try_recv() {
         escritor.escribir(&frame)?;
-        if let Some(t) = &transcriptor {
-            let seg = segmentadores
-                .entry(frame.track)
-                .or_insert_with(|| Segmentador::nuevo(frame.track));
-            for cerrado in seg.empujar(&frame.pcm, frame.timestamp_ms) {
-                if cerrado.merece_transcribirse() {
+        metricas_captura
+            .entry(frame.track)
+            .or_default()
+            .registrar(&frame);
+        if frame.track == Track::System {
+            ultima_trama_sistema = Some(Instant::now());
+        }
+        let transcribir_pista = match frame.track {
+            Track::System => true,
+            Track::Mic => {
+                !priorizar_sistema
+                    || (ultima_trama_sistema
+                        .map(|t| t.elapsed() >= Duration::from_secs(1))
+                        .unwrap_or(true)
+                        && inicio_transcripcion.elapsed() >= Duration::from_secs(1))
+            }
+        };
+        if transcribir_pista {
+            if let Some(t) = &transcriptor {
+                let seg = segmentadores
+                    .entry(frame.track)
+                    .or_insert_with(|| Segmentador::nuevo(frame.track));
+                let cerrados = seg.empujar(&frame.pcm, frame.timestamp_ms);
+                let cerro_segmento = !cerrados.is_empty();
+                for cerrado in cerrados {
+                    ultimo_borrador.remove(&frame.track);
                     t.encolar(cerrado);
+                }
+                let reloj = Instant::now();
+                let vencio = ultimo_borrador
+                    .get(&frame.track)
+                    .map(|t| t.elapsed() >= Duration::from_secs(3))
+                    .unwrap_or(true);
+                // Mismo control que en el bucle principal: no copiar una vista
+                // que se descartaría porque hay inferencia pendiente.
+                if vencio && !cerro_segmento && t.pendientes() == 0 {
+                    if let Some(vista) = seg.vista_previa() {
+                        if vista.duracion_ms() >= 2_000 && vista.merece_transcribirse() {
+                            t.encolar_hipotesis(vista);
+                            ultimo_borrador.insert(frame.track, reloj);
+                        }
+                    }
                 }
             }
         }
     }
 
+    volcar_metricas_captura(&dir, &mut metricas_captura);
+
     // Y los segmentos a medias.
     if let Some(t) = &transcriptor {
         for seg in segmentadores.values_mut() {
             if let Some(ultimo) = seg.finalizar() {
-                if ultimo.merece_transcribirse() {
-                    t.encolar(ultimo);
-                }
+                t.encolar(ultimo);
             }
         }
     }
@@ -434,6 +534,104 @@ fn bucle_escritura(
     let rutas = escritor.cerrar()?;
     tracing::info!(archivos = rutas.len(), dir = %dir.display(), "audio cerrado");
     Ok(())
+}
+
+/// Aggregate capture health for one window. It stores no audio or transcript.
+#[derive(Default)]
+struct VentanaCaptura {
+    tramas: u64,
+    muestras: u64,
+    suma_cuadrados: f64,
+    pico: f32,
+    muestras_recortadas: u64,
+    tramas_silenciosas: u64,
+    duracion_audio_ms: u64,
+    inicio_audio_ms: Option<i64>,
+    fin_audio_ms: i64,
+}
+
+impl VentanaCaptura {
+    fn registrar(&mut self, frame: &dictar_audio::AudioFrame) {
+        const UMBRAL_SILENCIO_RMS: f64 = 0.003;
+        self.tramas += 1;
+        self.duracion_audio_ms += frame.duracion_ms().max(0) as u64;
+        self.inicio_audio_ms.get_or_insert(frame.timestamp_ms);
+        self.fin_audio_ms = self
+            .fin_audio_ms
+            .max(frame.timestamp_ms.saturating_add(frame.duracion_ms()));
+
+        let mut energia = 0.0f64;
+        let mut pico = 0.0f32;
+        let mut recortadas = 0u64;
+        for muestra in &frame.pcm {
+            let absoluta = if muestra.is_finite() {
+                muestra.abs()
+            } else {
+                0.0
+            };
+            energia += (absoluta as f64).powi(2);
+            pico = pico.max(absoluta);
+            recortadas += u64::from(absoluta >= 0.999);
+        }
+        if !frame.pcm.is_empty() && (energia / frame.pcm.len() as f64).sqrt() < UMBRAL_SILENCIO_RMS
+        {
+            self.tramas_silenciosas += 1;
+        }
+        self.muestras += frame.pcm.len() as u64;
+        self.suma_cuadrados += energia;
+        self.pico = self.pico.max(pico);
+        self.muestras_recortadas += recortadas;
+    }
+
+    fn a_json(&self, pista: Track) -> Option<serde_json::Value> {
+        if self.tramas == 0 {
+            return None;
+        }
+        let muestras = self.muestras.max(1);
+        let dato = json!({
+            "tipo": "captura",
+            "pista": pista.as_str(),
+            "inicio_audio_ms": self.inicio_audio_ms.unwrap_or(0),
+            "fin_audio_ms": self.fin_audio_ms,
+            "tramas": self.tramas,
+            "muestras": self.muestras,
+            "duracion_audio_ms": self.duracion_audio_ms,
+            "nivel_rms": (self.suma_cuadrados / muestras as f64).sqrt(),
+            "pico_abs": self.pico,
+            "muestras_recortadas": self.muestras_recortadas,
+            "proporcion_muestras_recortadas": self.muestras_recortadas as f64 / muestras as f64,
+            "tramas_casi_silencio": self.tramas_silenciosas,
+            "proporcion_tramas_casi_silencio": self.tramas_silenciosas as f64 / self.tramas as f64,
+        });
+        Some(dato)
+    }
+}
+
+/// Appends per-track signal metrics every five seconds. Failures are logged
+/// but never stop writing the source WAV files.
+fn volcar_metricas_captura(dir: &std::path::Path, metricas: &mut HashMap<Track, VentanaCaptura>) {
+    let ruta = dir.join("capture_metrics.jsonl");
+    for (pista, ventana) in metricas.iter_mut() {
+        let Some(dato) = ventana.a_json(*pista) else {
+            continue;
+        };
+        let resultado = (|| -> std::io::Result<()> {
+            let mut linea = serde_json::to_vec(&dato).map_err(std::io::Error::other)?;
+            linea.push(b'\n');
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&ruta)?
+                .write_all(&linea)?;
+            Ok(())
+        })();
+        match resultado {
+            Ok(()) => *ventana = VentanaCaptura::default(),
+            Err(error) => {
+                tracing::warn!(error = %error, ruta = %ruta.display(), "failed to write capture metrics")
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `nucleo`
+// These functions are ignored because they are not marked as `pub`: `normalizar_idioma_configurado`, `nucleo`, `pista_desde_texto`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
 
 /// Abre el almacén del usuario. Debe llamarse una vez al arrancar.
@@ -57,8 +57,10 @@ Future<List<ProveedorDto>> listarProveedores() =>
 
 /// Guarda la clave de API de un proveedor, o la borra con `None`.
 ///
-/// Escribe en `~/.config/dictar_ia/.env` con permisos 0600. Surte efecto en la
-/// siguiente petición, sin reiniciar: el router se construye en cada uso.
+/// Se intenta primero el llavero del sistema; si no hay uno disponible, se
+/// recurre a `~/.config/dictar_ia/.env` con permisos 0600. El texto devuelto
+/// dice cuál de los dos se usó (ver `Origen`). Surte efecto en la siguiente
+/// petición, sin reiniciar: el router se construye en cada uso.
 Future<String> guardarClave({required String proveedor, String? clave}) =>
     Nucleo.instance.api.cratePuenteGuardarClave(
       proveedor: proveedor,
@@ -98,11 +100,11 @@ Future<AjustesDto> obtenerAjustes() =>
 Future<void> guardarAjustes({
   String? carpetaApuntes,
   String? modelo,
-  required bool capturarDiapositivas,
+  String? idiomaTranscripcion,
 }) => Nucleo.instance.api.cratePuenteGuardarAjustes(
   carpetaApuntes: carpetaApuntes,
   modelo: modelo,
-  capturarDiapositivas: capturarDiapositivas,
+  idiomaTranscripcion: idiomaTranscripcion,
 );
 
 /// Carpetas de sincronización detectadas en el equipo, para sugerirlas.
@@ -143,7 +145,6 @@ Future<String> iniciarGrabacion({
   String? topicId,
   String? titulo,
   required bool capturarSistema,
-  required bool capturarDiapositivas,
   required bool soloLocal,
   required PlatformInt64 ahoraMs,
 }) => Nucleo.instance.api.cratePuenteIniciarGrabacion(
@@ -151,7 +152,6 @@ Future<String> iniciarGrabacion({
   topicId: topicId,
   titulo: titulo,
   capturarSistema: capturarSistema,
-  capturarDiapositivas: capturarDiapositivas,
   soloLocal: soloLocal,
   ahoraMs: ahoraMs,
 );
@@ -194,6 +194,33 @@ Future<ProcesadaDto> procesarSesion({
   ahoraMs: ahoraMs,
 );
 
+/// Cambia el nombre de un participante en una pista de la sesión. Devuelve
+/// cuántas frases cambiaron. Si `a` es el nombre de otro participante de esa
+/// pista, los dos quedan fusionados.
+Future<PlatformInt64> renombrarHablante({
+  required String sessionId,
+  required String pista,
+  required String de,
+  required String a,
+}) => Nucleo.instance.api.cratePuenteRenombrarHablante(
+  sessionId: sessionId,
+  pista: pista,
+  de: de,
+  a: a,
+);
+
+/// Vuelve a generar los apuntes con la transcripción actual, sin volver a
+/// transcribir. Cuesta una generación de notas.
+///
+/// Como `procesar_sesion`, es una llamada larga y va en un aislado propio en Dart.
+Future<ProcesadaDto> regenerarNotas({
+  required String sessionId,
+  required PlatformInt64 ahoraMs,
+}) => Nucleo.instance.api.cratePuenteRegenerarNotas(
+  sessionId: sessionId,
+  ahoraMs: ahoraMs,
+);
+
 class AjustesDto {
   /// Lo que el usuario configuró, o `None` si nunca tocó nada.
   final String? carpetaApuntes;
@@ -202,13 +229,13 @@ class AjustesDto {
   /// Documentos. La interfaz enseña esta.
   final String? carpetaEfectiva;
   final String? modelo;
-  final bool capturarDiapositivas;
+  final String? idiomaTranscripcion;
 
   const AjustesDto({
     this.carpetaApuntes,
     this.carpetaEfectiva,
     this.modelo,
-    required this.capturarDiapositivas,
+    this.idiomaTranscripcion,
   });
 
   @override
@@ -216,7 +243,7 @@ class AjustesDto {
       carpetaApuntes.hashCode ^
       carpetaEfectiva.hashCode ^
       modelo.hashCode ^
-      capturarDiapositivas.hashCode;
+      idiomaTranscripcion.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -226,7 +253,7 @@ class AjustesDto {
           carpetaApuntes == other.carpetaApuntes &&
           carpetaEfectiva == other.carpetaEfectiva &&
           modelo == other.modelo &&
-          capturarDiapositivas == other.capturarDiapositivas;
+          idiomaTranscripcion == other.idiomaTranscripcion;
 }
 
 class AvisoDto {
@@ -278,7 +305,12 @@ class AvisoDto {
 /// código mucho más simple de consumir, y la interfaz solo hace un `switch`
 /// sobre `tipo`.
 class EventoDto {
-  /// "niveles" | "frase" | "progreso" | "terminada" | "error"
+  /// "niveles" | "frase" | "progreso" | "terminada" | "salud" | "error"
+  ///
+  /// El tipo "salud" reutiliza campos con otro significado, para no tener
+  /// que regenerar el puente: `track` es la pista, `fase` el código del
+  /// aviso, `definitiva` si está activo, `fraccion` la medida que lo
+  /// disparó y `mensaje` el texto para el usuario.
   final String tipo;
   final double nivelMic;
   final double nivelSistema;
@@ -287,6 +319,7 @@ class EventoDto {
   final String? texto;
   final PlatformInt64 inicioMs;
   final PlatformInt64 finMs;
+  final PlatformInt64 estableHastaUtf16;
   final bool definitiva;
   final String? fase;
   final double fraccion;
@@ -304,6 +337,7 @@ class EventoDto {
     this.texto,
     required this.inicioMs,
     required this.finMs,
+    required this.estableHastaUtf16,
     required this.definitiva,
     this.fase,
     required this.fraccion,
@@ -326,6 +360,7 @@ class EventoDto {
       texto.hashCode ^
       inicioMs.hashCode ^
       finMs.hashCode ^
+      estableHastaUtf16.hashCode ^
       definitiva.hashCode ^
       fase.hashCode ^
       fraccion.hashCode ^
@@ -347,6 +382,7 @@ class EventoDto {
           texto == other.texto &&
           inicioMs == other.inicioMs &&
           finMs == other.finMs &&
+          estableHastaUtf16 == other.estableHastaUtf16 &&
           definitiva == other.definitiva &&
           fase == other.fase &&
           fraccion == other.fraccion &&

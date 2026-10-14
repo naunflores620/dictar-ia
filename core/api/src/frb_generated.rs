@@ -27,7 +27,7 @@
 // Section: imports
 
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
-use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
+use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
 use flutter_rust_bridge::{Handler, IntoIntoDart};
 
 // Section: boilerplate
@@ -38,7 +38,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 173081598;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 344934960;
 
 // Section: executor
 
@@ -560,14 +560,14 @@ fn wire__crate__puente__guardar_ajustes_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_carpeta_apuntes = <Option<String>>::sse_decode(&mut deserializer);
             let api_modelo = <Option<String>>::sse_decode(&mut deserializer);
-            let api_capturar_diapositivas = <bool>::sse_decode(&mut deserializer);
+            let api_idioma_transcripcion = <Option<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, String>((move || {
                     let output_ok = crate::puente::guardar_ajustes(
                         api_carpeta_apuntes,
                         api_modelo,
-                        api_capturar_diapositivas,
+                        api_idioma_transcripcion,
                     )?;
                     Ok(output_ok)
                 })())
@@ -701,7 +701,6 @@ fn wire__crate__puente__iniciar_grabacion_impl(
             let api_topic_id = <Option<String>>::sse_decode(&mut deserializer);
             let api_titulo = <Option<String>>::sse_decode(&mut deserializer);
             let api_capturar_sistema = <bool>::sse_decode(&mut deserializer);
-            let api_capturar_diapositivas = <bool>::sse_decode(&mut deserializer);
             let api_solo_local = <bool>::sse_decode(&mut deserializer);
             let api_ahora_ms = <i64>::sse_decode(&mut deserializer);
             deserializer.end();
@@ -712,7 +711,6 @@ fn wire__crate__puente__iniciar_grabacion_impl(
                         api_topic_id,
                         api_titulo,
                         api_capturar_sistema,
-                        api_capturar_diapositivas,
                         api_solo_local,
                         api_ahora_ms,
                     )?;
@@ -1081,6 +1079,81 @@ fn wire__crate__puente__procesar_sesion_impl(
         },
     )
 }
+fn wire__crate__puente__regenerar_notas_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "regenerar_notas",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_session_id = <String>::sse_decode(&mut deserializer);
+            let api_ahora_ms = <i64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::puente::regenerar_notas(api_session_id, api_ahora_ms)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__puente__renombrar_hablante_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "renombrar_hablante",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_session_id = <String>::sse_decode(&mut deserializer);
+            let api_pista = <String>::sse_decode(&mut deserializer);
+            let api_de = <String>::sse_decode(&mut deserializer);
+            let api_a = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::puente::renombrar_hablante(
+                        api_session_id,
+                        api_pista,
+                        api_de,
+                        api_a,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__puente__reproducir_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1197,12 +1270,12 @@ impl SseDecode for crate::puente::AjustesDto {
         let mut var_carpetaApuntes = <Option<String>>::sse_decode(deserializer);
         let mut var_carpetaEfectiva = <Option<String>>::sse_decode(deserializer);
         let mut var_modelo = <Option<String>>::sse_decode(deserializer);
-        let mut var_capturarDiapositivas = <bool>::sse_decode(deserializer);
+        let mut var_idiomaTranscripcion = <Option<String>>::sse_decode(deserializer);
         return crate::puente::AjustesDto {
             carpeta_apuntes: var_carpetaApuntes,
             carpeta_efectiva: var_carpetaEfectiva,
             modelo: var_modelo,
-            capturar_diapositivas: var_capturarDiapositivas,
+            idioma_transcripcion: var_idiomaTranscripcion,
         };
     }
 }
@@ -1247,6 +1320,7 @@ impl SseDecode for crate::puente::EventoDto {
         let mut var_texto = <Option<String>>::sse_decode(deserializer);
         let mut var_inicioMs = <i64>::sse_decode(deserializer);
         let mut var_finMs = <i64>::sse_decode(deserializer);
+        let mut var_estableHastaUtf16 = <i64>::sse_decode(deserializer);
         let mut var_definitiva = <bool>::sse_decode(deserializer);
         let mut var_fase = <Option<String>>::sse_decode(deserializer);
         let mut var_fraccion = <f32>::sse_decode(deserializer);
@@ -1263,6 +1337,7 @@ impl SseDecode for crate::puente::EventoDto {
             texto: var_texto,
             inicio_ms: var_inicioMs,
             fin_ms: var_finMs,
+            estable_hasta_utf16: var_estableHastaUtf16,
             definitiva: var_definitiva,
             fase: var_fase,
             fraccion: var_fraccion,
@@ -1645,9 +1720,11 @@ fn pde_ffi_dispatcher_primary_impl(
         29 => wire__crate__puente__pausar_reproduccion_impl(port, ptr, rust_vec_len, data_len),
         30 => wire__crate__puente__probar_proveedor_impl(port, ptr, rust_vec_len, data_len),
         31 => wire__crate__puente__procesar_sesion_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__puente__reproducir_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__puente__saltar_reproduccion_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__puente__sesiones_interrumpidas_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__puente__regenerar_notas_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__puente__renombrar_hablante_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__puente__reproducir_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__puente__saltar_reproduccion_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__puente__sesiones_interrumpidas_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1673,7 +1750,7 @@ impl flutter_rust_bridge::IntoDart for crate::puente::AjustesDto {
             self.carpeta_apuntes.into_into_dart().into_dart(),
             self.carpeta_efectiva.into_into_dart().into_dart(),
             self.modelo.into_into_dart().into_dart(),
-            self.capturar_diapositivas.into_into_dart().into_dart(),
+            self.idioma_transcripcion.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -1717,6 +1794,7 @@ impl flutter_rust_bridge::IntoDart for crate::puente::EventoDto {
             self.texto.into_into_dart().into_dart(),
             self.inicio_ms.into_into_dart().into_dart(),
             self.fin_ms.into_into_dart().into_dart(),
+            self.estable_hasta_utf16.into_into_dart().into_dart(),
             self.definitiva.into_into_dart().into_dart(),
             self.fase.into_into_dart().into_dart(),
             self.fraccion.into_into_dart().into_dart(),
@@ -1894,7 +1972,7 @@ impl SseEncode for crate::puente::AjustesDto {
         <Option<String>>::sse_encode(self.carpeta_apuntes, serializer);
         <Option<String>>::sse_encode(self.carpeta_efectiva, serializer);
         <Option<String>>::sse_encode(self.modelo, serializer);
-        <bool>::sse_encode(self.capturar_diapositivas, serializer);
+        <Option<String>>::sse_encode(self.idioma_transcripcion, serializer);
     }
 }
 
@@ -1929,6 +2007,7 @@ impl SseEncode for crate::puente::EventoDto {
         <Option<String>>::sse_encode(self.texto, serializer);
         <i64>::sse_encode(self.inicio_ms, serializer);
         <i64>::sse_encode(self.fin_ms, serializer);
+        <i64>::sse_encode(self.estable_hasta_utf16, serializer);
         <bool>::sse_encode(self.definitiva, serializer);
         <Option<String>>::sse_encode(self.fase, serializer);
         <f32>::sse_encode(self.fraccion, serializer);
@@ -2207,7 +2286,7 @@ mod io {
     use flutter_rust_bridge::for_generated::byteorder::{
         NativeEndian, ReadBytesExt, WriteBytesExt,
     };
-    use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
+    use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
     use flutter_rust_bridge::{Handler, IntoIntoDart};
 
     // Section: boilerplate
@@ -2231,7 +2310,7 @@ mod web {
     };
     use flutter_rust_bridge::for_generated::wasm_bindgen;
     use flutter_rust_bridge::for_generated::wasm_bindgen::prelude::*;
-    use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
+    use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
     use flutter_rust_bridge::{Handler, IntoIntoDart};
 
     // Section: boilerplate

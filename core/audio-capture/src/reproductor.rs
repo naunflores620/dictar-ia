@@ -42,6 +42,16 @@ pub struct Reproductor {
 impl Reproductor {
     /// Empieza a reproducir la sesión guardada en `dir`, desde `desde_ms`.
     pub fn iniciar(dir: &Path, desde_ms: i64) -> Result<Self> {
+        Self::iniciar_con_pausa(dir, desde_ms, false)
+    }
+
+    /// Abre el dispositivo de salida sin avanzar el audio hasta que se quite
+    /// la pausa. Se usa para coordinar reproducción y captura en evaluaciones.
+    pub fn iniciar_pausado(dir: &Path, desde_ms: i64) -> Result<Self> {
+        Self::iniciar_con_pausa(dir, desde_ms, true)
+    }
+
+    fn iniciar_con_pausa(dir: &Path, desde_ms: i64, iniciar_pausado: bool) -> Result<Self> {
         let pcm = Arc::new(mezclar(dir)?);
         if pcm.is_empty() {
             return Err(AudioError::Inicio(
@@ -53,7 +63,7 @@ impl Reproductor {
         let inicio = ms_a_muestras(desde_ms).min(total);
 
         let posicion = Arc::new(AtomicUsize::new(inicio));
-        let pausado = Arc::new(AtomicBool::new(false));
+        let pausado = Arc::new(AtomicBool::new(iniciar_pausado));
         let terminado = Arc::new(AtomicBool::new(false));
 
         let (tx_parar, rx_parar) = pw::channel::channel::<()>();

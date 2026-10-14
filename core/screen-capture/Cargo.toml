@@ -16,6 +16,3 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # la usan, más abajo en lib.rs— es lo que permite cruzar el núcleo al móvil.
 [target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
 xcap = "0.0.14"
-
-[dev-dependencies]
-tempfile = "3"

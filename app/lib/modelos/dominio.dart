@@ -51,6 +51,42 @@ enum Pista {
   final String etiquetaPorDefecto;
 }
 
+/// Un aviso sobre la salud del audio mientras se graba: aparece cuando algo
+/// va mal (el sistema no suena, hay eco...) y desaparece cuando se arregla.
+///
+/// No confundir con [Aviso], que son las fechas y compromisos que salen de las
+/// notas.
+class AvisoAudio {
+  const AvisoAudio({
+    required this.pista,
+    required this.codigo,
+    required this.activo,
+    required this.mensaje,
+    this.valor = 0,
+  });
+
+  final Pista pista;
+
+  /// Identificador estable que fija el núcleo: `eco`, `nivel_bajo`,
+  /// `recorte`, `sin_senal_inicio`, `sin_senal_pausa`, `mic_sin_tramas`.
+  final String codigo;
+  final bool activo;
+
+  /// Texto ya redactado por el núcleo, para enseñarlo tal cual.
+  final String mensaje;
+
+  /// Medida que lo disparó. Solo informativa.
+  final double valor;
+
+  /// Un mismo código puede estar activo a la vez en las dos pistas (el
+  /// recorte), así que la identidad es el par.
+  String get clave => '${pista.clave}/$codigo';
+
+  /// Cuando no llega nada, la grabación no sirve; el resto degrada la calidad.
+  bool get esGrave =>
+      codigo.startsWith('sin_senal') || codigo == 'mic_sin_tramas';
+}
+
 enum TipoTopic { asignatura, cliente }
 
 class Topic {
@@ -113,6 +149,7 @@ class Frase {
     required this.pista,
     this.hablante,
     this.definitiva = true,
+    this.estableHasta = 0,
   });
 
   final int inicioMs;
@@ -121,9 +158,13 @@ class Frase {
   final Pista pista;
   final String? hablante;
 
-  /// `false` mientras es la pasada en vivo del modelo pequeño. La interfaz la
-  /// atenúa: es desechable y se sustituye entera al terminar.
+  /// `false` mientras el texto viene de la pasada en vivo del modelo pequeño.
+  /// El texto provisional se distingue de su prefijo estable; toda la frase
+  /// se sustituye o confirma con el procesado final.
   final bool definitiva;
+
+  /// Posición UTF-16 que separa el texto confirmado del provisional.
+  final int estableHasta;
 
   String get quien => hablante ?? pista.etiquetaPorDefecto;
 }

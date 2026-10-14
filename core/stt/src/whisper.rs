@@ -71,6 +71,7 @@ impl Transcriptor {
             params.set_initial_prompt(p);
         }
         params.set_token_timestamps(opts.tiempos_por_palabra);
+        params.set_no_timestamps(opts.sin_marcas_de_tiempo);
 
         // Sin esto, whisper.cpp imprime la transcripción por stdout mientras
         // corre y se mezcla con la salida de la aplicación.
@@ -111,18 +112,25 @@ impl Transcriptor {
                 continue;
             }
 
-            // whisper.cpp da los tiempos en centisegundos.
-            let t0 = estado
-                .full_get_segment_t0(i)
-                .map_err(|e| SttError::Transcripcion(e.to_string()))?;
-            let t1 = estado
-                .full_get_segment_t1(i)
-                .map_err(|e| SttError::Transcripcion(e.to_string()))?;
+            // En modo borrador no se solicitan timestamps. whisper.cpp puede
+            // devolver valores centinela negativos en ese modo; el llamador
+            // debe usar el rango completo del segmento VAD.
+            let (inicio_ms, fin_ms) = if opts.sin_marcas_de_tiempo {
+                (0, 0)
+            } else {
+                let t0 = estado
+                    .full_get_segment_t0(i)
+                    .map_err(|e| SttError::Transcripcion(e.to_string()))?;
+                let t1 = estado
+                    .full_get_segment_t1(i)
+                    .map_err(|e| SttError::Transcripcion(e.to_string()))?;
+                (t0 * 10, t1 * 10)
+            };
 
             out.push(Fragmento {
                 texto: texto.to_owned(),
-                inicio_ms: t0 * 10,
-                fin_ms: t1 * 10,
+                inicio_ms,
+                fin_ms,
                 confianza: confianza_segmento(&mut estado, i),
             });
         }

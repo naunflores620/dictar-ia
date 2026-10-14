@@ -67,7 +67,7 @@ audio**. Esa es la prueba de fuego; todo lo demás es acabado.
 
 Las dos capacidades que solo existen porque las clases son online.
 
-- **Captura automática de diapositivas**: muestreo, dHash, deduplicación, anclaje a `ts_ms`.
+- **Captura manual de diapositivas**: captura bajo demanda, con región elegida y anclaje a `ts_ms`.
 - **OCR** de las capturas → texto indexable y alimento del glosario.
 - Apuntes con las diapositivas intercaladas en su posición correcta.
 - **Transcripción en vivo** (`whisper small` + LocalAgreement-2), con interruptor para apagarla

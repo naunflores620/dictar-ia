@@ -116,6 +116,12 @@ jobs:
       # el enlazador de MSVC, que ese mismo build.rs necesita para compilar
       # whisper.cpp, ya vienen instalados en el runner.
       LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+      # Sin esto, whisper.cpp se compila en Windows sin AVX2 y —peor— sin
+      # `/O2`, porque el crate `cmake` pisa los flags de release que CMake
+      # pone por defecto en MSVC. El build pasa en verde igual y el binario
+      # funciona, solo que once veces más lento: medido, 368 s contra 32 s
+      # transcribiendo el mismo audio. El porqué completo, en el archivo.
+      CMAKE_TOOLCHAIN_FILE: '${{ github.workspace }}\packaging\windows\msvc-toolchain.cmake'
     steps:
       - uses: actions/checkout@v4
 

@@ -304,9 +304,9 @@ fn bucle(
         // Negativo es error; cero es que se agotó la espera sin audio, que en
         // silencio es normal y no tiene nada de excepcional.
         if tramas < 0 {
-            // A diferencia de WASAPI, aquí solo hay una pista: si muere, la
-            // sesión termina. No hay ninguna otra con la que seguir, así que
-            // `alguna_pista_sigue_viva` no tendría a quién preguntar.
+            // A diferencia de WASAPI, que reabre la pista cuando pierde su
+            // dispositivo (AV-1), aquí solo hay una y no se reabre: si
+            // muere, la sesión termina.
             tracing::error!(
                 error = %texto_de_resultado(tramas),
                 "la lectura de AAudio falló, se termina la sesión"

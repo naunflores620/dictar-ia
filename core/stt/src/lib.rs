@@ -9,9 +9,14 @@
 //!    vivo con LocalAgreement-2.
 
 pub mod acuerdo;
+pub mod diarizacion;
 pub mod limpieza;
 pub mod modelos;
+pub mod nivel;
+pub mod vosk;
 pub mod whisper;
+#[cfg(target_os = "windows")]
+pub mod sherpa;
 
 use dictar_domain::TsMs;
 
@@ -25,6 +30,10 @@ pub enum SttError {
 
     #[error("la transcripción falló: {0}")]
     Transcripcion(String),
+
+    /// La función existe en todas las plataformas, pero esta no la implementa.
+    #[error("no disponible en esta plataforma: {0}")]
+    NoSoportada(String),
 
     #[error("error de E/S: {0}")]
     Io(#[from] std::io::Error),
@@ -47,9 +56,9 @@ pub struct Fragmento {
 pub struct SttOpciones {
     /// Código ISO del idioma, o `None` para detección automática.
     ///
-    /// Fijarlo importa: en una clase en español con términos en inglés, la
-    /// detección automática a veces cambia de idioma a mitad de segmento y
-    /// devuelve una traducción en lugar de una transcripción.
+    /// Se puede fijar si se conoce el idioma de la grabación. `None` conserva
+    /// la detección automática; el idioma de la interfaz no debe forzar el del
+    /// audio, que puede ser distinto.
     pub idioma: Option<String>,
 
     /// Vocabulario de la asignatura o del cliente.
@@ -66,12 +75,17 @@ pub struct SttOpciones {
     pub hilos: i32,
     /// Marcas de tiempo por palabra. Cuestan tiempo; solo para la pasada final.
     pub tiempos_por_palabra: bool,
+    /// Evita generar tokens de timestamp en borradores que solo se muestran
+    /// sobre el rango VAD completo y no necesitan alineación interna.
+    pub sin_marcas_de_tiempo: bool,
 }
 
 impl Default for SttOpciones {
     fn default() -> Self {
         Self {
-            idioma: Some("es".to_owned()),
+            // Una clase puede ser en inglés aunque la interfaz esté en español.
+            // Forzar `es` traduce y deforma el audio en vez de transcribirlo.
+            idioma: None,
             glosario: None,
             contexto_previo: None,
             // Dejar un núcleo libre: durante una clase online el equipo también
@@ -82,6 +96,7 @@ impl Default for SttOpciones {
                 - 1)
             .max(1),
             tiempos_por_palabra: false,
+            sin_marcas_de_tiempo: false,
         }
     }
 }
@@ -89,11 +104,10 @@ impl Default for SttOpciones {
 impl SttOpciones {
     /// Ajustes para la transcripción durante la clase.
     ///
-    /// Se dejan tres núcleos libres, no la mitad. Con la mitad la cola no
-    /// llegaba a seguir el ritmo: hay **dos pistas**, así que hay que
-    /// transcribir el doble de audio que dura la clase, y al detener quedaba
-    /// un minuto y medio de trabajo pendiente. Con tres libres, el equipo
-    /// sigue holgado para la videollamada y la cola no se acumula.
+    /// Se limita el reconocedor a dos procesadores lógicos para reducir la
+    /// competencia con el video y la captura durante sesiones largas. El
+    /// trabajo puede tardar más; las métricas de inferencia deben confirmar
+    /// que el atraso sigue siendo aceptable en una captura real.
     pub fn en_vivo() -> Self {
         let nucleos = std::thread::available_parallelism()
             .map(|n| n.get() as i32)
@@ -101,7 +115,8 @@ impl SttOpciones {
 
         Self {
             tiempos_por_palabra: false,
-            hilos: (nucleos - 3).max(1),
+            sin_marcas_de_tiempo: true,
+            hilos: nucleos.clamp(1, 2),
             ..Default::default()
         }
     }
@@ -110,6 +125,7 @@ impl SttOpciones {
     pub fn definitiva() -> Self {
         Self {
             tiempos_por_palabra: true,
+            sin_marcas_de_tiempo: false,
             ..Default::default()
         }
     }
@@ -134,31 +150,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn por_defecto_se_fija_el_espanol() {
-        // La detección automática puede cambiar de idioma a mitad de segmento
-        // y devolver una traducción en vez de una transcripción.
-        assert_eq!(SttOpciones::default().idioma.as_deref(), Some("es"));
+    fn por_defecto_detecta_el_idioma_del_audio() {
+        // Una grabación puede estar en inglés aunque la interfaz esté en español.
+        assert!(SttOpciones::default().idioma.is_none());
     }
 
     #[test]
-    fn en_vivo_deja_nucleos_libres_pero_no_se_queda_corta() {
+    fn en_vivo_reserva_procesadores_para_la_reproduccion() {
         // Durante la clase el equipo también reproduce la videollamada, así
-        // que no puede usarlos todos. Pero con la mitad la cola no seguía el
-        // ritmo de las dos pistas.
+        // que la configuración en vivo reserva capacidad para esa carga.
         let vivo = SttOpciones::en_vivo().hilos;
         let final_ = SttOpciones::definitiva().hilos;
 
         assert!(vivo < final_, "debe dejar núcleos libres");
         assert!(vivo >= 1);
 
-        // Con ocho núcleos, cinco: suficiente para ir por delante de dos
-        // pistas en tiempo real.
+        // En el hardware de referencia, ocho procesadores lógicos limitan el
+        // reconocedor a dos. La latencia real se mide por separado.
         if std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(0)
             == 8
         {
-            assert_eq!(vivo, 5);
+            assert_eq!(vivo, 2);
         }
     }
 

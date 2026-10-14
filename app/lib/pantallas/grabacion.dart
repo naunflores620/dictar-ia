@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../datos/repositorio.dart';
 import '../datos/repositorio_rust.dart';
 import '../modelos/dominio.dart';
+import '../modelos/transcripcion_en_vivo.dart';
 import '../plataforma/android.dart';
 import '../ventana.dart';
 import 'region.dart';
@@ -26,18 +27,36 @@ class PantallaGrabacion extends StatefulWidget {
 }
 
 class _PantallaGrabacionState extends State<PantallaGrabacion> {
-  final _frases = <Frase>[];
+  final _transcripcion = TranscripcionEnVivo();
   final _scroll = ScrollController();
   StreamSubscription<Frase>? _subFrases;
   StreamSubscription<EstadoGrabacion>? _subEstado;
+  StreamSubscription<String>? _subErrores;
+  StreamSubscription<AvisoAudio>? _subAvisos;
+
+  /// Avisos de salud del audio activos ahora, por [AvisoAudio.clave].
+  ///
+  /// El núcleo avisa solo de los cambios y no emite la desaparición al parar,
+  /// así que este estado se vacía al empezar y al detener: sin eso, un aviso
+  /// de la sesión anterior seguiría pintado en la siguiente.
+  final _avisosAudio = <String, AvisoAudio>{};
+
+  /// Avisos que el usuario cerró. Siguen ocultos mientras el aviso siga
+  /// activo, y vuelven a aparecer si se apaga y se reactiva: cerrarlos para
+  /// siempre taparía justo el segundo fallo.
+  final _avisosCerrados = <String>{};
+
+  /// Último fallo reportado por el núcleo, o `null` si todo va bien.
+  ///
+  /// Se guarda en vez de enseñarse y olvidarse porque estos fallos duran toda
+  /// la sesión: si falta el modelo de Whisper, no va a aparecer a mitad de
+  /// clase. Un aviso que se desvanece en cuatro segundos deja el resto de la
+  /// hora mostrando «Escuchando…» sin explicación.
+  String? _fallo;
 
   EstadoGrabacion _estado = EstadoGrabacion.parado;
   TipoSesion _tipo = TipoSesion.clase;
   String? _topicId;
-  // En escritorio se captura por defecto: es la mitad del valor del producto.
-  // En un móvil no hay pantalla compartida que capturar, y pedirlo haría que
-  // `core/screen-capture` devolviera `NoSoportada` nada más empezar a grabar.
-  bool _capturarPantalla = Ventana.esEscritorio;
   bool _iniciando = false;
 
   /// Sesión creada al empezar a grabar; hace falta para procesarla después.
@@ -54,6 +73,8 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
   void dispose() {
     _subFrases?.cancel();
     _subEstado?.cancel();
+    _subErrores?.cancel();
+    _subAvisos?.cancel();
     _scroll.dispose();
     super.dispose();
   }
@@ -73,22 +94,32 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
       return;
     }
 
-    setState(() => _iniciando = true);
+    setState(() {
+      _iniciando = true;
+      _vaciarAvisos();
+    });
 
     _subFrases = widget.repo.fraseEnVivo.listen((f) {
       if (!mounted) return;
-      setState(() => _frases.add(f));
-      _bajarAlFinal();
+      var seguirAlFinal = false;
+      setState(() => seguirAlFinal = _transcripcion.aplicar(f));
+      if (seguirAlFinal) _bajarAlFinal();
     });
 
     _subEstado = widget.repo.estadoGrabacion.listen((e) {
       if (mounted) setState(() => _estado = e);
     });
 
+    _subErrores = widget.repo.errores.listen((m) {
+      if (mounted) setState(() => _fallo = m);
+    });
+
+    _subAvisos?.cancel();
+    _subAvisos = widget.repo.avisosAudio.listen(_aplicarAviso);
+
     _sesionId = await widget.repo.iniciarGrabacion(
       tipo: _tipo,
       topicId: _topicId,
-      capturarPantalla: _capturarPantalla,
     );
 
     // El servicio en primer plano de Android, que es lo que impide que el
@@ -194,7 +225,9 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
             TextField(
               controller: persona,
               decoration: InputDecoration(
-                labelText: esCliente ? 'Contacto (opcional)' : 'Profesor (opcional)',
+                labelText: esCliente
+                    ? 'Contacto (opcional)'
+                    : 'Profesor (opcional)',
                 hintText: esCliente ? 'Juan Ruiz' : 'Dra. Pérez',
                 border: const OutlineInputBorder(),
               ),
@@ -270,9 +303,9 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
         );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo capturar: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('No se pudo capturar: $e')));
     }
   }
 
@@ -308,7 +341,20 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
   /// tuviera que acordarse de pulsar «procesar» después, acabaría con clases
   /// grabadas y sin apuntes, que es tener el trabajo hecho a medias.
   Future<void> _detener() async {
-    await widget.repo.detenerGrabacion();
+    // Antes de esperar al núcleo: detener tarda, y durante ese rato la banda
+    // seguiría hablando de una grabación que el usuario ya dio por acabada.
+    _subAvisos?.cancel();
+    _subAvisos = null;
+    setState(_vaciarAvisos);
+
+    try {
+      await widget.repo.detenerGrabacion();
+    } catch (_) {
+      // Si el núcleo no pudo parar, la grabación sigue: que los avisos sigan
+      // llegando en vez de dejar la pantalla grabando sin banda.
+      if (mounted) _subAvisos = widget.repo.avisosAudio.listen(_aplicarAviso);
+      rethrow;
+    }
     await Android.detenerServicio();
     await Ventana.modoNormal();
     await _subFrases?.cancel();
@@ -331,14 +377,36 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
     );
   }
 
+  void _vaciarAvisos() {
+    _avisosAudio.clear();
+    _avisosCerrados.clear();
+  }
+
+  void _aplicarAviso(AvisoAudio a) {
+    if (!mounted) return;
+    setState(() {
+      if (a.activo) {
+        if (!_avisosAudio.containsKey(a.clave)) _avisosCerrados.remove(a.clave);
+        _avisosAudio[a.clave] = a;
+      } else {
+        _avisosAudio.remove(a.clave);
+        _avisosCerrados.remove(a.clave);
+      }
+    });
+  }
+
+  /// Avisos que se enseñan en la banda: los activos que nadie cerró.
+  List<AvisoAudio> get _avisosVisibles => [
+    for (final a in _avisosAudio.values)
+      if (!_avisosCerrados.contains(a.clave)) a,
+  ];
+
   void _bajarAlFinal() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) {
-        _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-        );
+      if (_scroll.hasClients && _scroll.position.extentAfter <= 180) {
+        // El usuario puede revisar una frase anterior sin que cada nueva
+        // transcripción lo arrastre de vuelta al final.
+        _scroll.jumpTo(_scroll.position.maxScrollExtent);
       }
     });
   }
@@ -357,15 +425,14 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
               title: Text(_estado.grabando ? 'Grabando' : 'Nueva sesión'),
               leading: IconButton(
                 icon: const Icon(Icons.close),
-                onPressed:
-                    _estado.grabando ? _detener : () => Navigator.pop(context),
+                onPressed: _estado.grabando
+                    ? _detener
+                    : () => Navigator.pop(context),
               ),
             ),
       body: _estado.grabando ? _enCurso() : _configuracion(),
     );
   }
-
-
 
   // -- Antes de empezar -------------------------------------------------------
 
@@ -373,7 +440,10 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
-        Text('¿Qué vas a grabar?', style: Theme.of(context).textTheme.titleMedium),
+        Text(
+          '¿Qué vas a grabar?',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
         const SizedBox(height: 12),
         SegmentedButton<TipoSesion>(
           segments: const [
@@ -409,11 +479,13 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
             final esCliente = _tipo == TipoSesion.cliente;
 
             return DropdownButtonFormField<String>(
-              initialValue:
-                  opciones.any((o) => o.id == _topicId) ? _topicId : null,
+              initialValue: opciones.any((o) => o.id == _topicId)
+                  ? _topicId
+                  : null,
               decoration: InputDecoration(
                 labelText: esCliente ? 'Cliente' : 'Asignatura',
-                helperText: 'Su glosario mejora la transcripción de esta sesión',
+                helperText:
+                    'Su glosario mejora la transcripción de esta sesión',
                 border: const OutlineInputBorder(),
               ),
               items: [
@@ -445,19 +517,14 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
         ),
         const SizedBox(height: 12),
 
-        // Todo lo de diapositivas, solo en escritorio: en un móvil no hay una
-        // pantalla compartida que capturar —el profesor comparte en tu
-        // portátil, no en tu teléfono— y `core/screen-capture` devuelve
-        // `NoSoportada` allí. Un interruptor que solo puede fallar estorba.
+        // La región se conserva para la captura manual bajo demanda.
         if (Ventana.esEscritorio) ...[
-          // El área importa más que el interruptor: sin recortar, cada captura
-          // guarda las caras de todos los participantes y tus pestañas abiertas.
           FutureBuilder<String>(
             future: _descripcionRegion(),
             builder: (context, snap) => ListTile(
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.crop),
-              title: const Text('Área de la diapositiva'),
+              title: const Text('Área para captura manual'),
               subtitle: Text(snap.data ?? '…'),
               trailing: FilledButton.tonal(
                 onPressed: _elegirRegion,
@@ -465,31 +532,35 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
               ),
             ),
           ),
-          SwitchListTile(
-            value: _capturarPantalla,
-            onChanged: (v) => setState(() => _capturarPantalla = v),
-            title: const Text('Capturar diapositivas'),
-            subtitle: const Text(
-              'Guarda una imagen cuando la pantalla compartida cambia y se queda '
-              'quieta unos segundos. Si solo hay cámaras de participantes, no '
-              'captura nada.',
-            ),
-            secondary: const Icon(Icons.slideshow_outlined),
-            contentPadding: EdgeInsets.zero,
-          ),
         ],
 
         const SizedBox(height: 24),
         FilledButton.icon(
           onPressed: _iniciando ? null : _iniciar,
-          icon: const Icon(Icons.fiber_manual_record),
-          label: const Text('Empezar a grabar'),
+          icon: _iniciando
+              ? const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.fiber_manual_record),
+          label: Text(
+            _iniciando ? 'Preparando transcripción…' : 'Empezar a grabar',
+          ),
           style: FilledButton.styleFrom(
             minimumSize: const Size.fromHeight(52),
             backgroundColor: Theme.of(context).colorScheme.error,
             foregroundColor: Theme.of(context).colorScheme.onError,
           ),
         ),
+        if (_iniciando) ...[
+          const SizedBox(height: 8),
+          Text(
+            'La grabación empezará cuando el modelo local esté listo.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.outline,
+            ),
+          ),
+        ],
         const SizedBox(height: 12),
         Text(
           'Se graban dos pistas por separado: tu micrófono y el audio del '
@@ -497,8 +568,8 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
           'La clase se transcribe mientras se graba, así que al detener los '
           'apuntes salen en segundos.',
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.outline,
-              ),
+            color: Theme.of(context).colorScheme.outline,
+          ),
         ),
       ],
     );
@@ -523,6 +594,14 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
 
   bool get _esCompacto => MediaQuery.sizeOf(context).height < _altoCompacto;
 
+  /// En la disposición compacta no cabe una banda: el aviso se pinta como un
+  /// punto sobre el indicador de su pista, con el texto en el *tooltip*. El
+  /// botón de cerrar de la banda no aplica aquí: un punto no estorba.
+  List<AvisoAudio> _avisosDe(Pista p) => [
+    for (final a in _avisosAudio.values)
+      if (a.pista == p) a,
+  ];
+
   Widget _enCurso() => _esCompacto ? _enCursoCompacto() : _enCursoAmplio();
 
   /// Disposición para la ventana encogida sobre la videollamada.
@@ -541,7 +620,11 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
         children: [
           Row(
             children: [
-              Icon(Icons.fiber_manual_record, color: t.colorScheme.error, size: 12),
+              Icon(
+                Icons.fiber_manual_record,
+                color: t.colorScheme.error,
+                size: 12,
+              ),
               const SizedBox(width: 8),
               Text(
                 '${(s ~/ 60).toString().padLeft(2, '0')}:'
@@ -551,9 +634,17 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
                 ),
               ),
               const Spacer(),
-              _Nivel(etiqueta: 'Tú', activo: _estado.hablandoMicro),
+              _Nivel(
+                etiqueta: 'Tú',
+                activo: _estado.hablandoMicro,
+                avisos: _avisosDe(Pista.micro),
+              ),
               const SizedBox(width: 10),
-              _Nivel(etiqueta: 'Sistema', activo: _estado.hablandoSistema),
+              _Nivel(
+                etiqueta: 'Sistema',
+                activo: _estado.hablandoSistema,
+                avisos: _avisosDe(Pista.sistema),
+              ),
             ],
           ),
           const SizedBox(height: 10),
@@ -604,15 +695,20 @@ class _PantallaGrabacionState extends State<PantallaGrabacion> {
     return Column(
       children: [
         _Cabecera(estado: _estado),
+        _BandaAvisos(
+          avisos: _avisosVisibles,
+          alCerrar: (a) => setState(() => _avisosCerrados.add(a.clave)),
+        ),
         const Divider(height: 1),
         Expanded(
-          child: _frases.isEmpty
-              ? const Center(child: Text('Escuchando…'))
+          child: _transcripcion.frases.isEmpty
+              ? _SinFrasesAun(fallo: _fallo)
               : ListView.builder(
                   controller: _scroll,
                   padding: const EdgeInsets.all(16),
-                  itemCount: _frases.length,
-                  itemBuilder: (context, i) => _LineaEnVivo(frase: _frases[i]),
+                  itemCount: _transcripcion.frases.length,
+                  itemBuilder: (context, i) =>
+                      _LineaEnVivo(frase: _transcripcion.frases[i]),
                 ),
         ),
         SafeArea(
@@ -699,16 +795,76 @@ class _Cabecera extends StatelessWidget {
       '${(d.inSeconds % 60).toString().padLeft(2, '0')}';
 }
 
+/// Los avisos de salud del audio activos, uno por línea, con un botón para
+/// cerrar cada uno. Sin avisos no ocupa nada.
+class _BandaAvisos extends StatelessWidget {
+  const _BandaAvisos({required this.avisos, required this.alCerrar});
+
+  final List<AvisoAudio> avisos;
+  final void Function(AvisoAudio) alCerrar;
+
+  @override
+  Widget build(BuildContext context) {
+    if (avisos.isEmpty) return const SizedBox.shrink();
+    final c = Theme.of(context).colorScheme;
+
+    return Column(
+      children: [
+        for (final a in avisos)
+          Container(
+            width: double.infinity,
+            color: a.esGrave ? c.errorContainer : c.tertiaryContainer,
+            padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
+            child: Row(
+              children: [
+                Icon(
+                  a.esGrave ? Icons.error_outline : Icons.warning_amber_rounded,
+                  size: 18,
+                  color: a.esGrave
+                      ? c.onErrorContainer
+                      : c.onTertiaryContainer,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    a.mensaje,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: a.esGrave
+                          ? c.onErrorContainer
+                          : c.onTertiaryContainer,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Ocultar este aviso',
+                  icon: const Icon(Icons.close, size: 18),
+                  onPressed: () => alCerrar(a),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 class _Nivel extends StatelessWidget {
-  const _Nivel({required this.etiqueta, required this.activo});
+  const _Nivel({
+    required this.etiqueta,
+    required this.activo,
+    this.avisos = const [],
+  });
 
   final String etiqueta;
   final bool activo;
 
+  /// Avisos de salud de esta pista, para el punto de la disposición compacta.
+  final List<AvisoAudio> avisos;
+
   @override
   Widget build(BuildContext context) {
     final c = Theme.of(context).colorScheme;
-    return Row(
+    final nivel = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         AnimatedContainer(
@@ -724,6 +880,30 @@ class _Nivel extends StatelessWidget {
         Text(etiqueta, style: Theme.of(context).textTheme.labelSmall),
       ],
     );
+
+    if (avisos.isEmpty) return nivel;
+
+    final grave = avisos.any((a) => a.esGrave);
+    return Tooltip(
+      message: avisos.map((a) => a.mensaje).join('\n'),
+      triggerMode: TooltipTriggerMode.tap,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          nivel,
+          const SizedBox(width: 4),
+          Container(
+            key: const ValueKey('punto-aviso-audio'),
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: grave ? c.error : c.tertiary,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -736,6 +916,9 @@ class _LineaEnVivo extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = Theme.of(context);
     final esMio = frase.pista == Pista.micro;
+    final estableHasta = frase.estableHasta
+        .clamp(0, frase.texto.length)
+        .toInt();
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
@@ -746,7 +929,9 @@ class _LineaEnVivo extends StatelessWidget {
             width: 58,
             child: Text(
               formatearTs(frase.inicioMs),
-              style: t.textTheme.labelSmall?.copyWith(color: t.colorScheme.outline),
+              style: t.textTheme.labelSmall?.copyWith(
+                color: t.colorScheme.outline,
+              ),
             ),
           ),
           Expanded(
@@ -758,15 +943,18 @@ class _LineaEnVivo extends StatelessWidget {
                     text: '${frase.quien}: ',
                     style: TextStyle(
                       fontWeight: FontWeight.w700,
-                      color: esMio ? t.colorScheme.tertiary : t.colorScheme.primary,
+                      color: esMio
+                          ? t.colorScheme.tertiary
+                          : t.colorScheme.primary,
                     ),
                   ),
+                  TextSpan(text: frase.texto.substring(0, estableHasta)),
                   TextSpan(
-                    text: frase.texto,
-                    // Todo lo de la pasada en vivo es provisional hasta que
-                    // termine la sesión.
+                    text: frase.texto.substring(estableHasta),
                     style: TextStyle(
-                      color: frase.definitiva ? null : t.colorScheme.onSurfaceVariant,
+                      color: frase.definitiva
+                          ? null
+                          : t.colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ],
@@ -774,6 +962,69 @@ class _LineaEnVivo extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Lo que se ve mientras no ha llegado ninguna frase.
+///
+/// Dos estados muy distintos bajo la misma pantalla vacía, y confundirlos es
+/// exactamente lo que pasó: «todavía no ha hablado nadie» y «la transcripción
+/// en vivo no va a llegar nunca porque el núcleo falló al arrancar». El
+/// segundo llega por [Repositorio.errores] y se enseña con su motivo, porque
+/// el motivo suele traer la solución dentro —el núcleo dice la ruta exacta del
+/// modelo que falta y la orden para descargarlo—.
+///
+/// Se dice también lo que NO se ha perdido: estos fallos son recuperables, el
+/// audio se sigue grabando y al detener se transcribe entero. Sin esa frase,
+/// leer un error rojo a mitad de clase invita a cortar la grabación, que es la
+/// única acción que sí destruye algo.
+class _SinFrasesAun extends StatelessWidget {
+  const _SinFrasesAun({required this.fallo});
+
+  final String? fallo;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context);
+
+    if (fallo == null) {
+      return const Center(child: Text('Escuchando…'));
+    }
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline, size: 36, color: t.colorScheme.error),
+            const SizedBox(height: 12),
+            Text(
+              'Sin transcripción en vivo',
+              style: t.textTheme.titleMedium,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            SelectableText(
+              fallo!,
+              style: t.textTheme.bodySmall?.copyWith(
+                color: t.colorScheme.error,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'La grabación sigue en marcha y el audio se está guardando. '
+              'Al detener se transcribe la sesión entera.',
+              style: t.textTheme.bodyMedium?.copyWith(
+                color: t.colorScheme.outline,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }

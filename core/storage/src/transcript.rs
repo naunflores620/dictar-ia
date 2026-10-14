@@ -71,10 +71,25 @@ impl Db {
         Ok(())
     }
 
-    /// Sustituye la transcripción en vivo por la definitiva.
+    /// Confirma las frases cerradas que se guardaron durante la transcripción en vivo.
     ///
-    /// Es lo que ocurre al terminar la sesión: el texto del modelo pequeño se
-    /// descarta y entra el de `large-v3-turbo` con glosario y contexto completo.
+    /// El reconocedor ya cerró esos tramos; solo quedaban marcados como borrador
+    /// porque antes siempre se sustituían por la pasada completa de Whisper.
+    /// El trigger de búsqueda indexa las filas al cambiar `is_final` a 1.
+    pub fn confirmar_vivas(&mut self, sesion: &SessionId) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let actualizadas = tx.execute(
+            "UPDATE utterance
+             SET is_final=1, revision=revision+1
+             WHERE session_id=?1 AND is_final=0",
+            params![sesion.as_str()],
+        )?;
+        tx.commit()?;
+        Ok(actualizadas)
+    }
+
+    /// Sustituye la transcripción en vivo cuando una pasada de respaldo produce
+    /// una versión definitiva más completa.
     pub fn reemplazar_por_definitiva(
         &mut self,
         sesion: &SessionId,
@@ -115,6 +130,98 @@ impl Db {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Sustituye solo las frases de una pista y confirma el resto de borradores.
+    ///
+    /// Es el cierre de una clase en vivo con cobertura de sistema completa a la
+    /// que solo le faltaba el micrófono: la pasada por lotes se hace únicamente
+    /// sobre esa pista, y borrar toda la transcripción (como hace
+    /// `reemplazar_por_definitiva`) tiraría el texto de sistema ya reconocido.
+    pub fn reemplazar_pista_por_definitiva(
+        &mut self,
+        sesion: &SessionId,
+        pista: Track,
+        frases: &[NewUtterance],
+    ) -> Result<()> {
+        debug_assert!(
+            frases.iter().all(|f| f.is_final && f.track == pista),
+            "solo admite frases definitivas de la pista indicada"
+        );
+
+        let tx = self.conn.transaction()?;
+        {
+            tx.execute(
+                "DELETE FROM utterance WHERE session_id=?1 AND track=?2",
+                params![sesion.as_str(), pista.as_str()],
+            )?;
+            tx.execute(
+                "UPDATE utterance
+                 SET is_final=1, revision=revision+1
+                 WHERE session_id=?1 AND is_final=0",
+                params![sesion.as_str()],
+            )?;
+
+            let mut stmt = tx.prepare(
+                "INSERT INTO utterance
+                 (session_id, track, speaker, start_ms, end_ms, text, confidence, is_final, revision)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,1,1)",
+            )?;
+            for f in frases {
+                stmt.execute(params![
+                    sesion.as_str(),
+                    f.track.as_str(),
+                    f.speaker,
+                    f.start_ms,
+                    f.end_ms,
+                    f.text,
+                    f.confidence,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Cambia el hablante de varias frases a la vez, en una sola transacción.
+    ///
+    /// Es lo que escribe la diarización al terminar una reunión. Solo toca
+    /// `speaker`: el texto, los tiempos y el índice de búsqueda quedan como están.
+    pub fn asignar_hablantes(&mut self, asignaciones: &[(i64, String)]) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let mut cambiadas = 0;
+        {
+            let mut stmt = tx.prepare("UPDATE utterance SET speaker=?2 WHERE id=?1")?;
+            for (id, hablante) in asignaciones {
+                cambiadas += stmt.execute(params![id, hablante])?;
+            }
+        }
+        tx.commit()?;
+        Ok(cambiadas)
+    }
+
+    /// Renombra un hablante en una pista de una sesión: todas las frases cuyo
+    /// `speaker` es `de` pasan a `a`. Devuelve cuántas cambió.
+    ///
+    /// No hay tabla de alias: el nombre vive en la propia frase. Así es estable
+    /// aunque cambie la numeración de los clústeres, y renombrar dos etiquetas
+    /// con el mismo nombre las fusiona, que es como se corrige una voz partida
+    /// en dos.
+    pub fn renombrar_hablante(
+        &mut self,
+        sesion: &SessionId,
+        pista: Track,
+        de: &str,
+        a: &str,
+    ) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let cambiadas = tx.execute(
+            "UPDATE utterance SET speaker=?4
+             WHERE session_id=?1 AND track=?2 AND speaker=?3",
+            params![sesion.as_str(), pista.as_str(), de, a],
+        )?;
+        tx.commit()?;
+        Ok(cambiadas)
     }
 
     pub fn transcripcion(&self, sesion: &SessionId) -> Result<Vec<Utterance>> {
@@ -310,6 +417,37 @@ mod tests {
     }
 
     #[test]
+    fn reemplazar_una_pista_conserva_y_confirma_las_frases_de_la_otra() {
+        let (mut db, ses) = db_con_sesion();
+        // Antes se usaba el reemplazo total y el cierre rápido de una clase en
+        // vivo perdía el texto de sistema al añadir el del micrófono.
+        db.insertar_frases(
+            &ses,
+            &[
+                frase(Track::System, 0, "explicacion del profesor", false),
+                frase(Track::Mic, 10_000, "borrador viejo", false),
+            ],
+        )
+        .unwrap();
+
+        db.reemplazar_pista_por_definitiva(
+            &ses,
+            Track::Mic,
+            &[frase(Track::Mic, 10_000, "pregunta mía", true)],
+        )
+        .unwrap();
+
+        let t = db.transcripcion(&ses).unwrap();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].track, Track::System);
+        assert_eq!(t[0].text, "explicacion del profesor");
+        assert!(t.iter().all(|u| u.is_final));
+        assert_eq!(t[1].text, "pregunta mía");
+        assert_eq!(db.buscar("explicacion", None).unwrap().len(), 1);
+        assert!(db.buscar("viejo", None).unwrap().is_empty());
+    }
+
+    #[test]
     fn el_indice_de_busqueda_no_deja_huerfanos_al_reemplazar() {
         let (mut db, ses) = db_con_sesion();
 
@@ -366,6 +504,121 @@ mod tests {
         let plano = db.transcripcion_plana(&ses).unwrap();
         assert!(plano.starts_with("[00:00:00] Yo: ¿puede repetir?"));
         assert!(plano.contains("[01:01:11] Interlocutor: claro"));
+    }
+
+    fn con_hablante(track: Track, ini: i64, texto: &str, hablante: &str) -> NewUtterance {
+        NewUtterance {
+            speaker: Some(hablante.to_owned()),
+            ..frase(track, ini, texto, true)
+        }
+    }
+
+    #[test]
+    fn renombrar_cambia_solo_la_pista_y_el_nombre_indicados() {
+        let (mut db, ses) = db_con_sesion();
+        db.insertar_frases(
+            &ses,
+            &[
+                con_hablante(Track::System, 0, "uno", "Participante 2"),
+                con_hablante(Track::System, 4_000, "dos", "Participante 1"),
+                con_hablante(Track::System, 8_000, "tres", "Participante 2"),
+                // Mismo nombre en la otra pista: no debe tocarse.
+                con_hablante(Track::Mic, 12_000, "cuatro", "Participante 2"),
+            ],
+        )
+        .unwrap();
+
+        let n = db
+            .renombrar_hablante(&ses, Track::System, "Participante 2", "Carlos (socio)")
+            .unwrap();
+
+        assert_eq!(n, 2);
+        let t = db.transcripcion(&ses).unwrap();
+        let quien: Vec<_> = t.iter().map(|u| u.speaker.as_deref().unwrap()).collect();
+        assert_eq!(
+            quien,
+            [
+                "Carlos (socio)",
+                "Participante 1",
+                "Carlos (socio)",
+                "Participante 2"
+            ]
+        );
+    }
+
+    #[test]
+    fn renombrar_dos_etiquetas_con_el_mismo_nombre_las_fusiona() {
+        // Una voz partida en dos por la diarización se arregla poniéndole el
+        // mismo nombre a las dos mitades; no hay que añadir ninguna función de
+        // «fusionar».
+        let (mut db, ses) = db_con_sesion();
+        db.insertar_frases(
+            &ses,
+            &[
+                con_hablante(Track::System, 0, "uno", "Participante 1"),
+                con_hablante(Track::System, 4_000, "dos", "Participante 3"),
+            ],
+        )
+        .unwrap();
+
+        db.renombrar_hablante(&ses, Track::System, "Participante 1", "Ana")
+            .unwrap();
+        db.renombrar_hablante(&ses, Track::System, "Participante 3", "Ana")
+            .unwrap();
+
+        let t = db.transcripcion(&ses).unwrap();
+        assert!(t.iter().all(|u| u.speaker.as_deref() == Some("Ana")));
+    }
+
+    #[test]
+    fn renombrar_no_toca_el_texto_ni_la_busqueda() {
+        let (mut db, ses) = db_con_sesion();
+        db.insertar_frases(
+            &ses,
+            &[con_hablante(Track::System, 0, "la transformada", "Cliente")],
+        )
+        .unwrap();
+
+        db.renombrar_hablante(&ses, Track::System, "Cliente", "Marta")
+            .unwrap();
+
+        // El trigger de actualización reindexa la fila; tiene que seguir
+        // encontrándose exactamente una vez.
+        assert_eq!(db.buscar("transformada", None).unwrap().len(), 1);
+        assert_eq!(db.transcripcion(&ses).unwrap()[0].text, "la transformada");
+    }
+
+    #[test]
+    fn asignar_hablantes_actualiza_por_id_y_deja_el_resto() {
+        let (mut db, ses) = db_con_sesion();
+        db.insertar_frases(
+            &ses,
+            &[
+                con_hablante(Track::System, 0, "uno", "Cliente"),
+                con_hablante(Track::System, 4_000, "dos", "Cliente"),
+                con_hablante(Track::System, 8_000, "tres", "Cliente"),
+            ],
+        )
+        .unwrap();
+        let ids: Vec<i64> = db
+            .transcripcion(&ses)
+            .unwrap()
+            .iter()
+            .map(|u| u.id)
+            .collect();
+
+        let n = db
+            .asignar_hablantes(&[
+                (ids[0], "Participante 1".to_owned()),
+                (ids[2], "Participante 2".to_owned()),
+            ])
+            .unwrap();
+
+        assert_eq!(n, 2);
+        let t = db.transcripcion(&ses).unwrap();
+        assert_eq!(t[0].speaker.as_deref(), Some("Participante 1"));
+        assert_eq!(t[1].speaker.as_deref(), Some("Cliente"));
+        assert_eq!(t[2].speaker.as_deref(), Some("Participante 2"));
     }
 
     #[test]

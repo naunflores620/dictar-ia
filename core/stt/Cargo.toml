@@ -9,7 +9,16 @@ dictar-domain = { workspace = true }
 dictar-audio = { path = "../audio-capture" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-whisper-rs = "0.14"
+libloading = "0.8"
+serde_json = { workspace = true }
+# `openmp` no es opcional en la práctica. Sin él, ggml compilado con MSVC
+# ejecuta en un solo núcleo por más hilos que se le pidan: medido el
+# 2026-09-10 en un Core Ultra 9 288V, 364,8 s de CPU en 368 s de reloj
+# transcribiendo 106 s de audio — 0,3x tiempo real con `small`.
+whisper-rs = { version = "0.14", features = ["openmp"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+sherpa-onnx = { version = "=1.13.8", default-features = false, features = ["shared"] }
 
 [features]
 default = []

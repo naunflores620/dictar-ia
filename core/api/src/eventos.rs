@@ -29,8 +29,10 @@ pub enum Evento {
         inicio_ms: TsMs,
         fin_ms: TsMs,
         texto: String,
-        /// `false` mientras es la pasada en vivo, que se sustituye entera al
-        /// terminar. La interfaz la pinta atenuada.
+        /// Límite del prefijo estable expresado en unidades UTF-16 para Dart.
+        estable_hasta_utf16: i64,
+        /// `false` mientras es la pasada en vivo, que se sustituye al terminar.
+        /// La interfaz usa `estable_hasta_utf16` para atenuar solo el sufijo.
         definitiva: bool,
     },
 
@@ -49,6 +51,22 @@ pub enum Evento {
         avisos: usize,
     },
 
+    /// Un aviso de salud del audio que aparece o desaparece mientras se graba.
+    ///
+    /// Se emite solo en los cambios, no en cada trama: la interfaz guarda el
+    /// estado y lo limpia ella misma al empezar y al detener la sesión.
+    Salud {
+        /// `"mic"` o `"system"`, como `Track::as_str`.
+        pista: String,
+        /// Identificador estable del aviso, por ejemplo `"eco"`.
+        codigo: String,
+        activo: bool,
+        /// Medida que disparó el aviso (correlación, RMS, segundos...), solo
+        /// informativa.
+        valor: f32,
+        mensaje: String,
+    },
+
     /// Algo falló, pero la sesión no se pierde.
     Error { mensaje: String, recuperable: bool },
 }
@@ -62,13 +80,43 @@ impl Evento {
         texto: impl Into<String>,
         definitiva: bool,
     ) -> Self {
+        let texto = texto.into();
         Evento::Frase {
             session_id: session_id.0.clone(),
             track: track.as_str().to_owned(),
             inicio_ms,
             fin_ms,
-            texto: texto.into(),
+            estable_hasta_utf16: if definitiva {
+                texto.encode_utf16().count() as i64
+            } else {
+                0
+            },
+            texto,
             definitiva,
+        }
+    }
+
+    pub fn frase_incremental(
+        session_id: &SessionId,
+        track: Track,
+        inicio_ms: TsMs,
+        fin_ms: TsMs,
+        estable: &str,
+        provisional: &str,
+    ) -> Self {
+        let texto = match (estable.is_empty(), provisional.is_empty()) {
+            (true, _) => provisional.to_owned(),
+            (_, true) => estable.to_owned(),
+            _ => format!("{estable} {provisional}"),
+        };
+        Evento::Frase {
+            session_id: session_id.0.clone(),
+            track: track.as_str().to_owned(),
+            inicio_ms,
+            fin_ms,
+            estable_hasta_utf16: estable.encode_utf16().count() as i64,
+            texto,
+            definitiva: false,
         }
     }
 
@@ -88,6 +136,9 @@ pub enum FaseProceso {
     Segmentando,
     CargandoModelo,
     Transcribiendo,
+    /// Diarización al cerrar una reunión: no se puede cancelar ni da fracción,
+    /// y sin una fase propia la barra parecería colgada.
+    Identificando,
     GenerandoNotas,
     Guardando,
     Lista,
@@ -100,6 +151,7 @@ impl FaseProceso {
             FaseProceso::Segmentando => "Preparando el audio",
             FaseProceso::CargandoModelo => "Cargando el modelo",
             FaseProceso::Transcribiendo => "Transcribiendo",
+            FaseProceso::Identificando => "Identificando participantes",
             FaseProceso::GenerandoNotas => "Generando notas",
             FaseProceso::Guardando => "Guardando",
             FaseProceso::Lista => "Lista",
@@ -159,6 +211,7 @@ mod tests {
             FaseProceso::Segmentando,
             FaseProceso::CargandoModelo,
             FaseProceso::Transcribiendo,
+            FaseProceso::Identificando,
             FaseProceso::GenerandoNotas,
             FaseProceso::Guardando,
             FaseProceso::Lista,

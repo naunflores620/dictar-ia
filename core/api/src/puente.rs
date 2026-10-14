@@ -27,6 +27,12 @@ static NUCLEO: OnceLock<Nucleo> = OnceLock::new();
 /// suscriba.
 static EVENTOS: Mutex<Option<Receiver<Evento>>> = Mutex::new(None);
 
+fn normalizar_idioma_configurado(idioma: Option<String>) -> Option<String> {
+    idioma
+        .map(|l| l.trim().to_ascii_lowercase())
+        .filter(|l| !l.is_empty())
+}
+
 fn nucleo() -> Result<&'static Nucleo, String> {
     NUCLEO
         .get()
@@ -108,7 +114,12 @@ pub struct ProcesadaDto {
 /// sobre `tipo`.
 #[derive(Debug, Clone)]
 pub struct EventoDto {
-    /// "niveles" | "frase" | "progreso" | "terminada" | "error"
+    /// "niveles" | "frase" | "progreso" | "terminada" | "salud" | "error"
+    ///
+    /// El tipo "salud" reutiliza campos con otro significado, para no tener
+    /// que regenerar el puente: `track` es la pista, `fase` el código del
+    /// aviso, `definitiva` si está activo, `fraccion` la medida que lo
+    /// disparó y `mensaje` el texto para el usuario.
     pub tipo: String,
 
     // Niveles
@@ -121,6 +132,7 @@ pub struct EventoDto {
     pub texto: Option<String>,
     pub inicio_ms: i64,
     pub fin_ms: i64,
+    pub estable_hasta_utf16: i64,
     pub definitiva: bool,
 
     // Progreso
@@ -147,6 +159,7 @@ impl Default for EventoDto {
             texto: None,
             inicio_ms: 0,
             fin_ms: 0,
+            estable_hasta_utf16: 0,
             definitiva: false,
             fase: None,
             fraccion: 0.0,
@@ -177,6 +190,7 @@ impl From<Evento> for EventoDto {
                 inicio_ms,
                 fin_ms,
                 texto,
+                estable_hasta_utf16,
                 definitiva,
                 ..
             } => EventoDto {
@@ -185,6 +199,7 @@ impl From<Evento> for EventoDto {
                 texto: Some(texto),
                 inicio_ms,
                 fin_ms,
+                estable_hasta_utf16,
                 definitiva,
                 ..Default::default()
             },
@@ -205,6 +220,21 @@ impl From<Evento> for EventoDto {
                 tipo: "terminada".into(),
                 coste_usd,
                 avisos: avisos as i64,
+                ..Default::default()
+            },
+            Evento::Salud {
+                pista,
+                codigo,
+                activo,
+                valor,
+                mensaje,
+            } => EventoDto {
+                tipo: "salud".into(),
+                track: Some(pista),
+                fase: Some(codigo),
+                definitiva: activo,
+                fraccion: valor,
+                mensaje: Some(mensaje),
                 ..Default::default()
             },
             Evento::Error { mensaje, .. } => EventoDto {
@@ -466,7 +496,7 @@ pub struct AjustesDto {
     /// Documentos. La interfaz enseña esta.
     pub carpeta_efectiva: Option<String>,
     pub modelo: Option<String>,
-    pub capturar_diapositivas: bool,
+    pub idioma_transcripcion: Option<String>,
 }
 
 pub fn obtener_ajustes() -> Result<AjustesDto, String> {
@@ -479,14 +509,14 @@ pub fn obtener_ajustes() -> Result<AjustesDto, String> {
         carpeta_efectiva: efectiva,
         carpeta_apuntes: a.carpeta_apuntes,
         modelo: a.modelo,
-        capturar_diapositivas: a.capturar_diapositivas,
+        idioma_transcripcion: a.idioma_transcripcion,
     })
 }
 
 pub fn guardar_ajustes(
     carpeta_apuntes: Option<String>,
     modelo: Option<String>,
-    capturar_diapositivas: bool,
+    idioma_transcripcion: Option<String>,
 ) -> Result<(), String> {
     let n = nucleo()?;
     let carpeta = carpeta_apuntes
@@ -511,7 +541,9 @@ pub fn guardar_ajustes(
     let mut nuevos = n.ajustes();
     nuevos.carpeta_apuntes = carpeta;
     nuevos.modelo = modelo;
-    nuevos.capturar_diapositivas = capturar_diapositivas;
+    // `auto` debe persistirse explícitamente: `None` activa el idioma
+    // predeterminado (Español/Vosk) al volver a cargar los ajustes.
+    nuevos.idioma_transcripcion = normalizar_idioma_configurado(idioma_transcripcion);
 
     n.guardar_ajustes(&nuevos).map_err(|e| e.to_string())
 }
@@ -581,13 +613,11 @@ pub fn borrar_sesion(session_id: String) -> Result<(), String> {
 
 // -- Grabación ---------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 pub fn iniciar_grabacion(
     tipo: String,
     topic_id: Option<String>,
     titulo: Option<String>,
     capturar_sistema: bool,
-    capturar_diapositivas: bool,
     solo_local: bool,
     ahora_ms: i64,
 ) -> Result<String, String> {
@@ -607,7 +637,6 @@ pub fn iniciar_grabacion(
                 topic_id: topic_id.map(TopicId::from),
                 titulo,
                 capturar_sistema,
-                capturar_diapositivas,
                 solo_local,
             },
             ahora_ms,
@@ -707,9 +736,89 @@ pub fn procesar_sesion(session_id: String, ahora_ms: i64) -> Result<ProcesadaDto
     })
 }
 
+/// Pista a partir del texto que usa la interfaz (`"mic"` o `"system"`).
+fn pista_desde_texto(pista: &str) -> Result<dictar_domain::Track, String> {
+    pista
+        .parse()
+        .map_err(|_| format!("pista desconocida «{pista}»: se esperaba «mic» o «system»"))
+}
+
+/// Cambia el nombre de un participante en una pista de la sesión. Devuelve
+/// cuántas frases cambiaron. Si `a` es el nombre de otro participante de esa
+/// pista, los dos quedan fusionados.
+pub fn renombrar_hablante(
+    session_id: String,
+    pista: String,
+    de: String,
+    a: String,
+) -> Result<i64, String> {
+    let pista = pista_desde_texto(&pista)?;
+    nucleo()?
+        .renombrar_hablante(&SessionId::from(session_id), pista, &de, &a)
+        .map(|n| n as i64)
+        .map_err(|e| e.to_string())
+}
+
+/// Vuelve a generar los apuntes con la transcripción actual, sin volver a
+/// transcribir. Cuesta una generación de notas.
+///
+/// Como `procesar_sesion`, es una llamada larga y va en un aislado propio en Dart.
+pub fn regenerar_notas(session_id: String, ahora_ms: i64) -> Result<ProcesadaDto, String> {
+    let n = nucleo()?;
+    let id = SessionId::from(session_id);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    *EVENTOS.lock().unwrap() = Some(rx);
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let r = rt
+        .block_on(n.regenerar_notas(&id, ahora_ms, Some(tx)))
+        .map_err(|e| e.to_string())?;
+
+    Ok(ProcesadaDto {
+        session_id: r.session_id.0,
+        frases: r.frases as i64,
+        avisos: r.avisos as i64,
+        coste_usd: r.coste_usd,
+        proveedor: r.proveedor,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn la_pista_se_lee_como_la_escribe_la_interfaz() {
+        use dictar_domain::Track;
+        assert_eq!(pista_desde_texto("mic"), Ok(Track::Mic));
+        assert_eq!(pista_desde_texto("system"), Ok(Track::System));
+        // Un error con el valor recibido: «Mic» con mayúscula o «sistema» en
+        // castellano serían un fallo de la interfaz que de otro modo se
+        // manifestaría como un renombrado que no cambia nada.
+        let e = pista_desde_texto("sistema").unwrap_err();
+        assert!(e.contains("sistema"), "mensaje: {e}");
+    }
+
+    #[test]
+    fn automatico_se_conserva_al_normalizar_y_persistir_ajustes() {
+        let dir = tempfile::tempdir().unwrap();
+        let idioma = normalizar_idioma_configurado(Some(" Auto ".into()));
+        let ajustes = crate::ajustes::Ajustes {
+            idioma_transcripcion: idioma,
+            ..Default::default()
+        };
+
+        ajustes.guardar(dir.path()).unwrap();
+        let recargados = crate::ajustes::Ajustes::cargar(dir.path());
+
+        assert_eq!(recargados.idioma_transcripcion.as_deref(), Some("auto"));
+        assert_eq!(recargados.idioma_efectivo(), None);
+    }
 
     #[test]
     fn sin_inicializar_el_error_dice_que_hacer() {
@@ -734,6 +843,28 @@ mod tests {
         assert_eq!(e.nivel_sistema, 0.8);
         assert_eq!(e.transcurrido_ms, 5000);
         assert!(e.texto.is_none());
+    }
+
+    #[test]
+    fn un_aviso_de_salud_cruza_con_cada_dato_en_su_campo_reutilizado() {
+        // El puente no se regeneró para este evento: si alguien cambia qué
+        // campo lleva cada dato, Dart leería el código como pista y no habría
+        // ningún error de compilación que lo avisara.
+        let e: EventoDto = Evento::Salud {
+            pista: "system".into(),
+            codigo: "eco".into(),
+            activo: true,
+            valor: 0.7,
+            mensaje: "texto".into(),
+        }
+        .into();
+
+        assert_eq!(e.tipo, "salud");
+        assert_eq!(e.track.as_deref(), Some("system"));
+        assert_eq!(e.fase.as_deref(), Some("eco"));
+        assert!(e.definitiva);
+        assert_eq!(e.fraccion, 0.7);
+        assert_eq!(e.mensaje.as_deref(), Some("texto"));
     }
 
     #[test]

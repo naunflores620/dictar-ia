@@ -14,7 +14,7 @@ class AjustesApp {
     this.carpetaApuntes,
     this.carpetaEfectiva,
     this.modelo,
-    this.capturarDiapositivas = true,
+    this.idiomaTranscripcion,
   });
 
   /// Carpeta donde se exportan los apuntes al terminar cada sesión.
@@ -28,20 +28,20 @@ class AjustesApp {
   final String? carpetaEfectiva;
 
   final String? modelo;
-  final bool capturarDiapositivas;
+  final String? idiomaTranscripcion;
 
   AjustesApp copiaCon({
     String? carpetaApuntes,
     String? modelo,
-    bool? capturarDiapositivas,
+    String? idiomaTranscripcion,
     bool limpiarCarpeta = false,
-  }) =>
-      AjustesApp(
-        carpetaApuntes:
-            limpiarCarpeta ? null : (carpetaApuntes ?? this.carpetaApuntes),
-        modelo: modelo ?? this.modelo,
-        capturarDiapositivas: capturarDiapositivas ?? this.capturarDiapositivas,
-      );
+  }) => AjustesApp(
+    carpetaApuntes: limpiarCarpeta
+        ? null
+        : (carpetaApuntes ?? this.carpetaApuntes),
+    modelo: modelo ?? this.modelo,
+    idiomaTranscripcion: idiomaTranscripcion ?? this.idiomaTranscripcion,
+  );
 }
 
 /// Estado de un proveedor de IA en la pantalla de ajustes.
@@ -55,8 +55,10 @@ class ProveedorInfo {
 
   final String id;
   final String modelo;
+
   /// De qué archivo salió la clave, o `null` si no hay ninguna.
   final String? origenClave;
+
   /// Ollama y compañía: funcionan sin clave y sin conexión.
   final bool esLocal;
 }
@@ -91,6 +93,8 @@ class RepositorioRust implements Repositorio {
   final _frases = StreamController<Frase>.broadcast();
   final _estado = StreamController<EstadoGrabacion>.broadcast();
   final _progreso = StreamController<Progreso>.broadcast();
+  final _errores = StreamController<String>.broadcast();
+  final _avisosAudio = StreamController<AvisoAudio>.broadcast();
   Timer? _sondeo;
   bool _sondeando = false;
 
@@ -100,14 +104,16 @@ class RepositorioRust implements Repositorio {
   Future<List<Topic>> topics() async {
     final l = await rust.listarTopics();
     return l
-        .map((t) => Topic(
-              id: t.id,
-              tipo: t.kind == 'client' ? TipoTopic.cliente : TipoTopic.asignatura,
-              nombre: t.name,
-              persona: t.person,
-              periodo: t.term,
-              consentimiento: t.consentAck,
-            ))
+        .map(
+          (t) => Topic(
+            id: t.id,
+            tipo: t.kind == 'client' ? TipoTopic.cliente : TipoTopic.asignatura,
+            nombre: t.name,
+            persona: t.person,
+            periodo: t.term,
+            consentimiento: t.consentAck,
+          ),
+        )
         .toList();
   }
 
@@ -144,8 +150,10 @@ class RepositorioRust implements Repositorio {
     // se toma del primer párrafo, que por construcción es el «tldr».
     final tldr = md
         .split('\n')
-        .firstWhere((l) => l.trim().isNotEmpty && !l.startsWith('#'),
-            orElse: () => '');
+        .firstWhere(
+          (l) => l.trim().isNotEmpty && !l.startsWith('#'),
+          orElse: () => '',
+        );
 
     return Notas(
       markdown: md,
@@ -160,15 +168,17 @@ class RepositorioRust implements Repositorio {
   Future<List<Aviso>> pendientes() async {
     final l = await rust.listarPendientes();
     return l
-        .map((a) => Aviso(
-              id: a.id.toInt(),
-              sesionId: a.sessionId,
-              topicId: a.topicId,
-              tipo: TipoAviso.desdeClave(a.kind),
-              texto: a.texto,
-              fecha: a.fecha,
-              tsMs: a.tsMs.toInt(),
-            ))
+        .map(
+          (a) => Aviso(
+            id: a.id.toInt(),
+            sesionId: a.sessionId,
+            topicId: a.topicId,
+            tipo: TipoAviso.desdeClave(a.kind),
+            texto: a.texto,
+            fecha: a.fecha,
+            tsMs: a.tsMs.toInt(),
+          ),
+        )
         .toList();
   }
 
@@ -187,17 +197,23 @@ class RepositorioRust implements Repositorio {
   Stream<EstadoGrabacion> get estadoGrabacion => _estado.stream;
 
   @override
+  Stream<String> get errores => _errores.stream;
+
+  @override
+  Stream<AvisoAudio> get avisosAudio => _avisosAudio.stream;
+
+  @override
   Future<String> iniciarGrabacion({
     required TipoSesion tipo,
     String? topicId,
-    bool capturarPantalla = true,
   }) async {
     final id = await rust.iniciarGrabacion(
       tipo: tipo.clave,
       topicId: topicId,
       titulo: null,
       capturarSistema: true,
-      capturarDiapositivas: capturarPantalla,
+      // El parámetro sigue en el puente generado por compatibilidad, pero
+      // las capturas automáticas quedaron desactivadas; la manual es aparte.
       soloLocal: false,
       ahoraMs: DateTime.now().millisecondsSinceEpoch,
     );
@@ -277,16 +293,55 @@ class RepositorioRust implements Repositorio {
     }
   }
 
+  @override
+  Future<int> renombrarParticipante({
+    required String sesionId,
+    required Pista pista,
+    required String de,
+    required String a,
+  }) async {
+    final cambiadas = await rust.renombrarHablante(
+      sessionId: sesionId,
+      pista: pista.clave,
+      de: de,
+      a: a,
+    );
+    return cambiadas.toInt();
+  }
+
+  /// Vuelve a generar los apuntes sin transcribir. Como [procesar], el sondeo
+  /// corre en paralelo para que el progreso llegue al flujo.
+  @override
+  Future<ResultadoProceso> regenerarNotas(String sesionId) async {
+    _arrancarSondeo();
+    try {
+      final r = await rust.regenerarNotas(
+        sessionId: sesionId,
+        ahoraMs: DateTime.now().millisecondsSinceEpoch,
+      );
+      return ResultadoProceso(
+        frases: r.frases.toInt(),
+        avisos: r.avisos.toInt(),
+        costeUsd: r.costeUsd,
+        proveedor: r.proveedor,
+      );
+    } finally {
+      _pararSondeo();
+    }
+  }
+
   /// Estado de cada proveedor de IA, para la pantalla de ajustes.
   Future<List<ProveedorInfo>> proveedoresInfo() async {
     final l = await rust.listarProveedores();
     return l
-        .map((p) => ProveedorInfo(
-              id: p.id,
-              modelo: p.modelo,
-              origenClave: p.origenClave,
-              esLocal: p.esLocal,
-            ))
+        .map(
+          (p) => ProveedorInfo(
+            id: p.id,
+            modelo: p.modelo,
+            origenClave: p.origenClave,
+            esLocal: p.esLocal,
+          ),
+        )
         .toList();
   }
 
@@ -313,16 +368,16 @@ class RepositorioRust implements Repositorio {
       carpetaApuntes: a.carpetaApuntes,
       carpetaEfectiva: a.carpetaEfectiva,
       modelo: a.modelo,
-      capturarDiapositivas: a.capturarDiapositivas,
+      idiomaTranscripcion: a.idiomaTranscripcion,
     );
   }
 
   /// Guarda los ajustes. Falla si la carpeta no existe o no se puede escribir.
   Future<void> guardarAjustes(AjustesApp a) => rust.guardarAjustes(
-        carpetaApuntes: a.carpetaApuntes,
-        modelo: a.modelo,
-        capturarDiapositivas: a.capturarDiapositivas,
-      );
+    carpetaApuntes: a.carpetaApuntes,
+    modelo: a.modelo,
+    idiomaTranscripcion: a.idiomaTranscripcion,
+  );
 
   /// Carpetas de sincronización detectadas, para sugerirlas.
   Future<List<String>> carpetasSugeridas() => rust.carpetasSugeridas();
@@ -359,8 +414,7 @@ class RepositorioRust implements Repositorio {
     required String nombre,
     String? persona,
     bool esCliente = false,
-  }) =>
-      rust.crearTopic(nombre: nombre, persona: persona, esCliente: esCliente);
+  }) => rust.crearTopic(nombre: nombre, persona: persona, esCliente: esCliente);
 
   /// Vacía la cola de eventos del núcleo hacia los flujos de la interfaz.
   ///
@@ -396,28 +450,53 @@ class RepositorioRust implements Repositorio {
   void _procesarEvento(rust.EventoDto e) {
     switch (e.tipo) {
       case 'niveles':
-        _estado.add(EstadoGrabacion(
-          grabando: true,
-          transcurrido: Duration(milliseconds: e.transcurridoMs.toInt()),
-          hablandoMicro: e.nivelMic > 0.01,
-          hablandoSistema: e.nivelSistema > 0.01,
-        ));
+        _estado.add(
+          EstadoGrabacion(
+            grabando: true,
+            transcurrido: Duration(milliseconds: e.transcurridoMs.toInt()),
+            hablandoMicro: e.nivelMic > 0.01,
+            hablandoSistema: e.nivelSistema > 0.01,
+          ),
+        );
       case 'frase':
-        _frases.add(Frase(
-          inicioMs: e.inicioMs.toInt(),
-          finMs: e.finMs.toInt(),
-          texto: e.texto ?? '',
-          pista: e.track == 'mic' ? Pista.micro : Pista.sistema,
-          definitiva: e.definitiva,
-        ));
+        _frases.add(
+          Frase(
+            inicioMs: e.inicioMs.toInt(),
+            finMs: e.finMs.toInt(),
+            texto: e.texto ?? '',
+            pista: e.track == 'mic' ? Pista.micro : Pista.sistema,
+            definitiva: e.definitiva,
+            estableHasta: e.estableHastaUtf16.toInt(),
+          ),
+        );
       case 'progreso':
-        _progreso.add(Progreso(
-          fase: e.fase ?? '',
-          fraccion: e.fraccion,
-          detalle: e.detalle ?? '',
-        ));
+        _progreso.add(
+          Progreso(
+            fase: e.fase ?? '',
+            fraccion: e.fraccion,
+            detalle: e.detalle ?? '',
+          ),
+        );
+      case 'salud':
+        // El puente no se regeneró para este evento y reutiliza campos del
+        // DTO: `track` es la pista, `fase` el código, `definitiva` si está
+        // activo y `fraccion` la medida que lo disparó.
+        _avisosAudio.add(
+          AvisoAudio(
+            pista: e.track == 'mic' ? Pista.micro : Pista.sistema,
+            codigo: e.fase ?? '',
+            activo: e.definitiva,
+            valor: e.fraccion,
+            mensaje: e.mensaje ?? '',
+          ),
+        );
       case 'error':
+        // Al stream, además de a la traza: `debugPrint` solo lo ve quien
+        // ejecuta desde el IDE, y estos avisos —«no se pudo cargar el
+        // modelo»— son justo los que el usuario necesita leer en la pantalla
+        // mientras graba.
         debugPrint('núcleo: ${e.mensaje}');
+        _errores.add(e.mensaje ?? 'fallo sin descripción en el núcleo');
     }
   }
 
@@ -432,31 +511,34 @@ class RepositorioRust implements Repositorio {
     _frases.close();
     _estado.close();
     _progreso.close();
+    _errores.close();
+    _avisosAudio.close();
   }
 
   // -- Traducción -----------------------------------------------------------
 
   static Sesion _aSesion(rust.SesionDto s) => Sesion(
-        id: s.id,
-        topicId: s.topicId,
-        tipo: TipoSesion.desdeClave(s.kind),
-        estado: EstadoSesion.desdeClave(s.status),
-        inicio: DateTime.fromMillisecondsSinceEpoch(s.startedAt.toInt()),
-        fin: s.endedAt == null
-            ? null
-            : DateTime.fromMillisecondsSinceEpoch(s.endedAt!.toInt()),
-        titulo: s.title,
-        appCapturada: s.appCaptured,
-        numDiapositivas: s.numDiapositivas.toInt(),
-        costeUsd: s.costeUsd,
-      );
+    id: s.id,
+    topicId: s.topicId,
+    tipo: TipoSesion.desdeClave(s.kind),
+    estado: EstadoSesion.desdeClave(s.status),
+    inicio: DateTime.fromMillisecondsSinceEpoch(s.startedAt.toInt()),
+    fin: s.endedAt == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(s.endedAt!.toInt()),
+    titulo: s.title,
+    appCapturada: s.appCaptured,
+    numDiapositivas: s.numDiapositivas.toInt(),
+    costeUsd: s.costeUsd,
+  );
 
   static Frase _aFrase(rust.FraseDto f) => Frase(
-        inicioMs: f.inicioMs.toInt(),
-        finMs: f.finMs.toInt(),
-        texto: f.texto,
-        pista: f.track == 'mic' ? Pista.micro : Pista.sistema,
-        hablante: f.speaker,
-        definitiva: f.definitiva,
-      );
+    inicioMs: f.inicioMs.toInt(),
+    finMs: f.finMs.toInt(),
+    texto: f.texto,
+    pista: f.track == 'mic' ? Pista.micro : Pista.sistema,
+    hablante: f.speaker,
+    definitiva: f.definitiva,
+    estableHasta: f.definitiva ? f.texto.length : 0,
+  );
 }

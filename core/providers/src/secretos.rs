@@ -245,7 +245,7 @@ const SERVICIO_LLAVERO: &str = "dictar_ia";
 /// Solo en escritorio: en Android no hay llavero al que enlazar, y la
 /// dependencia `keyring` queda fuera de la compilación (ver `Cargo.toml`), así
 /// que esta es una de dos definiciones con la misma firma —esta y la de más
-/// abajo—, igual que hace `dictar_screen::iniciar` con `xcap`. Quien llama
+/// abajo—, igual que hace `dictar_screen::capturar_ahora` con `xcap`. Quien llama
 /// (`resolver_por_defecto`) no escribe un solo `#[cfg]`.
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub struct LlaveroResolver;

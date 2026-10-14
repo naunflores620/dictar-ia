@@ -23,10 +23,11 @@ pub fn ejecutar(opts: &HashMap<String, String>) -> Result<()> {
     };
 
     let modelo = match opts.get("modelo").map(String::as_str).unwrap_or("turbo") {
+        "tiny" => Modelo::Tiny,
         "small" => Modelo::Small,
         "medium" => Modelo::Medium,
         "turbo" | "large" => Modelo::LargeV3Turbo,
-        otro => bail!("modelo desconocido «{otro}»: usa small, medium o turbo"),
+        otro => bail!("modelo desconocido «{otro}»: usa tiny, small, medium o turbo"),
     };
 
     let ruta_modelo = modelos::localizar(modelo)?;
@@ -73,15 +74,39 @@ pub fn ejecutar(opts: &HashMap<String, String>) -> Result<()> {
     );
 
     // -- Transcripción -------------------------------------------------------
-    let mut opciones = SttOpciones::definitiva();
+    // Permite medir el costo de los ajustes reales de la pasada incremental
+    // (menos hilos y sin timestamps internos) sobre el mismo WAV y el mismo
+    // troceado que la pasada definitiva.
+    let borrador = opts.contains_key("borrador");
+    let mut opciones = if borrador {
+        SttOpciones::en_vivo()
+    } else {
+        SttOpciones::definitiva()
+    };
+    if opts.contains_key("con-timestamps") {
+        opciones.sin_marcas_de_tiempo = false;
+    }
     if let Some(g) = opts.get("glosario") {
         opciones.glosario = Some(g.clone());
     }
     if let Some(i) = opts.get("idioma") {
-        opciones.idioma = Some(i.clone());
+        opciones.idioma = if i.eq_ignore_ascii_case("auto") {
+            None
+        } else {
+            Some(i.clone())
+        };
     }
 
-    println!("Transcribiendo con {} hilos…\n", opciones.hilos);
+    println!(
+        "Modo: {} · {} hilos · timestamps internos: {}\n",
+        if borrador {
+            "borrador en vivo"
+        } else {
+            "definitivo"
+        },
+        opciones.hilos,
+        !opciones.sin_marcas_de_tiempo
+    );
     let t0 = Instant::now();
     let mut audio_procesado_s = 0.0f64;
 
@@ -90,7 +115,11 @@ pub fn ejecutar(opts: &HashMap<String, String>) -> Result<()> {
         audio_procesado_s += s.pcm.len() as f64 / SAMPLE_RATE as f64;
 
         for f in frags {
-            let ts = s.inicio_ms + f.inicio_ms;
+            let ts = if opciones.sin_marcas_de_tiempo {
+                s.inicio_ms
+            } else {
+                s.inicio_ms + f.inicio_ms
+            };
             // La confianza se muestra: distinguir lo cierto de lo dudoso es lo
             // que permite fiarse de unos apuntes automáticos.
             let marca = if f.confianza < 0.5 { " ⚠️" } else { "" };
@@ -99,20 +128,27 @@ pub fn ejecutar(opts: &HashMap<String, String>) -> Result<()> {
     }
 
     let transcurrido = t0.elapsed().as_secs_f64();
-    let velocidad = if transcurrido > 0.0 {
+    let ritmo_segmentos = if transcurrido > 0.0 {
         audio_procesado_s / transcurrido
+    } else {
+        0.0
+    };
+    let ritmo_fuente = if transcurrido > 0.0 {
+        duracion_s / transcurrido
     } else {
         0.0
     };
 
     println!("\n─────────────────────────────────────────────");
-    println!("Audio con voz:   {audio_procesado_s:.1} s de {duracion_s:.1} s");
-    println!("Tiempo de CPU:   {transcurrido:.1} s");
-    println!("Velocidad:       {velocidad:.1}× tiempo real");
+    println!("Audio fuente:       {duracion_s:.1} s");
+    println!("Audio en segmentos: {audio_procesado_s:.1} s (incluye solapes)");
+    println!("Tiempo de pared:    {transcurrido:.1} s");
+    println!("Ritmo fuente:       {ritmo_fuente:.2}× tiempo real");
+    println!("Ritmo segmentos:    {ritmo_segmentos:.2}× tiempo real");
 
     // Lo que de verdad quiere saber el usuario: cuánto tarda su semana.
-    if velocidad > 0.0 {
-        let diez_horas_min = (10.0 * 3600.0 / velocidad) / 60.0;
+    if ritmo_fuente > 0.0 {
+        let diez_horas_min = (10.0 * 3600.0 / ritmo_fuente) / 60.0;
         println!(
             "\n→ Diez horas de clase se procesarían en {:.0} min ({:.1} h)",
             diez_horas_min,
@@ -131,6 +167,7 @@ pub fn ejecutar(opts: &HashMap<String, String>) -> Result<()> {
 /// Descarga un modelo.
 pub fn descargar(opts: &HashMap<String, String>) -> Result<()> {
     let modelo = match opts.get("descargar").map(String::as_str).unwrap_or("turbo") {
+        "tiny" => Modelo::Tiny,
         "small" => Modelo::Small,
         "medium" => Modelo::Medium,
         _ => Modelo::LargeV3Turbo,
