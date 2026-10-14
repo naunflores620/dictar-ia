@@ -182,7 +182,12 @@ jobs:
           # duplicaría el tiempo del job para cubrir hardware residual.
           targets: aarch64-linux-android
 
+      # La clave incluye el NDK porque rust-cache no lo sabe: este job
+      # restauraba un `whisper-rs-sys` compilado con el NDK 29 y ocultaba que
+      # con el NDK 30 no compila. Al cambiar de NDK hay que cambiar la clave.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ndk-27
 
       # `bindgen` (vía whisper-rs-sys) necesita libclang también aquí, y
       # cmake compila whisper.cpp cruzado con la cadena del NDK.
@@ -198,8 +203,13 @@ jobs:
       # Los runners de Ubuntu traen el NDK preinstalado, pero nada apunta a
       # él: `cargo ndk` lo busca por esta variable y sin ella falla diciendo
       # que no encuentra el NDK, que suena a que no está instalado.
+      #
+      # Se fija el NDK 27 (`ANDROID_NDK_ROOT`) y no `ANDROID_NDK_LATEST_HOME`:
+      # el NDK 30 rechaza en `sys/cdefs.h` los triples sin nivel de API
+      # («Unversioned target triples are not supported!») y whisper-rs-sys no
+      # compila. Mismo NDK en release.yml.
       - name: apuntar al NDK
-        run: echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+        run: echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT" >> "$GITHUB_ENV"
 
       # `--platform 26` no es decorativo: `cargo ndk` usa el nivel 21 por
       # defecto, y `libaaudio.so` **no existe** en el sysroot del NDK por
