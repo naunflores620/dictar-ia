@@ -117,7 +117,7 @@ class _IdiomaTranscripcionState extends State<_IdiomaTranscripcion> {
     if (r is! RepositorioRust) return;
     final a = await r.ajustes();
     if (!mounted) return;
-    setState(() => _idioma = a.idiomaTranscripcion ?? 'auto');
+    setState(() => _idioma = a.idiomaTranscripcion ?? 'es');
   }
 
   Future<void> _guardar(String idioma) async {
@@ -169,11 +169,11 @@ class _IdiomaTranscripcionState extends State<_IdiomaTranscripcion> {
           const SizedBox(height: 6),
           Text(
             'Selecciona el idioma del audio de la clase, no el de la interfaz '
-            'ni el de los apuntes. Automático queda seleccionado al instalar '
-            'para no asumir el idioma del video. En Windows, Español e Inglés '
+            'ni el de los apuntes. Español es el valor por defecto; Automático '
+            'usa Whisper Tiny y puede confundir el idioma. En Windows, Español e Inglés '
             'usan reconocimiento local incremental de bajo consumo. En Windows, '
             'Español usa Sherpa-ONNX y recurre a Vosk si no está disponible; '
-            'Inglés usa Vosk. Automático usa Whisper Tiny. Se aplica a sesiones nuevas.',
+            'Inglés usa Vosk. Se aplica a sesiones nuevas.',
             style: t.textTheme.bodySmall?.copyWith(
               color: t.colorScheme.outline,
               height: 1.45,
