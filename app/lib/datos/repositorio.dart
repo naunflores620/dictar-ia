@@ -61,6 +61,20 @@ abstract class Repositorio {
   /// Avance del procesado, para la barra.
   Stream<Progreso> get progreso;
 
+  /// Cambia el nombre de un participante en un canal de la sesión. Si [a] ya es
+  /// el nombre de otro participante del canal, quedan fusionados. Devuelve
+  /// cuántas frases cambiaron.
+  Future<int> renombrarParticipante({
+    required String sesionId,
+    required Pista pista,
+    required String de,
+    required String a,
+  });
+
+  /// Vuelve a generar los apuntes con la transcripción actual, sin transcribir
+  /// de nuevo. Cuesta una generación de notas.
+  Future<ResultadoProceso> regenerarNotas(String sesionId);
+
   /// Guarda una captura de la pantalla en la sesión en curso.
   ///
   /// Es la vía manual: el usuario decide el momento, así que la lámina es la
@@ -249,7 +263,21 @@ class RepositorioDemo implements Repositorio {
       _sesiones.where((s) => s.estado == EstadoSesion.grabando).toList();
 
   @override
-  Future<List<Frase>> transcripcion(String sesionId) async => const [
+  Future<List<Frase>> transcripcion(String sesionId) async => [
+    for (final f in _transcripcionBase)
+      if (_renombrados[(f.pista, f.quien)] case final nuevo?)
+        Frase(
+          inicioMs: f.inicioMs,
+          finMs: f.finMs,
+          texto: f.texto,
+          pista: f.pista,
+          hablante: nuevo,
+        )
+      else
+        f,
+  ];
+
+  static const _transcripcionBase = [
     Frase(
       inicioMs: 12000,
       finMs: 19000,
@@ -549,6 +577,34 @@ Definición de la transformada. _Diapositiva #7_ · _[00:01:40]_
   @override
   Future<void> borrarSesion(String sesionId) async {
     _sesiones.removeWhere((s) => s.id == sesionId);
+  }
+
+  /// Nombres puestos a mano en la demostración, por (canal, nombre anterior).
+  final Map<(Pista, String), String> _renombrados = {};
+
+  @override
+  Future<int> renombrarParticipante({
+    required String sesionId,
+    required Pista pista,
+    required String de,
+    required String a,
+  }) async {
+    final cambiadas = (await transcripcion(
+      sesionId,
+    )).where((f) => f.pista == pista && f.quien == de).length;
+    _renombrados[(pista, de)] = a.trim();
+    return cambiadas;
+  }
+
+  @override
+  Future<ResultadoProceso> regenerarNotas(String sesionId) async {
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    return const ResultadoProceso(
+      frases: 42,
+      avisos: 2,
+      costeUsd: 0.0024,
+      proveedor: 'demostración',
+    );
   }
 
   @override

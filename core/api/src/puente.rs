@@ -736,9 +736,73 @@ pub fn procesar_sesion(session_id: String, ahora_ms: i64) -> Result<ProcesadaDto
     })
 }
 
+/// Pista a partir del texto que usa la interfaz (`"mic"` o `"system"`).
+fn pista_desde_texto(pista: &str) -> Result<dictar_domain::Track, String> {
+    pista
+        .parse()
+        .map_err(|_| format!("pista desconocida «{pista}»: se esperaba «mic» o «system»"))
+}
+
+/// Cambia el nombre de un participante en una pista de la sesión. Devuelve
+/// cuántas frases cambiaron. Si `a` es el nombre de otro participante de esa
+/// pista, los dos quedan fusionados.
+pub fn renombrar_hablante(
+    session_id: String,
+    pista: String,
+    de: String,
+    a: String,
+) -> Result<i64, String> {
+    let pista = pista_desde_texto(&pista)?;
+    nucleo()?
+        .renombrar_hablante(&SessionId::from(session_id), pista, &de, &a)
+        .map(|n| n as i64)
+        .map_err(|e| e.to_string())
+}
+
+/// Vuelve a generar los apuntes con la transcripción actual, sin volver a
+/// transcribir. Cuesta una generación de notas.
+///
+/// Como `procesar_sesion`, es una llamada larga y va en un aislado propio en Dart.
+pub fn regenerar_notas(session_id: String, ahora_ms: i64) -> Result<ProcesadaDto, String> {
+    let n = nucleo()?;
+    let id = SessionId::from(session_id);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    *EVENTOS.lock().unwrap() = Some(rx);
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let r = rt
+        .block_on(n.regenerar_notas(&id, ahora_ms, Some(tx)))
+        .map_err(|e| e.to_string())?;
+
+    Ok(ProcesadaDto {
+        session_id: r.session_id.0,
+        frases: r.frases as i64,
+        avisos: r.avisos as i64,
+        coste_usd: r.coste_usd,
+        proveedor: r.proveedor,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn la_pista_se_lee_como_la_escribe_la_interfaz() {
+        use dictar_domain::Track;
+        assert_eq!(pista_desde_texto("mic"), Ok(Track::Mic));
+        assert_eq!(pista_desde_texto("system"), Ok(Track::System));
+        // Un error con el valor recibido: «Mic» con mayúscula o «sistema» en
+        // castellano serían un fallo de la interfaz que de otro modo se
+        // manifestaría como un renombrado que no cambia nada.
+        let e = pista_desde_texto("sistema").unwrap_err();
+        assert!(e.contains("sistema"), "mensaje: {e}");
+    }
 
     #[test]
     fn automatico_se_conserva_al_normalizar_y_persistir_ajustes() {

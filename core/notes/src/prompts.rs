@@ -7,7 +7,31 @@
 
 /// Súbela al cambiar cualquier plantilla de este archivo. Es lo que permite
 /// saber, meses después, con qué instrucciones se generaron unos apuntes.
-pub const VERSION: &str = "v2";
+pub const VERSION: &str = "v3";
+
+/// Cómo leer las etiquetas de hablante de la transcripción.
+///
+/// Es una macro y no una constante porque `concat!` solo acepta literales, y
+/// así el mismo texto entra en los tres prompts que muestran la transcripción
+/// sin que puedan desviarse entre sí.
+///
+/// Antes decía «"Interlocutor" es el cliente». Con la diarización, el sistema
+/// puede traer varias voces («Participante 1», «Participante 2»…) o el nombre
+/// que el usuario les puso, y el micrófono puede traer a personas de la sala:
+/// suponer quién es el cliente atribuiría sus compromisos a otra persona.
+macro_rules! aviso_etiquetas {
+    () => {
+        concat!(
+            "En la transcripción, «Yo» es el usuario; el resto de etiquetas son ",
+            "otros participantes. Si una etiqueta es un nombre propio, úsalo. Si hay ",
+            "varias etiquetas distintas de «Yo», no supongas cuál es el cliente ni ",
+            "quién decide: dedúcelo solo de lo que dicen."
+        )
+    };
+}
+
+/// El mismo aviso como constante, para pruebas y para quien arme un prompt a mano.
+pub const AVISO_ETIQUETAS: &str = aviso_etiquetas!();
 
 /// Sustitución de marcadores `{nombre}`.
 ///
@@ -77,11 +101,12 @@ Reglas que no se rompen nunca:
 // Map — extracción por bloque
 // ---------------------------------------------------------------------------
 
-pub const MAP: &str = "\
-Analiza este fragmento de la transcripción y extrae lo que contenga, \
-siguiendo el esquema.
-
-TIPO DE SESIÓN: {tipo}
+pub const MAP: &str = concat!(
+    "Analiza este fragmento de la transcripción y extrae lo que contenga, ",
+    "siguiendo el esquema.\n\n",
+    aviso_etiquetas!(),
+    "\n\n",
+    "TIPO DE SESIÓN: {tipo}
 CONTEXTO: {contexto}
 FECHA DE LA SESIÓN: {fecha}
 GLOSARIO CONOCIDO: {glosario}
@@ -92,7 +117,8 @@ FRAGMENTO (bloque {bloque} de {total}, de {inicio} a {fin} ms):
 Extrae únicamente lo que aparezca en ESTE fragmento. Si un campo no tiene \
 contenido aquí, devuelve una lista vacía; no lo rellenes con nada del \
 contexto general. El resumen «tldr» de este bloque debe describir solo este \
-fragmento, no la sesión entera.";
+fragmento, no la sesión entera."
+);
 
 // ---------------------------------------------------------------------------
 // Reduce — documento final
@@ -126,12 +152,14 @@ Criterios:
 - «glosario_nuevo»: términos técnicos que no estaban ya en el glosario.
 - Conserva el «ts_ms» original de cada elemento.";
 
-pub const REDUCE_CLIENTE: &str = "\
-Tienes los extractos estructurados de una reunión de {duracion} con un cliente.
+pub const REDUCE_CLIENTE: &str = concat!(
+    "Tienes los extractos estructurados de una reunión de {duracion} con un cliente.
 
 CLIENTE: {contexto}
 FECHA DE LA REUNIÓN: {fecha}
-En la transcripción, «Yo» soy yo; «Interlocutor» es el cliente.
+",
+    aviso_etiquetas!(),
+    "
 
 EXTRACTOS POR BLOQUE:
 {extractos}
@@ -155,13 +183,17 @@ Criterios:
 - No añades recomendaciones comerciales: documentas la reunión, no la asesoras.
 - Los bloques se solapan, así que el mismo asunto aparecerá en varios \
   extractos: fúndelo en una sola entrada en lugar de repetirlo.
-- Conserva el «ts_ms» original de cada elemento.";
+- Conserva el «ts_ms» original de cada elemento."
+);
 
-pub const REDUCE_EQUIPO: &str = "\
-Tienes los extractos estructurados de una reunión de trabajo de {duracion}.
+pub const REDUCE_EQUIPO: &str = concat!(
+    "Tienes los extractos estructurados de una reunión de trabajo de {duracion}.
 
 CONTEXTO: {contexto}
 FECHA DE LA REUNIÓN: {fecha}
+",
+    aviso_etiquetas!(),
+    "
 EXTRACTOS POR BLOQUE:
 {extractos}
 
@@ -174,7 +206,8 @@ Criterios:
 - «tareas»: responsable y fecha ÚNICAMENTE si se dijeron. En caso contrario, \
   null. Es preferible una tarea sin responsable que un responsable inventado.
 - Los bloques se solapan: funde los duplicados en lugar de repetirlos.
-- Conserva el «ts_ms» original de cada elemento.";
+- Conserva el «ts_ms» original de cada elemento."
+);
 
 // ---------------------------------------------------------------------------
 // Resumen rodante — durante la sesión
@@ -231,6 +264,27 @@ mod tests {
         assert!(SISTEMA.contains("ts_ms"));
         assert!(SISTEMA.contains("null"));
         assert!(SISTEMA.contains("No añades conocimiento externo"));
+    }
+
+    #[test]
+    fn los_prompts_que_muestran_la_transcripcion_explican_las_etiquetas() {
+        // Con diarización, el sistema puede traer «Participante 1», «Participante
+        // 2» o un nombre puesto por el usuario. Antes los prompts decían que
+        // «Interlocutor» era el cliente, y las actas de reuniones con varias
+        // personas habrían atribuido a una sola todo lo que dijeron los demás.
+        for p in [MAP, REDUCE_CLIENTE, REDUCE_EQUIPO] {
+            assert!(p.contains("«Yo» es el usuario"));
+            assert!(p.contains("nombre propio, úsalo"));
+            assert!(p.contains(AVISO_ETIQUETAS));
+            assert!(!p.contains("«Interlocutor» es el cliente"));
+        }
+    }
+
+    #[test]
+    fn el_aviso_de_etiquetas_no_introduce_marcadores_sin_sustituir() {
+        // `render` deja visible cualquier `{algo}` que no conozca; si el aviso
+        // trajera llaves, cada prompt saldría con un marcador huérfano.
+        assert!(!AVISO_ETIQUETAS.contains(['{', '}']));
     }
 
     #[test]

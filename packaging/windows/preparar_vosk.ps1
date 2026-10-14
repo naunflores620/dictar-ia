@@ -101,6 +101,56 @@ The model files are distributed unmodified. The sherpa-onnx runtime is separatel
 '@
   [System.IO.File]::WriteAllText((Join-Path $release 'Sherpa-Spanish-MODEL-ATTRIBUTION.txt'), $atribucion, [System.Text.UTF8Encoding]::new($false))
 
+  # Diarización (DIA-1): quién habla en una reunión. Dos modelos, ambos de las
+  # versiones publicadas por sherpa-onnx, con el SHA-256 de lo que se midió en la
+  # evaluación A7. Los nombres de destino son los que busca
+  # `dictar_stt::diarizacion` (MODELO_SEGMENTACION y MODELO_EMBEDDING): si se
+  # cambian aquí hay que cambiarlos allí.
+  $diarizacionDir = Join-Path $models 'diarizacion'
+  New-Item -ItemType Directory -Force -Path $diarizacionDir | Out-Null
+
+  # Segmentación pyannote 3.0 (licencia MIT). Viene dentro de un .tar.bz2 junto
+  # con su LICENSE; `tar.exe` de Windows 10+ lo abre.
+  $segTar = Join-Path $work 'pyannote-segmentation-3-0.tar.bz2'
+  Descargar-Archivo 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2' $segTar
+  $segTarHash = (Get-FileHash -LiteralPath $segTar -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($segTarHash -ne '24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488') {
+    throw "El SHA-256 de la segmentación pyannote no coincide: $segTarHash"
+  }
+  $segDir = Join-Path $work 'pyannote-seg'
+  New-Item -ItemType Directory -Force -Path $segDir | Out-Null
+  # Con la ruta completa: el `tar.exe` de Git for Windows, que puede ir antes en el
+  # PATH, no entiende rutas con unidad (`C:`) y falla sin decir por qué.
+  & (Join-Path $env:SystemRoot 'System32\tar.exe') -xjf $segTar -C $segDir
+  if ($LASTEXITCODE -ne 0) {
+    throw 'No se pudo abrir el paquete de segmentación pyannote (tar.exe).'
+  }
+  $segModelo = Join-Path $segDir 'sherpa-onnx-pyannote-segmentation-3-0\model.onnx'
+  $segModeloHash = (Get-FileHash -LiteralPath $segModelo -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($segModeloHash -ne '220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079') {
+    throw "El SHA-256 de model.onnx (pyannote) no coincide: $segModeloHash"
+  }
+  Copy-Item -LiteralPath $segModelo -Destination (Join-Path $diarizacionDir 'pyannote-segmentation-3-0.onnx') -Force
+  Copy-Item -LiteralPath (Join-Path $segDir 'sherpa-onnx-pyannote-segmentation-3-0\LICENSE') -Destination (Join-Path $release 'Pyannote-Segmentation-LICENSE.txt') -Force
+
+  # Embeddings de hablante: CAM++ de 3D-Speaker (licencia Apache-2.0).
+  $embedding = Join-Path $work '3dspeaker-campplus.onnx'
+  Descargar-Archivo 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx' $embedding
+  $embeddingHash = (Get-FileHash -LiteralPath $embedding -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($embeddingHash -ne 'f682b514c05d947ee3fa91cd6ec6c5c7543479a128373fa29b1faedccd21fd11') {
+    throw "El SHA-256 del modelo de embeddings 3D-Speaker no coincide: $embeddingHash"
+  }
+  Copy-Item -LiteralPath $embedding -Destination (Join-Path $diarizacionDir '3dspeaker-campplus-sv-zh-cn-16k.onnx') -Force
+  Descargar-Archivo 'https://raw.githubusercontent.com/modelscope/3D-Speaker/main/LICENSE' (Join-Path $release '3D-Speaker-LICENSE.txt')
+
+  $atribucionDiarizacion = @'
+Speaker diarization models (DIA-1), distributed unmodified:
+- Segmentation: pyannote/segmentation-3.0 exported to ONNX by sherpa-onnx (sherpa-onnx-pyannote-segmentation-3-0). License: MIT (Pyannote-Segmentation-LICENSE.txt).
+- Speaker embeddings: 3D-Speaker CAM++ (3dspeaker_speech_campplus_sv_zh-cn_16k-common). License: Apache License 2.0 (3D-Speaker-LICENSE.txt).
+Both are published at https://github.com/k2-fsa/sherpa-onnx/releases and run with the sherpa-onnx runtime (Apache License 2.0).
+'@
+  [System.IO.File]::WriteAllText((Join-Path $release 'Diarization-MODELS-ATTRIBUTION.txt'), $atribucionDiarizacion, [System.Text.UTF8Encoding]::new($false))
+
   $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
   $cargoTarget = $env:CARGO_TARGET_DIR
   if ([string]::IsNullOrWhiteSpace($cargoTarget)) {
@@ -139,7 +189,17 @@ The model files are distributed unmodified. The sherpa-onnx runtime is separatel
       throw "No se empaquetó el archivo Sherpa requerido: $file"
     }
   }
-  Write-Host 'Modelos locales preparados en Release (Sherpa-ONNX, Vosk, Whisper Tiny y licencias).'
+  foreach ($archivo in @('pyannote-segmentation-3-0.onnx', '3dspeaker-campplus-sv-zh-cn-16k.onnx')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $diarizacionDir $archivo) -PathType Leaf)) {
+      throw "No se empaquetó el modelo de diarización requerido: $archivo"
+    }
+  }
+  foreach ($licencia in @('Pyannote-Segmentation-LICENSE.txt', '3D-Speaker-LICENSE.txt', 'Diarization-MODELS-ATTRIBUTION.txt')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $release $licencia) -PathType Leaf)) {
+      throw "Falta la licencia de diarización: $licencia"
+    }
+  }
+  Write-Host 'Modelos locales preparados en Release (Sherpa-ONNX, Vosk, Whisper Tiny, diarización y licencias).'
 }
 finally {
   $resolvedWork = [System.IO.Path]::GetFullPath($work)

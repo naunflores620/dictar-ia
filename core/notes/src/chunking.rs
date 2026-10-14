@@ -172,6 +172,43 @@ mod tests {
     }
 
     #[test]
+    fn con_una_voz_por_canal_la_transcripcion_sale_igual_que_antes_de_la_diarizacion() {
+        // Una reunión sin diarización útil sigue con «Yo» y el nombre del
+        // interlocutor, y una sin etiquetas guardadas conserva el respaldo
+        // «Interlocutor»: los apuntes de hoy no deben cambiar.
+        let mut mic = frase(1, 1_000, 1);
+        mic.track = Track::Mic;
+        mic.speaker = Some("Yo".into());
+        let mut cliente = frase(2, 2_000, 1);
+        cliente.speaker = Some("Cliente".into());
+        let sin_etiqueta = frase(3, 3_000, 1);
+
+        assert_eq!(
+            formatear(&[mic, cliente, sin_etiqueta]),
+            "[1000] Yo: palabra\n[2000] Cliente: palabra\n[3000] Interlocutor: palabra"
+        );
+    }
+
+    #[test]
+    fn las_etiquetas_de_varias_voces_llegan_tal_cual_al_modelo() {
+        // El modelo recibe «Participante 2» o el nombre que puso el usuario;
+        // `formatear` no debe normalizarlas a «Interlocutor».
+        let mut a = frase(1, 0, 1);
+        a.speaker = Some("Participante 2".into());
+        let mut b = frase(2, 5_000, 1);
+        b.speaker = Some("Carlos (socio)".into());
+        let mut c = frase(3, 9_000, 1);
+        c.track = Track::Mic;
+        c.speaker = Some("Persona en sala 1".into());
+
+        let texto = formatear(&[a, b, c]);
+        assert!(texto.contains("[0] Participante 2: "));
+        assert!(texto.contains("[5000] Carlos (socio): "));
+        assert!(texto.contains("[9000] Persona en sala 1: "));
+        assert!(!texto.contains("Interlocutor"));
+    }
+
+    #[test]
     fn se_respeta_el_nombre_de_hablante_cuando_existe() {
         let mut f = frase(1, 0, 2);
         f.speaker = Some("Profesor".into());
