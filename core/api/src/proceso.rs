@@ -45,6 +45,36 @@ pub(crate) fn falta_cobertura(duracion_ms: Option<i64>, fin_transcrito_ms: i64) 
         .unwrap_or(false)
 }
 
+/// Qué hace el cierre de una sesión que ya tiene texto en vivo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanCierre {
+    /// El texto en vivo basta: solo se confirma.
+    Confirmar,
+    /// Sistema cubierto; se transcribe por lotes solo el micrófono.
+    SoloMicrofono,
+    /// Falta cobertura real: pasada completa de ambas pistas.
+    Completa,
+}
+
+/// Decide el cierre. La cobertura temporal es de la pista de sistema (la que
+/// transcribe la ruta en vivo); si falta, el micrófono no cambia nada, porque
+/// la pasada completa ya lo incluye.
+pub(crate) fn decidir_cierre(cobertura_temporal: bool, falta_microfono: bool) -> PlanCierre {
+    match (cobertura_temporal, falta_microfono) {
+        (false, _) => PlanCierre::Completa,
+        (true, true) => PlanCierre::SoloMicrofono,
+        (true, false) => PlanCierre::Confirmar,
+    }
+}
+
+/// Pistas que decodifica el lote, en el orden en que se leen del disco.
+pub(crate) fn pistas_del_lote(solo_pista: Option<Track>) -> Vec<Track> {
+    [Track::Mic, Track::System]
+        .into_iter()
+        .filter(|t| solo_pista.is_none_or(|s| s == *t))
+        .collect()
+}
+
 /// Resultado de procesar una sesión.
 #[derive(Debug, Clone)]
 pub struct Procesada {
@@ -95,9 +125,27 @@ impl Nucleo {
                     true
                 }
             };
-            let cobertura_suficiente = cobertura_temporal && !falta_microfono;
+            let plan = decidir_cierre(cobertura_temporal, falta_microfono);
 
-            if cobertura_suficiente {
+            if plan == PlanCierre::SoloMicrofono {
+                // Sistema ya está cubierto en vivo; lo único pendiente son las
+                // intervenciones propias, que en vivo no se transcriben cuando
+                // hay loopback. Rehacer también el sistema con el modelo grande
+                // costaría minutos para dejar el mismo texto.
+                tracing::info!(
+                    fin_transcrito,
+                    duracion_ms = duracion.unwrap_or_default(),
+                    "sistema cubierto en vivo; solo se transcribe por lotes el micrófono"
+                );
+                self.con_db(|db| db.cambiar_estado(id, SessionStatus::Transcribing))?;
+                let mic =
+                    self.transcribir_lote(id, &sesion, modelo, 0, Some(Track::Mic), &emitir)?;
+                if mic.is_empty() {
+                    self.con_db(|db| db.confirmar_vivas(id))?;
+                } else {
+                    self.con_db(|db| db.reemplazar_pista_por_definitiva(id, Track::Mic, &mic))?;
+                }
+            } else if plan == PlanCierre::Confirmar {
                 // La hipótesis en vivo ya llegó hasta el final de la sesión.
                 // Reprocesar todos los WAV con Turbo repetiría minutos de CPU
                 // y volvería a sustituir los mismos tramos; se confirma el
@@ -123,7 +171,7 @@ impl Nucleo {
                 // cobertura. Este camino también conserva grabaciones cuyo
                 // reconocedor en vivo dejó de funcionar.
                 self.con_db(|db| db.cambiar_estado(id, SessionStatus::Transcribing))?;
-                let definitivas = self.transcribir_lote(id, &sesion, modelo, 0, &emitir)?;
+                let definitivas = self.transcribir_lote(id, &sesion, modelo, 0, None, &emitir)?;
                 if !definitivas.is_empty() {
                     self.con_db(|db| db.reemplazar_por_definitiva(id, &definitivas))?;
                 } else {
@@ -139,7 +187,7 @@ impl Nucleo {
         // pudo cargarse durante la clase.
         self.con_db(|db| db.cambiar_estado(id, SessionStatus::Transcribing))?;
 
-        let frases = self.transcribir_lote(id, &sesion, modelo, 0, &emitir)?;
+        let frases = self.transcribir_lote(id, &sesion, modelo, 0, None, &emitir)?;
         if frases.is_empty() {
             self.con_db(|db| db.cambiar_estado(id, SessionStatus::Failed))?;
             return Err(ApiError::Config(
@@ -241,12 +289,16 @@ impl Nucleo {
     /// cruzan la frontera pueden duplicar unas palabras, y es a propósito:
     /// el generador de notas ya funde duplicados, y perder la frase de la
     /// costura sería peor.
+    ///
+    /// Con `solo_pista` se decodifica únicamente esa pista; el retorno acústico
+    /// se sigue calculando con las dos para poder atenuar el micrófono.
     fn transcribir_lote(
         &self,
         id: &SessionId,
         sesion: &dictar_domain::Session,
         modelo: Modelo,
         desde_ms: i64,
+        solo_pista: Option<Track>,
         emitir: &dyn Fn(Evento),
     ) -> Result<Vec<NewUtterance>> {
         let glosario = match &sesion.topic_id {
@@ -285,7 +337,7 @@ impl Nucleo {
             );
         }
 
-        for track in [Track::Mic, Track::System] {
+        for track in pistas_del_lote(solo_pista) {
             let ruta = dir.join(format!("{}.wav", track.as_str()));
             if !ruta.is_file() {
                 continue;
@@ -788,6 +840,31 @@ mod tests {
 #[cfg(test)]
 mod tests_cobertura {
     use super::*;
+
+    #[test]
+    fn sistema_cubierto_con_voz_en_el_microfono_solo_retranscribe_el_microfono() {
+        // Antes, cualquier voz propia en el micrófono rehacía toda la clase con
+        // el modelo grande, pese a que el sistema ya estaba cubierto en vivo.
+        let cobertura = !falta_cobertura(Some(600_000), 598_000);
+        let plan = decidir_cierre(cobertura, true);
+        assert_eq!(plan, PlanCierre::SoloMicrofono);
+        assert_eq!(pistas_del_lote(Some(Track::Mic)), vec![Track::Mic]);
+    }
+
+    #[test]
+    fn la_cobertura_insuficiente_sigue_usando_la_pasada_completa() {
+        let cobertura = !falta_cobertura(Some(600_000), 300_000);
+        assert_eq!(decidir_cierre(cobertura, true), PlanCierre::Completa);
+        assert_eq!(decidir_cierre(cobertura, false), PlanCierre::Completa);
+        // Duración desconocida: tampoco se da por cubierta.
+        assert_eq!(decidir_cierre(false, false), PlanCierre::Completa);
+        assert_eq!(pistas_del_lote(None), vec![Track::Mic, Track::System]);
+    }
+
+    #[test]
+    fn sin_voz_pendiente_en_el_microfono_solo_se_confirma() {
+        assert_eq!(decidir_cierre(true, false), PlanCierre::Confirmar);
+    }
 
     #[test]
     fn el_silencio_de_la_despedida_no_obliga_a_retranscribir() {
