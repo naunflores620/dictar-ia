@@ -181,7 +181,8 @@ class _IdiomaTranscripcionState extends State<_IdiomaTranscripcion> {
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
-            value: _idioma,
+            key: ValueKey(_idioma),
+            initialValue: _idioma,
             decoration: InputDecoration(
               border: const OutlineInputBorder(),
               isDense: true,

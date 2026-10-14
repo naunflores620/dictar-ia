@@ -124,6 +124,8 @@ impl VoskModelo {
 impl VoskVivo {
     /// Carga un modelo y un reconocedor para usos de una sola pista.
     pub fn cargar(ruta: &Path) -> Result<Self> {
+        // Hacerlo Send/Sync exigiría un contrato de hilos que la FFI de Vosk no documenta aquí.
+        #[allow(clippy::arc_with_non_send_sync)]
         let modelo = Arc::new(VoskModelo::cargar(ruta)?);
         VoskModelo::nuevo_reconocedor(&modelo)
     }
@@ -233,8 +235,16 @@ fn localizar_dll() -> Result<PathBuf> {
 /// Ruta predeterminada de un modelo pequeño instalado junto a la app.
 pub fn modelo_para_idioma(idioma: &str) -> Result<PathBuf> {
     let (variable, carpeta, nombre) = match idioma {
-        "es" => ("DICTAR_VOSK_MODEL_ES", "vosk-model-small-es-0.42", "español"),
-        "en" => ("DICTAR_VOSK_MODEL_EN", "vosk-model-small-en-us-0.15", "inglés"),
+        "es" => (
+            "DICTAR_VOSK_MODEL_ES",
+            "vosk-model-small-es-0.42",
+            "español",
+        ),
+        "en" => (
+            "DICTAR_VOSK_MODEL_EN",
+            "vosk-model-small-en-us-0.15",
+            "inglés",
+        ),
         otro => {
             return Err(SttError::ModeloNoEncontrado(format!(
                 "no hay un modelo Vosk local configurado para el idioma {otro}"
@@ -265,9 +275,7 @@ pub fn modelo_para_idioma(idioma: &str) -> Result<PathBuf> {
         }
     }
     rutas.into_iter().find(|p| p.is_dir()).ok_or_else(|| {
-        SttError::ModeloNoEncontrado(
-            format!("modelo local {nombre} ausente ({carpeta})"),
-        )
+        SttError::ModeloNoEncontrado(format!("modelo local {nombre} ausente ({carpeta})"))
     })
 }
 

@@ -56,6 +56,8 @@ impl TranscriptorVivo {
     /// El modelo se carga aquí, en cuanto empieza la grabación: tarda unos
     /// segundos y hacerlo al final volvería a meter esa espera justo donde se
     /// quería quitar.
+    // Cambiar la firma pública (y la de la FFI) para agrupar argumentos excede un arreglo de CI.
+    #[allow(clippy::too_many_arguments)]
     pub fn iniciar(
         session_id: SessionId,
         db: PathBuf,
@@ -890,6 +892,8 @@ impl ReconocedorVivo {
 
 fn crear_reconocedores_vosk(idioma: &str) -> dictar_stt::Result<HashMap<Track, ReconocedorVivo>> {
     let ruta = dictar_stt::vosk::modelo_para_idioma(idioma)?;
+    // Igual que en `VoskVivo::cargar`: el contrato de hilos de la FFI de Vosk no es nuestro.
+    #[allow(clippy::arc_with_non_send_sync)]
     let modelo = Arc::new(dictar_stt::vosk::VoskModelo::cargar(&ruta)?);
     let mic = dictar_stt::vosk::VoskModelo::nuevo_reconocedor(&modelo)?;
     let sistema = dictar_stt::vosk::VoskModelo::nuevo_reconocedor(&modelo)?;
@@ -1259,6 +1263,8 @@ fn cerrar_frase_incremental(
     );
 }
 
+// Agrupar los parámetros en un struct solo para este helper privado no aporta claridad.
+#[allow(clippy::too_many_arguments)]
 fn guardar_frase_incremental(
     texto: String,
     track: Track,

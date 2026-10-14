@@ -13,7 +13,7 @@ use dictar_domain::alert;
 use dictar_domain::notes::NotesPayload;
 use dictar_domain::transcript::GlossarySource;
 use dictar_domain::{EpochMs, SessionId, SessionKind, SessionStatus, Track};
-use dictar_notes::{NotesGenerator, SessionContext, fecha};
+use dictar_notes::{fecha, NotesGenerator, SessionContext};
 use dictar_storage::notes_store::NewNotes;
 use dictar_storage::transcript::NewUtterance;
 use dictar_stt::diarizacion::{
@@ -22,9 +22,9 @@ use dictar_stt::diarizacion::{
 use dictar_stt::modelos::{self, Modelo};
 use dictar_stt::whisper::Transcriptor;
 use dictar_stt::{SttError, SttOpciones};
-use dictar_vad::segmentador::{SOLAPE_MS, Segmentador};
-use std::sync::Arc;
+use dictar_vad::segmentador::{Segmentador, SOLAPE_MS};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
 /// Cola sin transcribir que se tolera antes de rehacer el tramo final.
 ///

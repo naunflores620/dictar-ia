@@ -2,8 +2,8 @@ use dictar_api::transcriptor::TranscriptorVivo;
 use dictar_api::Evento;
 use dictar_audio::wav::leer_wav;
 use dictar_domain::{Session, SessionKind, SessionSource, Track};
-use dictar_stt::modelos::Modelo;
 use dictar_storage::Db;
+use dictar_stt::modelos::Modelo;
 use dictar_vad::segmentador::Segmentador;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -36,8 +36,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         otro => return Err(format!("modelo no admitido: {otro}; use tiny o small").into()),
     };
     let trans = TranscriptorVivo::iniciar(
-        session.id.clone(), db_path, modelo, String::new(), Some("es".into()),
-        "Profesor".into(), tx_eventos, inicio, metrics_path.clone(),
+        session.id.clone(),
+        db_path,
+        modelo,
+        String::new(),
+        Some("es".into()),
+        "Profesor".into(),
+        tx_eventos,
+        inicio,
+        metrics_path.clone(),
     )?;
 
     let block = (sample_rate as usize) / 5;
@@ -50,11 +57,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut edades = Vec::<i64>::new();
     let mut primera_ed = None;
 
-    let drenar = |rx: &mpsc::Receiver<Evento>, actual_ms: i64,
-                  actualizaciones: &mut usize, spans: &mut HashSet<(String, i64)>,
-                  edades: &mut Vec<i64>, primera_ed: &mut Option<i64>| {
+    let drenar = |rx: &mpsc::Receiver<Evento>,
+                  actual_ms: i64,
+                  actualizaciones: &mut usize,
+                  spans: &mut HashSet<(String, i64)>,
+                  edades: &mut Vec<i64>,
+                  primera_ed: &mut Option<i64>| {
         while let Ok(ev) = rx.try_recv() {
-            if let Evento::Frase { track, inicio_ms, fin_ms, definitiva, .. } = ev {
+            if let Evento::Frase {
+                track,
+                inicio_ms,
+                fin_ms,
+                definitiva,
+                ..
+            } = ev
+            {
                 if !definitiva {
                     *actualizaciones += 1;
                     spans.insert((track, inicio_ms));
@@ -76,8 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             trans.encolar(seg);
         }
         let reloj = Instant::now();
-        if ultimo_borrador.elapsed() >= Duration::from_secs(3)
-            && !cerro && trans.pendientes() == 0
+        if ultimo_borrador.elapsed() >= Duration::from_secs(3) && !cerro && trans.pendientes() == 0
         {
             if let Some(vista) = segmentador.vista_previa() {
                 if vista.duracion_ms() >= 2_000 && vista.merece_transcribirse() {
@@ -88,7 +104,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         let reloj_actual_ms = inicio.elapsed().as_millis() as i64;
-        drenar(&rx_eventos, reloj_actual_ms, &mut actualizaciones, &mut spans, &mut edades, &mut primera_ed);
+        drenar(
+            &rx_eventos,
+            reloj_actual_ms,
+            &mut actualizaciones,
+            &mut spans,
+            &mut edades,
+            &mut primera_ed,
+        );
         std::thread::sleep(Duration::from_millis(200));
     }
     if let Some(seg) = segmentador.finalizar() {
@@ -97,10 +120,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     trans.pedir_fin();
     trans.esperar();
     let reloj_final_ms = inicio.elapsed().as_millis() as i64;
-    drenar(&rx_eventos, reloj_final_ms, &mut actualizaciones, &mut spans, &mut edades, &mut primera_ed);
+    drenar(
+        &rx_eventos,
+        reloj_final_ms,
+        &mut actualizaciones,
+        &mut spans,
+        &mut edades,
+        &mut primera_ed,
+    );
 
     edades.sort_unstable();
-    let p95 = edades.get((edades.len().saturating_sub(1) * 95) / 100).copied().unwrap_or(0);
+    let p95 = edades
+        .get((edades.len().saturating_sub(1) * 95) / 100)
+        .copied()
+        .unwrap_or(0);
     println!("audio_s={audio_s:.2} total_wall_s={:.2} VAD_cerrados={cerrados} hipotesis_enviadas={vistas} actualizaciones_visibles={actualizaciones} spans_actualizados={} primera_edad_ms={} p95_edad_ms={p95}", inicio.elapsed().as_secs_f64(), spans.len(), primera_ed.unwrap_or(-1));
     println!("metricas={}", metrics_path.display());
     Ok(())

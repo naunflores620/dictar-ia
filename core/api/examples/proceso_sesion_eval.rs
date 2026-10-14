@@ -117,7 +117,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let frases = nucleo.transcripcion(&session_id)?;
     let finales = frases.iter().filter(|f| f.is_final).count();
     let fts_hits = if frases_semilla > 0 {
-        Db::abrir(&db_path)?.buscar("tablero", Some(&session_id))?.len()
+        Db::abrir(&db_path)?
+            .buscar("tablero", Some(&session_id))?
+            .len()
     } else {
         0
     };
@@ -167,9 +169,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         salida.display(),
     );
     println!("session_id={session_id}");
-    println!("session_status={}", nucleo.sesion(&session_id)?.status.as_str());
+    println!(
+        "session_status={}",
+        nucleo.sesion(&session_id)?.status.as_str()
+    );
     match resultado {
-        Ok(res) => println!("process_result=ok provider={} notes={}", res.proveedor, res.frases),
+        Ok(res) => println!(
+            "process_result=ok provider={} notes={}",
+            res.proveedor, res.frases
+        ),
         Err(error) => println!("process_result=expected_notes_provider_error error={error}"),
     }
     Ok(())

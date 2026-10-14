@@ -301,7 +301,7 @@ fn correlacion_retorno(mic: &[f64], sistema: &[f64]) -> Option<(f64, u64)> {
             .iter()
             .take(mic.len().saturating_sub(lag))
             .zip(mic.iter().skip(lag))
-            .filter(|(s, _)| **s >= UMBRAL_RMS as f64)
+            .filter(|(s, _)| **s >= UMBRAL_RMS)
             .map(|(s, m)| (*s, *m))
             .collect();
         if pares.len() < MIN_BLOQUES_ACTIVOS {
