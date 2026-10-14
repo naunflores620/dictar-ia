@@ -200,13 +200,16 @@ jobs:
       # no para publicar. Es deliberado que la ausencia de secretos no rompa el
       # workflow: un fork debe poder construirlo.
       - name: clave de firma
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
         env:
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
+          if [ -z "$KEYSTORE" ]; then
+            echo "Sin secretos de firma: Gradle usará la clave de depuración."
+            exit 0
+          fi
           echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/dictar_ia.keystore"
           cat > app/android/key.properties <<EOF
           storeFile=$RUNNER_TEMP/dictar_ia.keystore
