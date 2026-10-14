@@ -367,6 +367,19 @@ fn bucle_escritura(
                     }
                 };
 
+                // El motor incremental (Sherpa/Vosk) recibe el micrófono
+                // siempre: la compuerta de arriba era para no pagar un segundo
+                // Whisper sobre el eco, y el filtro de eco del transcriptor
+                // (`ContextoEco`) ya descarta las frases que repiten al sistema.
+                // Sin esto, el micrófono no tenía ni una frase en vivo y el
+                // cierre lo transcribía entero por lotes. Los segmentos VAD
+                // (camino Whisper) conservan la compuerta.
+                if usar_vosk && !transcribir_pista {
+                    if let Some(t) = &transcriptor {
+                        t.encolar_bloque(frame.clone());
+                    }
+                }
+
                 if transcribir_pista {
                     if let Some(t) = &transcriptor {
                         if usar_vosk {
