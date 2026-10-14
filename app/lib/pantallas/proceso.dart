@@ -122,8 +122,8 @@ class _PantallaProcesoState extends State<PantallaProceso> {
         ),
         const SizedBox(height: 32),
         Text(
-          'La clase se transcribe mientras se graba, así que aquí solo queda '
-          'el resumen: unos segundos.\n\n'
+          'Si la clase se transcribió en vivo, solo queda el resumen; si falta '
+          'una parte (por ejemplo, tu micrófono), se completa ahora.\n\n'
           'Si estás procesando una grabación importada, la transcripción va a '
           'unas 4,6 veces el tiempo real.\n\n'
           'El audio ya está guardado: puedes cerrar la aplicación y retomarlo '

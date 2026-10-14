@@ -132,6 +132,57 @@ impl Db {
         Ok(())
     }
 
+    /// Sustituye solo las frases de una pista y confirma el resto de borradores.
+    ///
+    /// Es el cierre de una clase en vivo con cobertura de sistema completa a la
+    /// que solo le faltaba el micrófono: la pasada por lotes se hace únicamente
+    /// sobre esa pista, y borrar toda la transcripción (como hace
+    /// `reemplazar_por_definitiva`) tiraría el texto de sistema ya reconocido.
+    pub fn reemplazar_pista_por_definitiva(
+        &mut self,
+        sesion: &SessionId,
+        pista: Track,
+        frases: &[NewUtterance],
+    ) -> Result<()> {
+        debug_assert!(
+            frases.iter().all(|f| f.is_final && f.track == pista),
+            "solo admite frases definitivas de la pista indicada"
+        );
+
+        let tx = self.conn.transaction()?;
+        {
+            tx.execute(
+                "DELETE FROM utterance WHERE session_id=?1 AND track=?2",
+                params![sesion.as_str(), pista.as_str()],
+            )?;
+            tx.execute(
+                "UPDATE utterance
+                 SET is_final=1, revision=revision+1
+                 WHERE session_id=?1 AND is_final=0",
+                params![sesion.as_str()],
+            )?;
+
+            let mut stmt = tx.prepare(
+                "INSERT INTO utterance
+                 (session_id, track, speaker, start_ms, end_ms, text, confidence, is_final, revision)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,1,1)",
+            )?;
+            for f in frases {
+                stmt.execute(params![
+                    sesion.as_str(),
+                    f.track.as_str(),
+                    f.speaker,
+                    f.start_ms,
+                    f.end_ms,
+                    f.text,
+                    f.confidence,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn transcripcion(&self, sesion: &SessionId) -> Result<Vec<Utterance>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {CAMPOS} FROM utterance WHERE session_id=?1 ORDER BY start_ms, id"
@@ -322,6 +373,37 @@ mod tests {
         assert_eq!(t[0].text, "transformada de Laplace");
         assert!(t[0].is_final);
         assert_eq!(t[0].revision, 1);
+    }
+
+    #[test]
+    fn reemplazar_una_pista_conserva_y_confirma_las_frases_de_la_otra() {
+        let (mut db, ses) = db_con_sesion();
+        // Antes se usaba el reemplazo total y el cierre rápido de una clase en
+        // vivo perdía el texto de sistema al añadir el del micrófono.
+        db.insertar_frases(
+            &ses,
+            &[
+                frase(Track::System, 0, "explicacion del profesor", false),
+                frase(Track::Mic, 10_000, "borrador viejo", false),
+            ],
+        )
+        .unwrap();
+
+        db.reemplazar_pista_por_definitiva(
+            &ses,
+            Track::Mic,
+            &[frase(Track::Mic, 10_000, "pregunta mía", true)],
+        )
+        .unwrap();
+
+        let t = db.transcripcion(&ses).unwrap();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].track, Track::System);
+        assert_eq!(t[0].text, "explicacion del profesor");
+        assert!(t.iter().all(|u| u.is_final));
+        assert_eq!(t[1].text, "pregunta mía");
+        assert_eq!(db.buscar("explicacion", None).unwrap().len(), 1);
+        assert!(db.buscar("viejo", None).unwrap().is_empty());
     }
 
     #[test]
