@@ -26,10 +26,18 @@ pub struct Ajustes {
     pub modelo: Option<String>,
 
     /// Idioma esperado por el reconocedor: un código ISO (por ejemplo, "es")
-    /// o "auto" para autodetección. Si falta en una configuración antigua,
-    /// se migra a automático para no asumir el idioma de origen de la clase.
+    /// o "auto" para autodetección. Por defecto es español: en vivo "auto"
+    /// usa Whisper Tiny, que detecta mal el idioma y acababa escribiendo en
+    /// inglés clases dadas en español.
     #[serde(default = "idioma_predeterminado")]
     pub idioma_transcripcion: Option<String>,
+
+    /// Marca de que el «auto» heredado de versiones anteriores ya se pasó a
+    /// español. Sin ella no se distinguiría un «auto» antiguo, que hay que
+    /// migrar, de uno que el usuario eligió a propósito, que hay que respetar.
+    /// Solo vive en Rust: no cruza el puente hacia la interfaz.
+    #[serde(default)]
+    pub idioma_migrado_v2: bool,
 
     /// Área de la pantalla a la que se recortan las capturas: `[x, y, w, h]`.
     ///
@@ -41,7 +49,7 @@ pub struct Ajustes {
 }
 
 fn idioma_predeterminado() -> Option<String> {
-    Some("auto".to_owned())
+    Some("es".to_owned())
 }
 
 impl Default for Ajustes {
@@ -50,6 +58,8 @@ impl Default for Ajustes {
             carpeta_apuntes: None,
             modelo: None,
             idioma_transcripcion: idioma_predeterminado(),
+            // Una instalación nueva ya nace en español: nada que migrar.
+            idioma_migrado_v2: true,
             region_captura: None,
         }
     }
@@ -132,12 +142,29 @@ impl Ajustes {
 
     pub fn cargar(dir: &Path) -> Self {
         let ruta = dir.join("ajustes.toml");
-        std::fs::read_to_string(ruta)
+        let mut ajustes: Self = std::fs::read_to_string(ruta)
             .ok()
             .and_then(|t| toml::from_str(&t).ok())
             // Unos ajustes corruptos no deben impedir arrancar: se vuelve a
             // los valores por defecto y el usuario los reconfigura.
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        if !ajustes.idioma_migrado_v2 {
+            let es_auto = ajustes
+                .idioma_transcripcion
+                .as_deref()
+                .is_none_or(|i| i.trim().eq_ignore_ascii_case("auto"));
+            if es_auto {
+                ajustes.idioma_transcripcion = idioma_predeterminado();
+            }
+            ajustes.idioma_migrado_v2 = true;
+            // Se persiste ya: si no, un «auto» elegido a mano después se
+            // volvería a migrar en la siguiente carga.
+            if let Err(e) = ajustes.guardar(dir) {
+                tracing::warn!("no se pudo guardar la migración del idioma: {e}");
+            }
+        }
+        ajustes
     }
 
     pub fn guardar(&self, dir: &Path) -> Result<()> {
@@ -236,12 +263,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = Ajustes::cargar(dir.path());
         assert!(a.carpeta_apuntes.is_none());
-        assert_eq!(a.idioma_transcripcion.as_deref(), Some("auto"));
-        assert_eq!(a.idioma_efectivo(), None);
+        assert_eq!(a.idioma_transcripcion.as_deref(), Some("es"));
+        assert_eq!(a.idioma_efectivo().as_deref(), Some("es"));
     }
 
     #[test]
-    fn una_configuracion_antigua_sin_idioma_migra_a_automatico() {
+    fn una_configuracion_antigua_sin_idioma_migra_a_espanol() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("ajustes.toml"),
@@ -250,8 +277,65 @@ mod tests {
         .unwrap();
 
         let a = Ajustes::cargar(dir.path());
+        assert_eq!(a.idioma_transcripcion.as_deref(), Some("es"));
+        assert_eq!(a.idioma_efectivo().as_deref(), Some("es"));
+    }
+
+    #[test]
+    fn un_auto_heredado_sin_marca_pasa_a_espanol_una_sola_vez() {
+        // Antes el valor por defecto era «auto» y Whisper Tiny escribía en
+        // inglés clases en español.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ajustes.toml"),
+            "idioma_transcripcion = \"auto\"
+",
+        )
+        .unwrap();
+
+        let a = Ajustes::cargar(dir.path());
+        assert_eq!(a.idioma_transcripcion.as_deref(), Some("es"));
+        assert!(a.idioma_migrado_v2);
+
+        // La migración quedó en disco: elegir «auto» después se respeta.
+        let elegido = Ajustes {
+            idioma_transcripcion: Some("auto".into()),
+            ..Ajustes::cargar(dir.path())
+        };
+        elegido.guardar(dir.path()).unwrap();
+        let b = Ajustes::cargar(dir.path());
+        assert_eq!(b.idioma_transcripcion.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn un_auto_con_la_marca_puesta_se_respeta() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ajustes.toml"),
+            "idioma_transcripcion = \"auto\"
+idioma_migrado_v2 = true
+",
+        )
+        .unwrap();
+
+        let a = Ajustes::cargar(dir.path());
         assert_eq!(a.idioma_transcripcion.as_deref(), Some("auto"));
         assert_eq!(a.idioma_efectivo(), None);
+    }
+
+    #[test]
+    fn un_idioma_distinto_de_auto_no_se_toca_al_migrar() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ajustes.toml"),
+            "idioma_transcripcion = \"en\"
+",
+        )
+        .unwrap();
+
+        let a = Ajustes::cargar(dir.path());
+        assert_eq!(a.idioma_transcripcion.as_deref(), Some("en"));
+        assert!(a.idioma_migrado_v2);
     }
 
     #[test]
@@ -275,6 +359,7 @@ mod tests {
             carpeta_apuntes: Some("/home/x/OneDrive/Apuntes".into()),
             modelo: Some("turbo".into()),
             idioma_transcripcion: Some("es".into()),
+            idioma_migrado_v2: true,
             region_captura: Some([100, 200, 800, 600]),
         };
         a.guardar(dir.path()).unwrap();
@@ -294,7 +379,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("ajustes.toml"), "esto no es toml {{{").unwrap();
         let a = Ajustes::cargar(dir.path());
-        assert_eq!(a.idioma_transcripcion.as_deref(), Some("auto"));
+        assert_eq!(a.idioma_transcripcion.as_deref(), Some("es"));
     }
 
     #[test]
