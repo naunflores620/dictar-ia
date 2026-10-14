@@ -408,6 +408,9 @@ fn bucle(
         .collect();
     let mut metricas_vivo = HashMap::<Track, ResumenBloquesVivo>::new();
     let mut ultimo_flush_vivo = Instant::now();
+    let mut eco = ContextoEco::default();
+    let mut bloques_mic: u64 = 0;
+    let mut mic_con_huecos = false;
     while let Ok(trabajo) = rx.recv() {
         let inicio_captura = *inicio_captura.lock().unwrap();
         let (seg, es_hipotesis, encolado_en) = match trabajo {
@@ -436,6 +439,7 @@ fn bucle(
                         }
                     };
                     if reiniciar_por_hueco {
+                        mic_con_huecos |= frame.track == Track::Mic;
                         motor.reiniciar();
                         estado.reiniciar();
                         let _ = eventos.send(Evento::frase_incremental(
@@ -456,10 +460,14 @@ fn bucle(
                         &quien_sistema,
                         estado,
                         nivelador_para(frame.track, &mut nivelador_sistema),
+                        &mut eco,
                     )
                 } else {
                     Ok(())
                 };
+                if frame.track == Track::Mic && reconocedores.is_some() && resultado.is_ok() {
+                    bloques_mic += 1;
+                }
                 let inferencia_ms = inicio_inferencia.elapsed().as_millis() as u64;
                 if reconocedores.is_some() || resultado.is_err() {
                     let fin_audio_ms = frame
@@ -781,25 +789,48 @@ fn bucle(
     );
 
     if let Some(reconocedores) = reconocedores.as_mut() {
-        for (track, motor) in reconocedores {
+        // Primero el sistema: su última frase tiene que estar anotada antes de
+        // decidir si la del micrófono es su eco. El orden de un HashMap no lo
+        // garantiza.
+        for track in [Track::System, Track::Mic] {
+            let Some(motor) = reconocedores.get_mut(&track) else {
+                continue;
+            };
             let estado = estado_vivo
-                .get_mut(track)
+                .get_mut(&track)
                 .expect("hay estado incremental por pista");
             if let Some(inicio_ms) = estado.inicio_ms.take() {
                 if let Ok(texto) = motor.finalizar() {
                     let fin = estado.fin_ms_actual.take().unwrap_or(inicio_ms + 1_000);
-                    guardar_frase_incremental(
+                    cerrar_frase_incremental(
                         texto,
-                        *track,
+                        track,
                         inicio_ms,
                         fin,
                         &session_id,
                         &mut db,
                         &eventos,
                         &quien_sistema,
+                        &mut eco,
                     );
                 }
             }
+        }
+    }
+
+    // El marcador se escribe al final y solo si todo salió bien: su ausencia
+    // es el estado seguro (el cierre transcribe el micrófono por lotes).
+    let tramo_perdido_al_final = ultima_perdida_por_pista
+        .lock()
+        .unwrap()
+        .contains_key(&Track::Mic);
+    if mic_cubierto_en_vivo(
+        reconocedores.is_some(),
+        bloques_mic,
+        mic_con_huecos || tramo_perdido_al_final,
+    ) {
+        if let Some(carpeta) = ruta_metricas.parent() {
+            escribir_marcador_mic(carpeta);
         }
     }
 
@@ -977,6 +1008,7 @@ fn procesar_bloque_incremental(
     quien_sistema: &str,
     estado: &mut EstadoIncremental,
     nivelador: Option<&mut Nivelador>,
+    eco: &mut ContextoEco,
 ) -> dictar_stt::Result<()> {
     const INTERVALO_ACUERDO_MS: i64 = 500;
 
@@ -984,7 +1016,7 @@ fn procesar_bloque_incremental(
     let fin = frame.timestamp_ms + frame.duracion_ms();
     if cerrado {
         let inicio = estado.inicio_ms.unwrap_or(frame.timestamp_ms);
-        guardar_frase_incremental(
+        cerrar_frase_incremental(
             texto,
             frame.track,
             inicio,
@@ -993,6 +1025,7 @@ fn procesar_bloque_incremental(
             db,
             eventos,
             quien_sistema,
+            eco,
         );
         estado.reiniciar();
     } else if !texto.is_empty() {
@@ -1022,6 +1055,9 @@ fn procesar_bloque_incremental(
         } else {
             format!("{estable} {provisional}")
         };
+        if frame.track == Track::System {
+            eco.registrar_hipotesis(inicio, fin, &actual);
+        }
         let estable_utf16 = estable.encode_utf16().count();
         if actual != estado.visible.0 || estable_utf16 != estado.visible.1 {
             let _ = eventos.send(Evento::frase_incremental(
@@ -1036,6 +1072,191 @@ fn procesar_bloque_incremental(
         }
     }
     Ok(())
+}
+
+/// Marcador que se deja en la carpeta de audio cuando el micrófono quedó
+/// cubierto en vivo; ver [`mic_cubierto_en_vivo`]. El cierre de la sesión
+/// (`proceso::falta_microfono_tras_vivo`) lo lee para no re-transcribir.
+pub(crate) const MARCADOR_MIC_EN_VIVO: &str = "mic_en_vivo.ok";
+
+/// Margen a cada lado de una frase del micrófono dentro del cual se busca su
+/// eco en el sistema. El retorno acústico medido va de 100 a 500 ms; el resto
+/// absorbe la diferencia de cierre entre los dos reconocedores.
+const VENTANA_ECO_MS: i64 = 1_500;
+/// Cuánto texto de sistema se conserva para comparar.
+const HISTORIAL_ECO_MS: i64 = 30_000;
+/// Porcentaje de palabras de contenido del micrófono que deben aparecer en el
+/// sistema para tomar la frase por eco (si tiene tres o más).
+const PORCENTAJE_ECO: usize = 60;
+
+/// Palabras gramaticales: las comparten dos frases distintas cualquiera, así
+/// que no pueden servir de prueba de eco.
+const PALABRAS_VACIAS: &[&str] = &[
+    "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "y", "e", "o", "a", "al",
+    "en", "que", "es", "se", "lo", "por", "con", "para", "su", "sus",
+];
+
+struct FraseSistema {
+    inicio_ms: i64,
+    fin_ms: i64,
+    texto: String,
+}
+
+/// Lo último que dijo la pista de sistema, para reconocer el eco de los
+/// altavoces en el micrófono.
+#[derive(Default)]
+struct ContextoEco {
+    cerradas: Vec<FraseSistema>,
+    hipotesis: Option<FraseSistema>,
+}
+
+impl ContextoEco {
+    fn registrar_hipotesis(&mut self, inicio_ms: i64, fin_ms: i64, texto: &str) {
+        self.hipotesis = Some(FraseSistema {
+            inicio_ms,
+            fin_ms,
+            texto: texto.to_owned(),
+        });
+    }
+
+    /// Una frase cerrada sustituye a la hipótesis que la precedía.
+    fn registrar_cerrada(&mut self, inicio_ms: i64, fin_ms: i64, texto: &str) {
+        self.hipotesis = None;
+        if texto.trim().is_empty() {
+            return;
+        }
+        self.cerradas.push(FraseSistema {
+            inicio_ms,
+            fin_ms,
+            texto: texto.to_owned(),
+        });
+        let corte = fin_ms - HISTORIAL_ECO_MS;
+        self.cerradas.retain(|f| f.fin_ms >= corte);
+    }
+
+    /// Si una frase cerrada del micrófono es el eco de lo que sonaba por los
+    /// altavoces en esos mismos instantes.
+    fn es_eco(&self, inicio_ms: i64, fin_ms: i64, texto_mic: &str) -> bool {
+        let desde = inicio_ms - VENTANA_ECO_MS;
+        let hasta = fin_ms + VENTANA_ECO_MS;
+        let sistema = self
+            .cerradas
+            .iter()
+            .chain(self.hipotesis.iter())
+            .filter(|f| f.fin_ms >= desde && f.inicio_ms <= hasta)
+            .map(|f| f.texto.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        texto_es_eco(texto_mic, &sistema)
+    }
+}
+
+/// Minúsculas, sin acentos ni puntuación, separado en palabras.
+fn palabras_normalizadas(texto: &str) -> Vec<String> {
+    let limpio: String = texto
+        .chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'á' | 'à' | 'ä' | 'â' => 'a',
+            'é' | 'è' | 'ë' | 'ê' => 'e',
+            'í' | 'ì' | 'ï' | 'î' => 'i',
+            'ó' | 'ò' | 'ö' | 'ô' => 'o',
+            'ú' | 'ù' | 'ü' | 'û' => 'u',
+            'ñ' => 'n',
+            c if c.is_alphanumeric() => c,
+            _ => ' ',
+        })
+        .collect();
+    limpio.split_whitespace().map(str::to_owned).collect()
+}
+
+/// Si el texto del micrófono repite al del sistema.
+///
+/// Se cuentan solo las palabras de contenido: «el» o «de» aparecen en
+/// cualquier frase y harían pasar por eco la voz propia. Con tres o más, basta
+/// el 60 %; con una o dos se exige coincidencia total, porque con tan poco
+/// texto el azar pesa demasiado. Una frase hecha solo de palabras vacías
+/// nunca es eco: es mejor conservar de más que borrar voz del usuario.
+fn texto_es_eco(texto_mic: &str, texto_sistema: &str) -> bool {
+    let sistema = palabras_normalizadas(texto_sistema);
+    if sistema.is_empty() {
+        return false;
+    }
+    let contenido: Vec<String> = palabras_normalizadas(texto_mic)
+        .into_iter()
+        .filter(|p| !PALABRAS_VACIAS.contains(&p.as_str()))
+        .collect();
+    if contenido.is_empty() {
+        return false;
+    }
+    let coincidentes = contenido.iter().filter(|p| sistema.contains(p)).count();
+    if contenido.len() >= 3 {
+        coincidentes * 100 >= contenido.len() * PORCENTAJE_ECO
+    } else {
+        coincidentes == contenido.len()
+    }
+}
+
+/// Si el motor incremental dejó cubierto el micrófono durante toda la sesión:
+/// activo hasta el final (no cayó al respaldo Whisper), con audio procesado y
+/// sin tramos descartados por cola llena.
+fn mic_cubierto_en_vivo(motor_activo: bool, bloques_mic: u64, con_huecos: bool) -> bool {
+    motor_activo && bloques_mic > 0 && !con_huecos
+}
+
+fn escribir_marcador_mic(carpeta: &Path) {
+    let ruta = carpeta.join(MARCADOR_MIC_EN_VIVO);
+    // Si no se puede escribir no hay daño: el cierre vuelve a transcribir el
+    // micrófono por lotes. Pero se dice, para no perder la mejora en silencio.
+    if let Err(error) = std::fs::write(&ruta, "micrófono transcrito en vivo\n") {
+        tracing::warn!(error = %error, ruta = %ruta.display(), "no se pudo escribir el marcador del micrófono en vivo");
+    }
+}
+
+/// Cierra una frase incremental: el sistema se anota para comparar y la del
+/// micrófono se descarta si es eco de los altavoces.
+#[allow(clippy::too_many_arguments)]
+fn cerrar_frase_incremental(
+    texto: String,
+    track: Track,
+    inicio_ms: i64,
+    fin_ms: i64,
+    session_id: &SessionId,
+    db: &mut dictar_storage::Db,
+    eventos: &Sender<Evento>,
+    quien_sistema: &str,
+    eco: &mut ContextoEco,
+) {
+    let fin_ms = fin_ms.max(inicio_ms);
+    match track {
+        Track::System => eco.registrar_cerrada(inicio_ms, fin_ms, &texto),
+        Track::Mic => {
+            if eco.es_eco(inicio_ms, fin_ms, &texto) {
+                tracing::info!(inicio_ms, fin_ms, "frase del micrófono descartada por eco");
+                // Un incremental vacío retira el borrador de esa pista y rango
+                // en la interfaz; no hay frase definitiva que sustituirlo.
+                let _ = eventos.send(Evento::frase_incremental(
+                    session_id,
+                    Track::Mic,
+                    inicio_ms,
+                    fin_ms,
+                    "",
+                    "",
+                ));
+                return;
+            }
+        }
+    }
+    guardar_frase_incremental(
+        texto,
+        track,
+        inicio_ms,
+        fin_ms,
+        session_id,
+        db,
+        eventos,
+        quien_sistema,
+    );
 }
 
 fn guardar_frase_incremental(
@@ -1219,5 +1440,125 @@ mod tests_nivelacion {
         assert_eq!(original, guardado, "el audio de origen no debe tocarse");
         let pico = |v: &[f32]| v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
         assert!(pico(&ultimo) > pico(&original[original.len() - ultimo.len()..]) * 1.5);
+    }
+}
+
+#[cfg(test)]
+mod tests_eco {
+    use super::*;
+
+    #[test]
+    fn el_eco_exacto_del_sistema_se_reconoce() {
+        assert!(texto_es_eco(
+            "La derivada de la función es la pendiente",
+            "la derivada de la función es la pendiente"
+        ));
+    }
+
+    #[test]
+    fn el_eco_con_acentos_y_puntuacion_distintos_se_reconoce() {
+        // Los dos reconocedores no coinciden en tildes ni en comas.
+        assert!(texto_es_eco(
+            "Segunda derivada, función cóncava",
+            "segunda derivada funcion concava"
+        ));
+    }
+
+    #[test]
+    fn una_frase_de_microfono_con_retraso_dentro_de_la_ventana_es_eco() {
+        // Antes no había filtro: el mismo texto salía en las dos pistas.
+        let mut eco = ContextoEco::default();
+        eco.registrar_cerrada(
+            10_000,
+            14_000,
+            "el teorema de Bayes relaciona probabilidades",
+        );
+        // El retorno llega ~400 ms tarde y cierra después que el sistema.
+        assert!(eco.es_eco(
+            10_400,
+            14_500,
+            "el teorema de bayes relaciona probabilidades"
+        ));
+    }
+
+    #[test]
+    fn el_eco_se_reconoce_contra_la_hipotesis_aun_sin_cerrar() {
+        let mut eco = ContextoEco::default();
+        eco.registrar_hipotesis(20_000, 22_000, "vamos a integrar por partes");
+        assert!(eco.es_eco(20_300, 22_300, "vamos a integrar por partes"));
+        // Al cerrarse la frase del sistema, la hipótesis deja de contar sola.
+        eco.registrar_cerrada(20_000, 22_500, "vamos a integrar por partes");
+        assert!(eco.hipotesis.is_none());
+        assert!(eco.es_eco(20_300, 22_300, "vamos a integrar por partes"));
+    }
+
+    #[test]
+    fn la_voz_propia_que_solo_comparte_palabras_vacias_no_es_eco() {
+        // «el» y «de» están en casi cualquier frase: no pueden delatar eco.
+        assert!(!texto_es_eco(
+            "el examen de mañana será difícil",
+            "el profesor de cálculo explica la derivada"
+        ));
+        assert!(!texto_es_eco("el de", "el profesor de cálculo"));
+    }
+
+    #[test]
+    fn una_frase_corta_solo_es_eco_si_coincide_entera() {
+        assert!(texto_es_eco("derivada", "hablemos de la derivada"));
+        assert!(!texto_es_eco("derivada parcial", "hablemos de la derivada"));
+        assert!(!texto_es_eco("sí", "hablemos de la derivada"));
+    }
+
+    #[test]
+    fn con_tres_palabras_o_mas_basta_el_sesenta_por_ciento() {
+        let sistema = "integral definida area";
+        // 3 de 5 palabras de contenido = 60 %: justo en el umbral.
+        assert!(texto_es_eco("integral definida area curva unidad", sistema));
+        // 2 de 5 = 40 %: voz propia que menciona el mismo tema.
+        assert!(!texto_es_eco("integral curva unidad limite serie", sistema));
+    }
+
+    #[test]
+    fn el_sistema_que_hablo_mucho_antes_no_cuenta_como_eco() {
+        let mut eco = ContextoEco::default();
+        eco.registrar_cerrada(1_000, 3_000, "la matriz inversa existe");
+        // El profesor lo dijo 20 s antes: el usuario lo repite por su cuenta.
+        assert!(!eco.es_eco(23_000, 25_000, "la matriz inversa existe"));
+    }
+
+    #[test]
+    fn el_historial_de_sistema_queda_acotado() {
+        let mut eco = ContextoEco::default();
+        for i in 0..100 {
+            eco.registrar_cerrada(i * 2_000, i * 2_000 + 1_500, "texto cualquiera");
+        }
+        // 30 s de historial a 2 s por frase: unas 16 frases, no 100.
+        assert!(eco.cerradas.len() <= 17, "{}", eco.cerradas.len());
+    }
+
+    #[test]
+    fn sin_texto_de_sistema_nada_es_eco() {
+        assert!(!ContextoEco::default().es_eco(0, 1_000, "hola a todos"));
+        assert!(!texto_es_eco("", "algo"));
+    }
+
+    #[test]
+    fn el_microfono_solo_cuenta_como_cubierto_si_el_motor_no_se_cayo_ni_perdio_audio() {
+        assert!(mic_cubierto_en_vivo(true, 500, false));
+        // Caída al respaldo Whisper: el micrófono no estuvo todo el tiempo.
+        assert!(!mic_cubierto_en_vivo(false, 500, false));
+        // Cola llena: hubo tramos sin procesar.
+        assert!(!mic_cubierto_en_vivo(true, 500, true));
+        // Nunca llegó audio del micrófono.
+        assert!(!mic_cubierto_en_vivo(true, 0, false));
+    }
+
+    #[test]
+    fn el_marcador_se_escribe_con_el_nombre_que_lee_el_cierre() {
+        let dir = std::env::temp_dir().join(format!("dictar_marcador_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        escribir_marcador_mic(&dir);
+        assert!(dir.join(MARCADOR_MIC_EN_VIVO).is_file());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

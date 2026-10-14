@@ -67,6 +67,29 @@ pub(crate) fn decidir_cierre(cobertura_temporal: bool, falta_microfono: bool) ->
     }
 }
 
+/// Si, tras el texto en vivo, el micrófono aún necesita pasada por lotes.
+///
+/// Con el marcador que deja el transcriptor al cerrar limpio (motor incremental
+/// activo en el micrófono toda la sesión) no hace falta ni leer el WAV: el
+/// micrófono ya tiene sus frases en vivo. Sin marcador —sesiones viejas, modo
+/// Whisper, motor caído a mitad— se conserva la comprobación de voz de siempre.
+/// Si esa comprobación falla se asume que falta: es el lado seguro.
+pub(crate) fn falta_microfono_tras_vivo(
+    marcador_presente: bool,
+    hay_voz_independiente: impl FnOnce() -> Result<bool>,
+) -> bool {
+    if marcador_presente {
+        return false;
+    }
+    match hay_voz_independiente() {
+        Ok(hay_voz) => hay_voz,
+        Err(error) => {
+            tracing::warn!(%error, "no se pudo comprobar la pista de micrófono; se conserva la pasada de respaldo");
+            true
+        }
+    }
+}
+
 /// Pistas que decodifica el lote, en el orden en que se leen del disco.
 pub(crate) fn pistas_del_lote(solo_pista: Option<Track>) -> Vec<Track> {
     [Track::Mic, Track::System]
@@ -118,13 +141,13 @@ impl Nucleo {
             let cobertura_temporal = duracion
                 .map(|d| d > 0 && !falta_cobertura(Some(d), fin_transcrito))
                 .unwrap_or(false);
-            let falta_microfono = match Self::hay_voz_independiente_en_microfono(&self.dir_audio(id)) {
-                Ok(hay_voz) => hay_voz,
-                Err(error) => {
-                    tracing::warn!(%error, "no se pudo comprobar la pista de micrófono; se conserva la pasada de respaldo");
-                    true
-                }
-            };
+            let dir_audio = self.dir_audio(id);
+            let falta_microfono = falta_microfono_tras_vivo(
+                dir_audio
+                    .join(crate::transcriptor::MARCADOR_MIC_EN_VIVO)
+                    .is_file(),
+                || Self::hay_voz_independiente_en_microfono(&dir_audio),
+            );
             let plan = decidir_cierre(cobertura_temporal, falta_microfono);
 
             if plan == PlanCierre::SoloMicrofono {
@@ -859,6 +882,30 @@ mod tests_cobertura {
         // Duración desconocida: tampoco se da por cubierta.
         assert_eq!(decidir_cierre(false, false), PlanCierre::Completa);
         assert_eq!(pistas_del_lote(None), vec![Track::Mic, Track::System]);
+    }
+
+    #[test]
+    fn con_marcador_de_microfono_en_vivo_solo_se_confirma_sin_leer_el_wav() {
+        // Antes, el micrófono nunca tenía frases en vivo y el cierre lo
+        // transcribía por lotes aunque el motor incremental lo hubiera cubierto.
+        let falta = falta_microfono_tras_vivo(true, || {
+            panic!("con marcador no debe comprobarse la voz del WAV")
+        });
+        assert!(!falta);
+        assert_eq!(decidir_cierre(true, falta), PlanCierre::Confirmar);
+    }
+
+    #[test]
+    fn sin_marcador_y_con_voz_en_el_microfono_sigue_el_plan_solo_microfono() {
+        let falta = falta_microfono_tras_vivo(false, || Ok(true));
+        assert!(falta);
+        assert_eq!(decidir_cierre(true, falta), PlanCierre::SoloMicrofono);
+    }
+
+    #[test]
+    fn sin_marcador_y_sin_poder_comprobar_el_microfono_se_asume_que_falta() {
+        let falta = falta_microfono_tras_vivo(false, || Err(ApiError::Config("x".into())));
+        assert!(falta);
     }
 
     #[test]
