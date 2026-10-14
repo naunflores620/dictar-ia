@@ -26,7 +26,7 @@ pub mod transcriptor;
 use dictar_domain::{Alert, NoteTemplate, Session, SessionId, Topic, TopicId, Utterance};
 use dictar_notes::markdown;
 use dictar_providers::config::ProvidersFile;
-use dictar_providers::router::{Router, resolver_por_defecto};
+use dictar_providers::router::{resolver_por_defecto, Router};
 use dictar_storage::Db;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

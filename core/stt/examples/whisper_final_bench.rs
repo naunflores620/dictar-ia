@@ -4,8 +4,8 @@
 //!      <modelo.bin> <audio.wav> [idioma|auto] [hilos] [salida.txt]
 
 use dictar_audio::wav::leer_wav;
-use dictar_stt::SttOpciones;
 use dictar_stt::whisper::Transcriptor;
+use dictar_stt::SttOpciones;
 use std::path::PathBuf;
 use std::time::Instant;
 

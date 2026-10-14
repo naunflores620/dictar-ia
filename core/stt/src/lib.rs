@@ -13,10 +13,10 @@ pub mod diarizacion;
 pub mod limpieza;
 pub mod modelos;
 pub mod nivel;
-pub mod vosk;
-pub mod whisper;
 #[cfg(target_os = "windows")]
 pub mod sherpa;
+pub mod vosk;
+pub mod whisper;
 
 use dictar_domain::TsMs;
 

@@ -17,8 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wav = PathBuf::from(args.next().ok_or("falta ruta WAV")?);
     let data_dir = PathBuf::from(args.next().ok_or("falta directorio de datos")?);
     let mic_wav = args.next().map(PathBuf::from);
-    let idioma = std::env::var("DICTAR_LIVE_EVAL_LANGUAGE")
-        .unwrap_or_else(|_| "es".to_owned());
+    let idioma = std::env::var("DICTAR_LIVE_EVAL_LANGUAGE").unwrap_or_else(|_| "es".to_owned());
     std::fs::create_dir_all(&data_dir)?;
     let db_path = data_dir.join("bench.db");
     let metrics_path = data_dir.join("stt_metrics.jsonl");

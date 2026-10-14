@@ -17,8 +17,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let inicio = Instant::now();
     let segmentos = stt.transcribir(&pcm, &opts)?;
     let transcurrido = inicio.elapsed().as_secs_f64();
-    let texto = segmentos.iter().map(|s| s.texto.as_str()).collect::<Vec<_>>().join(" ");
-    println!("audio_s={segundos:.2} wall_s={transcurrido:.2} rtf={:.3} hilos={}", transcurrido / segundos, opts.hilos);
+    let texto = segmentos
+        .iter()
+        .map(|s| s.texto.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!(
+        "audio_s={segundos:.2} wall_s={transcurrido:.2} rtf={:.3} hilos={}",
+        transcurrido / segundos,
+        opts.hilos
+    );
     println!("{texto}");
     Ok(())
 }
