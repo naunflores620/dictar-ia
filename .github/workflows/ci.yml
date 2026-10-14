@@ -22,7 +22,7 @@ jobs:
       # es justo la función principal.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -123,7 +123,7 @@ jobs:
       # transcribiendo el mismo audio. El porqué completo, en el archivo.
       CMAKE_TOOLCHAIN_FILE: '${{ github.workspace }}\packaging\windows\msvc-toolchain.cmake'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -173,7 +173,7 @@ jobs:
     env:
       LIBCLANG_PATH: /usr/lib/llvm-18/lib
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -212,7 +212,7 @@ jobs:
       - name: cruzar el núcleo a Android
         run: cargo ndk -t arm64-v8a --platform 26 build --release -p dictar-api
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
@@ -249,7 +249,7 @@ jobs:
     name: análisis de Flutter
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
