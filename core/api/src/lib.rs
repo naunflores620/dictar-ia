@@ -156,6 +156,33 @@ impl Nucleo {
         Ok(self.db.lock().unwrap().transcripcion(id)?)
     }
 
+    /// Cambia el nombre de un participante en una pista de la sesión.
+    ///
+    /// Reescribe el `speaker` de las frases en vez de guardar un alias aparte,
+    /// de modo que no depende de cómo se numeraron los clústeres. Si `a` ya es
+    /// el nombre de otro participante de esa pista, los dos quedan fusionados:
+    /// es la forma de corregir una voz que la diarización partió en dos.
+    /// Devuelve cuántas frases cambiaron.
+    pub fn renombrar_hablante(
+        &self,
+        sesion: &SessionId,
+        pista: dictar_domain::Track,
+        de: &str,
+        a: &str,
+    ) -> Result<usize> {
+        let a = a.trim();
+        if a.is_empty() {
+            return Err(ApiError::Config(
+                "el nombre del participante no puede estar vacío".into(),
+            ));
+        }
+        Ok(self
+            .db
+            .lock()
+            .unwrap()
+            .renombrar_hablante(sesion, pista, de, a)?)
+    }
+
     /// Notas ya renderizadas en Markdown, listas para pintar.
     pub fn notas_markdown(&self, id: &SessionId) -> Result<Option<String>> {
         let db = self.db.lock().unwrap();
@@ -551,6 +578,45 @@ mod tests {
         n.con_db(|db| db.crear_sesion(&s)).unwrap();
 
         assert!(n.notas_markdown(&s.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn renombrar_un_participante_cambia_sus_frases_y_rechaza_nombres_vacios() {
+        use dictar_domain::{Session, SessionKind, SessionSource, Track};
+        use dictar_storage::transcript::NewUtterance;
+
+        let (n, _d) = nucleo();
+        let s = Session::nueva(SessionKind::TeamMeeting, SessionSource::DesktopLoopback, 0);
+        n.con_db(|db| db.crear_sesion(&s)).unwrap();
+        let frase = |ini: i64, quien: &str| NewUtterance {
+            track: Track::System,
+            speaker: Some(quien.to_owned()),
+            start_ms: ini,
+            end_ms: ini + 2_000,
+            text: "texto".to_owned(),
+            confidence: None,
+            is_final: true,
+        };
+        n.con_db(|db| {
+            db.insertar_frases(
+                &s.id,
+                &[frase(0, "Participante 1"), frase(3_000, "Participante 2")],
+            )
+        })
+        .unwrap();
+
+        let cambiadas = n
+            .renombrar_hablante(&s.id, Track::System, "Participante 2", "  Carlos (socio) ")
+            .unwrap();
+
+        assert_eq!(cambiadas, 1);
+        let t = n.transcripcion(&s.id).unwrap();
+        assert_eq!(t[0].speaker.as_deref(), Some("Participante 1"));
+        // El nombre se guarda sin los espacios que sobran en el campo de texto.
+        assert_eq!(t[1].speaker.as_deref(), Some("Carlos (socio)"));
+        assert!(n
+            .renombrar_hablante(&s.id, Track::System, "Participante 1", "   ")
+            .is_err());
     }
 
     #[test]

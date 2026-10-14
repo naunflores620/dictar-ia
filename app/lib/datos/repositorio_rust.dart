@@ -293,6 +293,43 @@ class RepositorioRust implements Repositorio {
     }
   }
 
+  @override
+  Future<int> renombrarParticipante({
+    required String sesionId,
+    required Pista pista,
+    required String de,
+    required String a,
+  }) async {
+    final cambiadas = await rust.renombrarHablante(
+      sessionId: sesionId,
+      pista: pista.clave,
+      de: de,
+      a: a,
+    );
+    return cambiadas.toInt();
+  }
+
+  /// Vuelve a generar los apuntes sin transcribir. Como [procesar], el sondeo
+  /// corre en paralelo para que el progreso llegue al flujo.
+  @override
+  Future<ResultadoProceso> regenerarNotas(String sesionId) async {
+    _arrancarSondeo();
+    try {
+      final r = await rust.regenerarNotas(
+        sessionId: sesionId,
+        ahoraMs: DateTime.now().millisecondsSinceEpoch,
+      );
+      return ResultadoProceso(
+        frases: r.frases.toInt(),
+        avisos: r.avisos.toInt(),
+        costeUsd: r.costeUsd,
+        proveedor: r.proveedor,
+      );
+    } finally {
+      _pararSondeo();
+    }
+  }
+
   /// Estado de cada proveedor de IA, para la pantalla de ajustes.
   Future<List<ProveedorInfo>> proveedoresInfo() async {
     final l = await rust.listarProveedores();

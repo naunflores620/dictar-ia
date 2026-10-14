@@ -183,6 +183,47 @@ impl Db {
         Ok(())
     }
 
+    /// Cambia el hablante de varias frases a la vez, en una sola transacción.
+    ///
+    /// Es lo que escribe la diarización al terminar una reunión. Solo toca
+    /// `speaker`: el texto, los tiempos y el índice de búsqueda quedan como están.
+    pub fn asignar_hablantes(&mut self, asignaciones: &[(i64, String)]) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let mut cambiadas = 0;
+        {
+            let mut stmt = tx.prepare("UPDATE utterance SET speaker=?2 WHERE id=?1")?;
+            for (id, hablante) in asignaciones {
+                cambiadas += stmt.execute(params![id, hablante])?;
+            }
+        }
+        tx.commit()?;
+        Ok(cambiadas)
+    }
+
+    /// Renombra un hablante en una pista de una sesión: todas las frases cuyo
+    /// `speaker` es `de` pasan a `a`. Devuelve cuántas cambió.
+    ///
+    /// No hay tabla de alias: el nombre vive en la propia frase. Así es estable
+    /// aunque cambie la numeración de los clústeres, y renombrar dos etiquetas
+    /// con el mismo nombre las fusiona, que es como se corrige una voz partida
+    /// en dos.
+    pub fn renombrar_hablante(
+        &mut self,
+        sesion: &SessionId,
+        pista: Track,
+        de: &str,
+        a: &str,
+    ) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let cambiadas = tx.execute(
+            "UPDATE utterance SET speaker=?4
+             WHERE session_id=?1 AND track=?2 AND speaker=?3",
+            params![sesion.as_str(), pista.as_str(), de, a],
+        )?;
+        tx.commit()?;
+        Ok(cambiadas)
+    }
+
     pub fn transcripcion(&self, sesion: &SessionId) -> Result<Vec<Utterance>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {CAMPOS} FROM utterance WHERE session_id=?1 ORDER BY start_ms, id"
@@ -463,6 +504,121 @@ mod tests {
         let plano = db.transcripcion_plana(&ses).unwrap();
         assert!(plano.starts_with("[00:00:00] Yo: ¿puede repetir?"));
         assert!(plano.contains("[01:01:11] Interlocutor: claro"));
+    }
+
+    fn con_hablante(track: Track, ini: i64, texto: &str, hablante: &str) -> NewUtterance {
+        NewUtterance {
+            speaker: Some(hablante.to_owned()),
+            ..frase(track, ini, texto, true)
+        }
+    }
+
+    #[test]
+    fn renombrar_cambia_solo_la_pista_y_el_nombre_indicados() {
+        let (mut db, ses) = db_con_sesion();
+        db.insertar_frases(
+            &ses,
+            &[
+                con_hablante(Track::System, 0, "uno", "Participante 2"),
+                con_hablante(Track::System, 4_000, "dos", "Participante 1"),
+                con_hablante(Track::System, 8_000, "tres", "Participante 2"),
+                // Mismo nombre en la otra pista: no debe tocarse.
+                con_hablante(Track::Mic, 12_000, "cuatro", "Participante 2"),
+            ],
+        )
+        .unwrap();
+
+        let n = db
+            .renombrar_hablante(&ses, Track::System, "Participante 2", "Carlos (socio)")
+            .unwrap();
+
+        assert_eq!(n, 2);
+        let t = db.transcripcion(&ses).unwrap();
+        let quien: Vec<_> = t.iter().map(|u| u.speaker.as_deref().unwrap()).collect();
+        assert_eq!(
+            quien,
+            [
+                "Carlos (socio)",
+                "Participante 1",
+                "Carlos (socio)",
+                "Participante 2"
+            ]
+        );
+    }
+
+    #[test]
+    fn renombrar_dos_etiquetas_con_el_mismo_nombre_las_fusiona() {
+        // Una voz partida en dos por la diarización se arregla poniéndole el
+        // mismo nombre a las dos mitades; no hay que añadir ninguna función de
+        // «fusionar».
+        let (mut db, ses) = db_con_sesion();
+        db.insertar_frases(
+            &ses,
+            &[
+                con_hablante(Track::System, 0, "uno", "Participante 1"),
+                con_hablante(Track::System, 4_000, "dos", "Participante 3"),
+            ],
+        )
+        .unwrap();
+
+        db.renombrar_hablante(&ses, Track::System, "Participante 1", "Ana")
+            .unwrap();
+        db.renombrar_hablante(&ses, Track::System, "Participante 3", "Ana")
+            .unwrap();
+
+        let t = db.transcripcion(&ses).unwrap();
+        assert!(t.iter().all(|u| u.speaker.as_deref() == Some("Ana")));
+    }
+
+    #[test]
+    fn renombrar_no_toca_el_texto_ni_la_busqueda() {
+        let (mut db, ses) = db_con_sesion();
+        db.insertar_frases(
+            &ses,
+            &[con_hablante(Track::System, 0, "la transformada", "Cliente")],
+        )
+        .unwrap();
+
+        db.renombrar_hablante(&ses, Track::System, "Cliente", "Marta")
+            .unwrap();
+
+        // El trigger de actualización reindexa la fila; tiene que seguir
+        // encontrándose exactamente una vez.
+        assert_eq!(db.buscar("transformada", None).unwrap().len(), 1);
+        assert_eq!(db.transcripcion(&ses).unwrap()[0].text, "la transformada");
+    }
+
+    #[test]
+    fn asignar_hablantes_actualiza_por_id_y_deja_el_resto() {
+        let (mut db, ses) = db_con_sesion();
+        db.insertar_frases(
+            &ses,
+            &[
+                con_hablante(Track::System, 0, "uno", "Cliente"),
+                con_hablante(Track::System, 4_000, "dos", "Cliente"),
+                con_hablante(Track::System, 8_000, "tres", "Cliente"),
+            ],
+        )
+        .unwrap();
+        let ids: Vec<i64> = db
+            .transcripcion(&ses)
+            .unwrap()
+            .iter()
+            .map(|u| u.id)
+            .collect();
+
+        let n = db
+            .asignar_hablantes(&[
+                (ids[0], "Participante 1".to_owned()),
+                (ids[2], "Participante 2".to_owned()),
+            ])
+            .unwrap();
+
+        assert_eq!(n, 2);
+        let t = db.transcripcion(&ses).unwrap();
+        assert_eq!(t[0].speaker.as_deref(), Some("Participante 1"));
+        assert_eq!(t[1].speaker.as_deref(), Some("Cliente"));
+        assert_eq!(t[2].speaker.as_deref(), Some("Participante 2"));
     }
 
     #[test]

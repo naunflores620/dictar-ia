@@ -9,6 +9,7 @@
 //!    vivo con LocalAgreement-2.
 
 pub mod acuerdo;
+pub mod diarizacion;
 pub mod limpieza;
 pub mod modelos;
 pub mod nivel;
@@ -29,6 +30,10 @@ pub enum SttError {
 
     #[error("la transcripción falló: {0}")]
     Transcripcion(String),
+
+    /// La función existe en todas las plataformas, pero esta no la implementa.
+    #[error("no disponible en esta plataforma: {0}")]
+    NoSoportada(String),
 
     #[error("error de E/S: {0}")]
     Io(#[from] std::io::Error),

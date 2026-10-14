@@ -12,13 +12,16 @@ use dictar_audio::wav::leer_wav;
 use dictar_domain::alert;
 use dictar_domain::notes::NotesPayload;
 use dictar_domain::transcript::GlossarySource;
-use dictar_domain::{EpochMs, SessionId, SessionStatus, Track};
+use dictar_domain::{EpochMs, SessionId, SessionKind, SessionStatus, Track};
 use dictar_notes::{NotesGenerator, SessionContext, fecha};
 use dictar_storage::notes_store::NewNotes;
 use dictar_storage::transcript::NewUtterance;
-use dictar_stt::SttOpciones;
+use dictar_stt::diarizacion::{
+    etiquetar_frases, Diarizador, OpcionesDiarizacion, RutasModelos, SegmentoHablante,
+};
 use dictar_stt::modelos::{self, Modelo};
 use dictar_stt::whisper::Transcriptor;
+use dictar_stt::{SttError, SttOpciones};
 use dictar_vad::segmentador::{SOLAPE_MS, Segmentador};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -166,7 +169,7 @@ impl Nucleo {
                 if mic.is_empty() {
                     self.con_db(|db| db.confirmar_vivas(id))?;
                 } else {
-                    self.con_db(|db| db.reemplazar_pista_por_definitiva(id, Track::Mic, &mic))?;
+                    self.guardar_pasada_de_microfono(id, &mic)?;
                 }
             } else if plan == PlanCierre::Confirmar {
                 // La hipótesis en vivo ya llegó hasta el final de la sesión.
@@ -196,12 +199,13 @@ impl Nucleo {
                 self.con_db(|db| db.cambiar_estado(id, SessionStatus::Transcribing))?;
                 let definitivas = self.transcribir_lote(id, &sesion, modelo, 0, None, &emitir)?;
                 if !definitivas.is_empty() {
-                    self.con_db(|db| db.reemplazar_por_definitiva(id, &definitivas))?;
+                    self.guardar_pasada_completa(id, &definitivas)?;
                 } else {
                     tracing::warn!(sesion = %id, "la pasada final no produjo frases; se confirman las frases disponibles");
                     self.con_db(|db| db.confirmar_vivas(id))?;
                 }
             }
+            self.diarizar_sesion(id, &sesion, &emitir);
             return self.solo_notas(id, &sesion, ahora, progreso).await;
         }
 
@@ -218,8 +222,59 @@ impl Nucleo {
             ));
         }
 
-        self.con_db(|db| db.reemplazar_por_definitiva(id, &frases))?;
+        self.guardar_pasada_completa(id, &frases)?;
+        self.diarizar_sesion(id, &sesion, &emitir);
         self.solo_notas(id, &sesion, ahora, progreso).await
+    }
+
+    /// Vuelve a generar los apuntes de una sesión con la transcripción que ya
+    /// tiene, por ejemplo tras renombrar a sus participantes.
+    ///
+    /// Llama **solo** a [`Self::solo_notas`]: no transcribe, no diariza y no toca
+    /// las frases. Es lo que hace barato corregir una etiqueta: el único coste es
+    /// el de una generación de notas.
+    pub async fn regenerar_notas(
+        &self,
+        id: &SessionId,
+        ahora: EpochMs,
+        progreso: Option<Sender<Evento>>,
+    ) -> Result<Procesada> {
+        let sesion = self.con_db(|db| db.sesion(id))?;
+        if self.con_db(|db| db.transcripcion(id))?.is_empty() {
+            return Err(ApiError::Config(
+                "la sesión no tiene transcripción de la que generar apuntes".into(),
+            ));
+        }
+        self.solo_notas(id, &sesion, ahora, progreso).await
+    }
+
+    /// Guarda una pasada por lotes de las dos pistas, que sustituye a las frases.
+    ///
+    /// Es el único sitio que reescribe la transcripción entera, y por eso es
+    /// también el que invalida la diarización: las frases nuevas nacen con las
+    /// etiquetas por defecto, y un marcador viejo haría creer que ya están
+    /// identificadas. El precio, declarado en el plan, es que se pierden los
+    /// nombres que el usuario hubiera puesto a los participantes de esa sesión.
+    pub(crate) fn guardar_pasada_completa(
+        &self,
+        id: &SessionId,
+        frases: &[NewUtterance],
+    ) -> Result<()> {
+        self.con_db(|db| db.reemplazar_por_definitiva(id, frases))?;
+        self.invalidar_diarizacion(id);
+        Ok(())
+    }
+
+    /// Lo mismo para la pasada que solo rehace el micrófono: sus frases nuevas
+    /// llevan «Yo» y la voz de cada persona de la sala hay que volver a buscarla.
+    pub(crate) fn guardar_pasada_de_microfono(
+        &self,
+        id: &SessionId,
+        frases: &[NewUtterance],
+    ) -> Result<()> {
+        self.con_db(|db| db.reemplazar_pista_por_definitiva(id, Track::Mic, frases))?;
+        self.invalidar_diarizacion(id);
+        Ok(())
     }
 
     /// Indica si el micrófono conserva voz que la ruta en vivo no haya reconocido.
@@ -537,34 +592,7 @@ impl Nucleo {
             "resumiendo",
         ));
 
-        let utterances = self.con_db(|db| db.transcripcion(id))?;
-
-        // La pasada en vivo transcribe cada pista por separado y no puede
-        // compararlas entre sí: si el usuario escucha por altavoces, el
-        // micrófono capta al profesor y cada frase aparece duplicada como
-        // «Yo». Se limpia aquí, una vez, reescribiendo la transcripción
-        // definitiva — unas notas que citan dos veces cada frase, con el
-        // hablante equivocado la mitad de ellas, no sirven.
-        let mut limpias: Vec<NewUtterance> = utterances
-            .iter()
-            .map(|u| NewUtterance {
-                track: u.track,
-                speaker: u.speaker.clone(),
-                start_ms: u.start_ms,
-                end_ms: u.end_ms,
-                text: u.text.clone(),
-                confidence: u.confidence,
-                is_final: true,
-            })
-            .collect();
-        let eco = Self::suprimir_diafonia(&mut limpias);
-        let utterances = if eco > 0 {
-            tracing::info!(eco, "eco del micrófono eliminado de la transcripción");
-            self.con_db(|db| db.reemplazar_por_definitiva(id, &limpias))?;
-            self.con_db(|db| db.transcripcion(id))?
-        } else {
-            utterances
-        };
+        let utterances = self.transcripcion_sin_eco(id)?;
 
         let diapositivas = self.con_db(|db| db.diapositivas(id))?;
         let n_frases = utterances.len();
@@ -653,6 +681,43 @@ impl Nucleo {
             coste_usd: generadas.usage.cost_usd,
             proveedor: generadas.proveedor,
         })
+    }
+
+    /// Transcripción de la sesión sin el eco del micrófono.
+    ///
+    /// La pasada en vivo transcribe cada pista por separado y no puede
+    /// compararlas entre sí: si el usuario escucha por altavoces, el
+    /// micrófono capta al profesor y cada frase aparece duplicada como
+    /// «Yo». Se limpia aquí, una vez, reescribiendo la transcripción
+    /// definitiva — unas notas que citan dos veces cada frase, con el
+    /// hablante equivocado la mitad de ellas, no sirven.
+    ///
+    /// También lo llama la diarización antes de mirar el audio: si el eco
+    /// siguiera ahí, cada frase de eco contaría como una voz más del micrófono
+    /// y desaparecería después, dejando una numeración con huecos.
+    fn transcripcion_sin_eco(&self, id: &SessionId) -> Result<Vec<dictar_domain::Utterance>> {
+        let utterances = self.con_db(|db| db.transcripcion(id))?;
+        let mut limpias: Vec<NewUtterance> = utterances
+            .iter()
+            .map(|u| NewUtterance {
+                track: u.track,
+                speaker: u.speaker.clone(),
+                start_ms: u.start_ms,
+                end_ms: u.end_ms,
+                text: u.text.clone(),
+                confidence: u.confidence,
+                is_final: true,
+            })
+            .collect();
+        let eco = Self::suprimir_diafonia(&mut limpias);
+        if eco == 0 {
+            return Ok(utterances);
+        }
+        tracing::info!(eco, "eco del micrófono eliminado de la transcripción");
+        // Se reescribe sin pasar por `guardar_pasada_completa`: solo se quitan
+        // frases y las etiquetas que quedan son las ya asignadas.
+        self.con_db(|db| db.reemplazar_por_definitiva(id, &limpias))?;
+        Ok(self.con_db(|db| db.transcripcion(id))?)
     }
 
     /// Cómo llamar a la otra parte en la transcripción.
@@ -757,6 +822,282 @@ impl Nucleo {
         });
 
         antes - frases.len()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Diarización al cerrar una reunión
+// ---------------------------------------------------------------------------
+
+/// Archivo que deja la diarización en la carpeta de audio al terminar.
+///
+/// Vive junto al audio y no en la base porque es una marca de «este audio ya se
+/// analizó» y se borra con la sesión sin migración alguna.
+pub(crate) const MARCADOR_DIARIZACION: &str = "diarizacion.ok";
+
+/// Motor de diarización ya cargado: recibe una pista mono a 16 kHz.
+pub(crate) type MotorDiarizacion =
+    Box<dyn Fn(&[f32]) -> std::result::Result<Vec<SegmentoHablante>, SttError>>;
+
+/// Qué ocurrió con la diarización de una sesión. Nunca es un error de la
+/// sesión: la diarización es un añadido y no puede tumbar el procesado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResultadoDiarizacion {
+    /// Solo las reuniones se diarizan; una clase o una nota de voz, no.
+    NoAplica,
+    /// Ya tenía etiquetas de una pasada anterior y no se repite.
+    YaHecha,
+    /// No hay frases que etiquetar.
+    SinFrases,
+    /// Faltan los modelos: la sesión sigue con las etiquetas de siempre.
+    SinModelos,
+    /// Falló el motor o la lectura del audio: igual, con las etiquetas de siempre.
+    Fallo(String),
+    /// Voces con frases en cada pista.
+    Hecha {
+        voces_sistema: usize,
+        voces_microfono: usize,
+    },
+}
+
+/// Si el tipo de sesión se diariza. Una clase tiene un profesor, y las notas de
+/// voz una persona; el problema solo existe donde hablan varias.
+pub(crate) fn diariza_este_tipo(tipo: SessionKind) -> bool {
+    matches!(tipo, SessionKind::ClientMeeting | SessionKind::TeamMeeting)
+}
+
+fn abrir_motor_de_produccion(
+    rutas: &RutasModelos,
+) -> std::result::Result<MotorDiarizacion, SttError> {
+    let diarizador = Diarizador::cargar(rutas, &OpcionesDiarizacion::produccion())?;
+    Ok(Box::new(move |pcm| diarizador.diarizar(pcm)))
+}
+
+impl Nucleo {
+    /// Identifica a los participantes de una reunión ya transcrita y reescribe
+    /// el `speaker` de sus frases. Es lo que ejecuta el cierre; está público
+    /// para el arnés de evaluación.
+    pub fn diarizar_participantes(
+        &self,
+        id: &SessionId,
+        progreso: Option<Sender<Evento>>,
+    ) -> Result<ResultadoDiarizacion> {
+        let sesion = self.con_db(|db| db.sesion(id))?;
+        let emitir = |e: Evento| {
+            if let Some(tx) = &progreso {
+                let _ = tx.send(e);
+            }
+        };
+        Ok(self.diarizar_sesion(id, &sesion, &emitir))
+    }
+
+    pub(crate) fn diarizar_sesion(
+        &self,
+        id: &SessionId,
+        sesion: &dictar_domain::Session,
+        emitir: &dyn Fn(Evento),
+    ) -> ResultadoDiarizacion {
+        self.diarizar_sesion_con(
+            id,
+            sesion,
+            dictar_stt::diarizacion::rutas_modelos,
+            abrir_motor_de_produccion,
+            emitir,
+        )
+    }
+
+    /// El cuerpo de la diarización, con la resolución de rutas y la carga del
+    /// motor inyectables para poder probar los fallos sin modelos.
+    pub(crate) fn diarizar_sesion_con(
+        &self,
+        id: &SessionId,
+        sesion: &dictar_domain::Session,
+        rutas: impl FnOnce() -> Option<RutasModelos>,
+        abrir: impl FnOnce(&RutasModelos) -> std::result::Result<MotorDiarizacion, SttError>,
+        emitir: &dyn Fn(Evento),
+    ) -> ResultadoDiarizacion {
+        let resultado = match self.intentar_diarizar(id, sesion, rutas, abrir, emitir) {
+            Ok(r) => r,
+            Err(error) => ResultadoDiarizacion::Fallo(error.to_string()),
+        };
+        // Un fallo no frena la sesión, pero tampoco se calla: la interfaz
+        // muestra los eventos de error, y el usuario que esperaba ver a los
+        // participantes separados tiene que saber por qué no los ve.
+        match &resultado {
+            ResultadoDiarizacion::SinModelos => {
+                tracing::warn!(
+                    sesion = %id,
+                    "faltan los modelos de diarización; se conservan las etiquetas de siempre"
+                );
+                emitir(Evento::Error {
+                    mensaje: "No se pudieron identificar los participantes: faltan los \
+                              modelos de diarización. La reunión se procesa igualmente."
+                        .to_owned(),
+                    recuperable: true,
+                });
+            }
+            ResultadoDiarizacion::Fallo(motivo) => {
+                tracing::warn!(
+                    sesion = %id,
+                    motivo,
+                    "la diarización falló; se conservan las etiquetas de siempre"
+                );
+                emitir(Evento::Error {
+                    mensaje: format!(
+                        "No se pudieron identificar los participantes: {motivo}. \
+                         La reunión se procesa igualmente."
+                    ),
+                    recuperable: true,
+                });
+            }
+            ResultadoDiarizacion::Hecha {
+                voces_sistema,
+                voces_microfono,
+            } => tracing::info!(
+                sesion = %id,
+                voces_sistema,
+                voces_microfono,
+                "participantes identificados"
+            ),
+            _ => {}
+        }
+        resultado
+    }
+
+    fn intentar_diarizar(
+        &self,
+        id: &SessionId,
+        sesion: &dictar_domain::Session,
+        rutas: impl FnOnce() -> Option<RutasModelos>,
+        abrir: impl FnOnce(&RutasModelos) -> std::result::Result<MotorDiarizacion, SttError>,
+        emitir: &dyn Fn(Evento),
+    ) -> Result<ResultadoDiarizacion> {
+        if !diariza_este_tipo(sesion.kind) {
+            return Ok(ResultadoDiarizacion::NoAplica);
+        }
+        let dir = self.dir_audio(id);
+        if dir.join(MARCADOR_DIARIZACION).is_file() {
+            return Ok(ResultadoDiarizacion::YaHecha);
+        }
+        let Some(rutas) = rutas() else {
+            return Ok(ResultadoDiarizacion::SinModelos);
+        };
+
+        // Sin el eco: ver `transcripcion_sin_eco`.
+        let frases = self.transcripcion_sin_eco(id)?;
+        if frases.is_empty() {
+            return Ok(ResultadoDiarizacion::SinFrases);
+        }
+
+        emitir(Evento::progreso(
+            FaseProceso::Identificando,
+            0.0,
+            "cargando los modelos de voz",
+        ));
+        let motor = abrir(&rutas)?;
+
+        let pistas = [
+            (Track::System, self.nombre_interlocutor(sesion)),
+            (Track::Mic, "Yo".to_owned()),
+        ];
+        let mut cambios: Vec<(i64, String)> = Vec::new();
+        let mut voces = [0usize; 2];
+        for (i, (pista, por_defecto)) in pistas.iter().enumerate() {
+            let propias: Vec<_> = frases.iter().filter(|u| u.track == *pista).collect();
+            // Un micrófono sin frases es un micrófono sin voz propia: no se
+            // gasta tiempo en diarizarlo.
+            if propias.is_empty() {
+                continue;
+            }
+            // Con altavoces, el micrófono lleva también las voces del sistema.
+            // Medido en una reunión de 57 min con retorno 0,709: 13 «Persona en
+            // sala» con frases, con o sin atenuar. Mejor ninguna que inventadas:
+            // todo lo del micrófono queda como «Yo».
+            if *pista == Track::Mic && Self::microfono_con_altavoces(&dir) {
+                tracing::info!(
+                    "retorno acústico detectado: el micrófono no se diariza, todo queda como «Yo»"
+                );
+                voces[i] = 1;
+                for frase in &propias {
+                    if frase.speaker.as_deref() != Some(por_defecto.as_str()) {
+                        cambios.push((frase.id, por_defecto.clone()));
+                    }
+                }
+                continue;
+            }
+            let ruta = dir.join(format!("{}.wav", pista.as_str()));
+            if !ruta.is_file() {
+                tracing::warn!(
+                    pista = pista.as_str(),
+                    "no hay WAV de la pista; se deja sin diarizar"
+                );
+                continue;
+            }
+            emitir(Evento::progreso(
+                FaseProceso::Identificando,
+                i as f32 / pistas.len() as f32,
+                format!("analizando las voces de la pista {}", pista.as_str()),
+            ));
+
+            let (pcm, _) = leer_wav(&ruta)?;
+            let segmentos = motor(&pcm)?;
+            drop(pcm);
+
+            let tramos: Vec<_> = propias.iter().map(|u| (u.start_ms, u.end_ms)).collect();
+            let etiquetado = etiquetar_frases(*pista, &tramos, &segmentos, por_defecto);
+            voces[i] = etiquetado.voces;
+            for (frase, etiqueta) in propias.iter().zip(etiquetado.etiquetas) {
+                if frase.speaker.as_deref() != Some(etiqueta.as_str()) {
+                    cambios.push((frase.id, etiqueta));
+                }
+            }
+        }
+
+        // Todo o nada: los cambios se aplican una vez analizadas las dos
+        // pistas, para que un fallo en la segunda no deje la sesión a medias.
+        self.con_db(|db| db.asignar_hablantes(&cambios))?;
+        if let Err(error) = std::fs::write(dir.join(MARCADOR_DIARIZACION), b"ok\n") {
+            // Sin marcador, la próxima vez se rehará: pierde tiempo, no datos.
+            tracing::warn!(%error, "no se pudo escribir el marcador de diarización");
+        }
+        Ok(ResultadoDiarizacion::Hecha {
+            voces_sistema: voces[0],
+            voces_microfono: voces[1],
+        })
+    }
+
+    /// Si el micrófono recoge a los altavoces, con el mismo detector que la
+    /// transcripción por lotes. Es el punto de decisión de si se diariza el
+    /// micrófono. Si no se puede analizar se diariza: sin evidencia de altavoces
+    /// no hay motivo para renunciar a separar a las personas de la sala.
+    pub(crate) fn microfono_con_altavoces(dir: &std::path::Path) -> bool {
+        let mic = dir.join("mic.wav");
+        let sistema = dir.join("system.wav");
+        if !mic.is_file() || !sistema.is_file() {
+            return false;
+        }
+        match dictar_audio::detectar_retorno_en_wav(&mic, &sistema) {
+            Ok(retorno) => retorno.is_some(),
+            Err(error) => {
+                tracing::warn!(%error, "no se pudo analizar el retorno acústico");
+                false
+            }
+        }
+    }
+
+    /// Borra el marcador de diarización. Ver [`Self::guardar_pasada_completa`].
+    pub(crate) fn invalidar_diarizacion(&self, id: &SessionId) {
+        let marcador = self.dir_audio(id).join(MARCADOR_DIARIZACION);
+        match std::fs::remove_file(&marcador) {
+            Ok(()) => {
+                tracing::info!(sesion = %id, "diarización invalidada por una pasada completa")
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(
+                %error,
+                "no se pudo borrar el marcador de diarización; las etiquetas pueden desfasarse"
+            ),
+        }
     }
 }
 
@@ -934,5 +1275,657 @@ mod tests_cobertura {
     #[test]
     fn una_cobertura_completa_no_dispara_nada() {
         assert!(!falta_cobertura(Some(3_600_000), 3_600_000));
+    }
+}
+
+#[cfg(test)]
+mod tests_diarizacion {
+    use super::*;
+    use dictar_domain::{Session, SessionSource};
+    use dictar_stt::diarizacion::MODELO_EMBEDDING;
+    use std::cell::{Cell, RefCell};
+    use std::path::Path;
+
+    const SEG: usize = 16_000;
+
+    fn nucleo() -> (Nucleo, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        (Nucleo::abrir(dir.path()).unwrap(), dir)
+    }
+
+    /// WAV PCM de 16 bits, mono, 16 kHz, en silencio. Lo único que se mira de él
+    /// es su duración: la voz la pone el motor de pruebas.
+    fn escribir_wav(ruta: &Path, segundos: usize) {
+        let datos = (segundos * SEG * 2) as u32;
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + datos).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&16_000u32.to_le_bytes());
+        b.extend_from_slice(&32_000u32.to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&datos.to_le_bytes());
+        b.resize(b.len() + datos as usize, 0);
+        std::fs::write(ruta, b).unwrap();
+    }
+
+    fn frase(track: Track, ini: i64, fin: i64, texto: &str, quien: &str) -> NewUtterance {
+        NewUtterance {
+            track,
+            speaker: Some(quien.to_owned()),
+            start_ms: ini,
+            end_ms: fin,
+            text: texto.to_owned(),
+            confidence: Some(0.9),
+            is_final: true,
+        }
+    }
+
+    fn seg(inicio_ms: i64, fin_ms: i64, hablante: usize) -> SegmentoHablante {
+        SegmentoHablante {
+            inicio_ms,
+            fin_ms,
+            hablante,
+        }
+    }
+
+    /// Reunión con cliente con 40 s de sistema y 20 s de micrófono, y las frases
+    /// que dejaría la transcripción: etiquetadas como hoy, «Cliente» y «Yo».
+    fn reunion(tipo: SessionKind) -> (Nucleo, tempfile::TempDir, Session) {
+        let (n, d) = nucleo();
+        let s = Session::nueva(tipo, SessionSource::DesktopLoopback, 0);
+        n.con_db(|db| db.crear_sesion(&s)).unwrap();
+        let dir = n.dir_audio(&s.id);
+        std::fs::create_dir_all(&dir).unwrap();
+        escribir_wav(&dir.join("system.wav"), 40);
+        escribir_wav(&dir.join("mic.wav"), 20);
+        let defecto = n.nombre_interlocutor(&s);
+        n.con_db(|db| {
+            db.insertar_frases(
+                &s.id,
+                &[
+                    frase(Track::System, 1_000, 5_000, "hola, buenos días", &defecto),
+                    frase(Track::System, 12_000, 16_000, "vamos a empezar", &defecto),
+                    frase(
+                        Track::System,
+                        22_000,
+                        26_000,
+                        "pasemos al presupuesto",
+                        &defecto,
+                    ),
+                    frase(Track::Mic, 2_000, 6_000, "gracias por venir", "Yo"),
+                    frase(Track::Mic, 8_000, 12_000, "empiezo yo con el resumen", "Yo"),
+                ],
+            )
+        })
+        .unwrap();
+        (n, d, s)
+    }
+
+    /// Motor de pruebas: cuatro voces repartidas entre las dos pistas. Distingue
+    /// la pista por su duración (el sistema dura 40 s y el micrófono 20 s).
+    fn motor_con_dos_voces_por_pista() -> MotorDiarizacion {
+        Box::new(|pcm: &[f32]| {
+            Ok(if pcm.len() == 40 * SEG {
+                vec![
+                    seg(0, 10_000, 0),
+                    seg(10_000, 20_000, 1),
+                    seg(20_000, 30_000, 0),
+                ]
+            } else {
+                vec![seg(0, 7_000, 3), seg(7_000, 19_000, 5)]
+            })
+        })
+    }
+
+    fn hablantes(n: &Nucleo, s: &Session) -> Vec<(Track, String)> {
+        n.transcripcion(&s.id)
+            .unwrap()
+            .into_iter()
+            .map(|u| (u.track, u.speaker.unwrap_or_default()))
+            .collect()
+    }
+
+    fn con_rutas_falsas() -> Option<RutasModelos> {
+        Some(RutasModelos {
+            segmentacion: MODELO_EMBEDDING.into(),
+            embedding: MODELO_EMBEDDING.into(),
+        })
+    }
+
+    fn diarizar(
+        n: &Nucleo,
+        s: &Session,
+        abrir: impl FnOnce(&RutasModelos) -> std::result::Result<MotorDiarizacion, SttError>,
+    ) -> (ResultadoDiarizacion, Vec<Evento>) {
+        let eventos = RefCell::new(Vec::new());
+        let emitir = |e: Evento| eventos.borrow_mut().push(e);
+        let r = n.diarizar_sesion_con(&s.id, s, con_rutas_falsas, abrir, &emitir);
+        (r, eventos.into_inner())
+    }
+
+    #[test]
+    fn varias_voces_por_canal_se_etiquetan_y_dejan_marcador() {
+        let (n, _d, s) = reunion(SessionKind::ClientMeeting);
+
+        let (r, eventos) = diarizar(&n, &s, |_| Ok(motor_con_dos_voces_por_pista()));
+
+        assert_eq!(
+            r,
+            ResultadoDiarizacion::Hecha {
+                voces_sistema: 2,
+                voces_microfono: 2
+            }
+        );
+        // Sistema: la voz 0 abre y cierra, la 1 está en medio. Micrófono: la
+        // voz 5 habla 12 s y es «Yo»; la 3 (7 s) es una persona en sala.
+        let esperado: Vec<(Track, &str)> = vec![
+            (Track::System, "Participante 1"),
+            (Track::Mic, "Persona en sala 1"),
+            (Track::Mic, "Yo"),
+            (Track::System, "Participante 2"),
+            (Track::System, "Participante 1"),
+        ];
+        let obtenido = hablantes(&n, &s);
+        let obtenido: Vec<(Track, &str)> = obtenido.iter().map(|(t, q)| (*t, q.as_str())).collect();
+        assert_eq!(obtenido, esperado);
+        assert!(n.dir_audio(&s.id).join(MARCADOR_DIARIZACION).is_file());
+        // Y avisa de que está trabajando: sin fase propia la barra parecería colgada.
+        assert!(eventos.iter().any(|e| matches!(
+            e,
+            Evento::Progreso {
+                fase: FaseProceso::Identificando,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn una_voz_por_canal_conserva_las_etiquetas_de_siempre() {
+        let (n, _d, s) = reunion(SessionKind::ClientMeeting);
+
+        let (r, _) = diarizar(&n, &s, |_| {
+            Ok(Box::new(|pcm: &[f32]| {
+                Ok(vec![seg(0, (pcm.len() * 1000 / SEG) as i64, 0)])
+            }))
+        });
+
+        assert_eq!(
+            r,
+            ResultadoDiarizacion::Hecha {
+                voces_sistema: 1,
+                voces_microfono: 1
+            }
+        );
+        for (pista, quien) in hablantes(&n, &s) {
+            let esperado = if pista == Track::Mic { "Yo" } else { "Cliente" };
+            assert_eq!(quien, esperado);
+        }
+    }
+
+    #[test]
+    fn sin_modelos_la_sesion_sigue_con_las_etiquetas_de_hoy_y_se_avisa() {
+        let (n, _d, s) = reunion(SessionKind::ClientMeeting);
+        let antes = hablantes(&n, &s);
+
+        let eventos = RefCell::new(Vec::new());
+        let emitir = |e: Evento| eventos.borrow_mut().push(e);
+        let r = n.diarizar_sesion_con(
+            &s.id,
+            &s,
+            || None,
+            |_| panic!("sin rutas no se debe abrir ningún motor"),
+            &emitir,
+        );
+
+        assert_eq!(r, ResultadoDiarizacion::SinModelos);
+        assert_eq!(hablantes(&n, &s), antes);
+        assert!(!n.dir_audio(&s.id).join(MARCADOR_DIARIZACION).exists());
+        // El fallo se dice: antes de este aviso un instalador sin modelos
+        // habría dado reuniones sin separar y ninguna pista de por qué.
+        assert!(eventos.borrow().iter().any(|e| matches!(
+            e,
+            Evento::Error {
+                recuperable: true,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn un_motor_que_no_carga_deja_las_etiquetas_de_hoy() {
+        let (n, _d, s) = reunion(SessionKind::TeamMeeting);
+        let antes = hablantes(&n, &s);
+
+        let (r, eventos) = diarizar(&n, &s, |_| Err(SttError::Carga("modelo corrupto".into())));
+
+        assert!(matches!(&r, ResultadoDiarizacion::Fallo(m) if m.contains("modelo corrupto")));
+        assert_eq!(hablantes(&n, &s), antes);
+        assert!(eventos.iter().any(|e| matches!(e, Evento::Error { .. })));
+    }
+
+    #[test]
+    fn un_fallo_en_el_microfono_no_deja_la_sesion_a_medias() {
+        // El sistema se diariza bien y el micrófono falla: no debe quedar
+        // «Participante 1» en una pista y «Yo» en la otra con un marcador que
+        // diga que está hecho.
+        let (n, _d, s) = reunion(SessionKind::ClientMeeting);
+        let antes = hablantes(&n, &s);
+
+        let (r, _) = diarizar(&n, &s, |_| {
+            Ok(Box::new(|pcm: &[f32]| {
+                if pcm.len() == 40 * SEG {
+                    Ok(vec![seg(0, 10_000, 0), seg(10_000, 20_000, 1)])
+                } else {
+                    Err(SttError::Transcripcion("sin memoria".into()))
+                }
+            }))
+        });
+
+        assert!(matches!(r, ResultadoDiarizacion::Fallo(_)));
+        assert_eq!(hablantes(&n, &s), antes);
+        assert!(!n.dir_audio(&s.id).join(MARCADOR_DIARIZACION).exists());
+    }
+
+    #[test]
+    fn una_clase_o_una_nota_de_voz_no_se_diarizan() {
+        for tipo in [SessionKind::Class, SessionKind::VoiceNote] {
+            let (n, _d, s) = reunion(tipo);
+            let antes = hablantes(&n, &s);
+
+            let (r, _) = diarizar(&n, &s, |_| panic!("no debe cargarse el motor"));
+
+            assert_eq!(r, ResultadoDiarizacion::NoAplica);
+            assert_eq!(hablantes(&n, &s), antes);
+        }
+    }
+
+    #[test]
+    fn una_sesion_ya_diarizada_no_se_rehace() {
+        let (n, _d, s) = reunion(SessionKind::ClientMeeting);
+        diarizar(&n, &s, |_| Ok(motor_con_dos_voces_por_pista()));
+        // El usuario renombra a un participante.
+        n.renombrar_hablante(&s.id, Track::System, "Participante 2", "Carlos (socio)")
+            .unwrap();
+        let antes = hablantes(&n, &s);
+
+        let cargas = Cell::new(0);
+        let (r, _) = diarizar(&n, &s, |_| {
+            cargas.set(cargas.get() + 1);
+            Ok(motor_con_dos_voces_por_pista())
+        });
+
+        // Rehacerla borraría el nombre que puso.
+        assert_eq!(r, ResultadoDiarizacion::YaHecha);
+        assert_eq!(cargas.get(), 0);
+        assert_eq!(hablantes(&n, &s), antes);
+        assert!(antes.iter().any(|(_, q)| q == "Carlos (socio)"));
+    }
+
+    #[test]
+    fn una_pasada_completa_invalida_el_marcador_y_la_siguiente_diarizacion_rehace() {
+        let (n, _d, s) = reunion(SessionKind::ClientMeeting);
+        diarizar(&n, &s, |_| Ok(motor_con_dos_voces_por_pista()));
+        let marcador = n.dir_audio(&s.id).join(MARCADOR_DIARIZACION);
+        assert!(marcador.is_file());
+
+        // La pasada de respaldo reescribe todas las frases, con las etiquetas
+        // por defecto. Si el marcador sobreviviera, la reunión se quedaría para
+        // siempre con «Cliente» y «Yo» creyendo que ya está identificada.
+        n.guardar_pasada_completa(
+            &s.id,
+            &[
+                frase(Track::System, 1_000, 5_000, "hola de nuevo", "Cliente"),
+                frase(Track::System, 12_000, 16_000, "seguimos", "Cliente"),
+            ],
+        )
+        .unwrap();
+        assert!(!marcador.exists());
+
+        let (r, _) = diarizar(&n, &s, |_| Ok(motor_con_dos_voces_por_pista()));
+        assert!(matches!(r, ResultadoDiarizacion::Hecha { .. }));
+        let h = hablantes(&n, &s);
+        assert_eq!(h[0].1, "Participante 1");
+        assert_eq!(h[1].1, "Participante 2");
+        assert!(marcador.is_file());
+    }
+
+    #[test]
+    fn la_pasada_que_solo_rehace_el_microfono_tambien_invalida_el_marcador() {
+        let (n, _d, s) = reunion(SessionKind::ClientMeeting);
+        diarizar(&n, &s, |_| Ok(motor_con_dos_voces_por_pista()));
+        let marcador = n.dir_audio(&s.id).join(MARCADOR_DIARIZACION);
+
+        n.guardar_pasada_de_microfono(
+            &s.id,
+            &[frase(Track::Mic, 2_000, 6_000, "gracias de nuevo", "Yo")],
+        )
+        .unwrap();
+
+        assert!(!marcador.exists());
+    }
+
+    #[test]
+    fn el_eco_del_microfono_no_cuenta_como_una_voz_mas() {
+        // El micrófono capta por los altavoces la misma frase que el sistema.
+        // Si se diarizara antes de quitar ese eco, la frase repetida pondría una
+        // «Persona en sala» que luego desaparece del texto.
+        let (n, _d, s) = reunion(SessionKind::ClientMeeting);
+        n.con_db(|db| {
+            db.insertar_frases(
+                &s.id,
+                &[frase(Track::Mic, 12_500, 16_500, "vamos a empezar", "Yo")],
+            )
+        })
+        .unwrap();
+
+        let (r, _) = diarizar(&n, &s, |_| {
+            Ok(Box::new(|pcm: &[f32]| {
+                Ok(if pcm.len() == 40 * SEG {
+                    vec![seg(0, 40_000, 0)]
+                } else {
+                    // La voz 7 solo existe en el tramo del eco.
+                    vec![seg(0, 12_000, 2), seg(12_000, 20_000, 7)]
+                })
+            }))
+        });
+
+        assert_eq!(
+            r,
+            ResultadoDiarizacion::Hecha {
+                voces_sistema: 1,
+                voces_microfono: 1
+            }
+        );
+        let h = hablantes(&n, &s);
+        assert!(h.iter().all(|(_, q)| !q.starts_with("Persona en sala")));
+        assert_eq!(h.len(), 5, "la frase de eco ya no está");
+    }
+
+    /// WAV cuya envolvente (un valor constante por bloque de 20 ms) sigue
+    /// `amplitudes`. El detector de retorno solo mira envolventes RMS.
+    fn escribir_envolvente(ruta: &Path, amplitudes: &[f32]) {
+        let mut b = Vec::new();
+        let datos = (amplitudes.len() * 320 * 2) as u32;
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + datos).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&16_000u32.to_le_bytes());
+        b.extend_from_slice(&32_000u32.to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&datos.to_le_bytes());
+        for a in amplitudes {
+            let muestra = (a * 32_000.0) as i16;
+            for _ in 0..320 {
+                b.extend_from_slice(&muestra.to_le_bytes());
+            }
+        }
+        std::fs::write(ruta, b).unwrap();
+    }
+
+    /// Secuencia pseudoaleatoria fija de amplitudes entre 0,05 y 0,5.
+    fn amplitudes(semilla: u32, n: usize) -> Vec<f32> {
+        let mut x = semilla;
+        (0..n)
+            .map(|_| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                0.05 + (x >> 16) as f32 / 65_536.0 * 0.45
+            })
+            .collect()
+    }
+
+    /// Reunión con 20 s de sistema y un micrófono que es, o no, copia retrasada
+    /// 120 ms del sistema. Las frases del micrófono llevan una etiqueta que no
+    /// es «Yo» para ver si se reescribe.
+    fn reunion_con_microfono(copia_del_sistema: bool) -> (Nucleo, tempfile::TempDir, Session) {
+        let (n, d) = nucleo();
+        let s = Session::nueva(
+            SessionKind::ClientMeeting,
+            SessionSource::DesktopLoopback,
+            0,
+        );
+        n.con_db(|db| db.crear_sesion(&s)).unwrap();
+        let dir = n.dir_audio(&s.id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sistema = amplitudes(7, 1000);
+        let mic: Vec<f32> = if copia_del_sistema {
+            (0..1000)
+                .map(|i| if i >= 6 { sistema[i - 6] * 0.5 } else { 0.0 })
+                .collect()
+        } else {
+            amplitudes(99, 1000)
+        };
+        escribir_envolvente(&dir.join("system.wav"), &sistema);
+        escribir_envolvente(&dir.join("mic.wav"), &mic);
+        n.con_db(|db| {
+            db.insertar_frases(
+                &s.id,
+                &[
+                    frase(Track::System, 1_000, 5_000, "hola, buenos días", "Cliente"),
+                    frase(
+                        Track::Mic,
+                        2_000,
+                        6_000,
+                        "gracias por venir",
+                        "Persona rara",
+                    ),
+                    frase(Track::Mic, 8_000, 12_000, "empiezo yo con el resumen", "Yo"),
+                ],
+            )
+        })
+        .unwrap();
+        (n, d, s)
+    }
+
+    /// Motor de pruebas que ve dos voces en cualquier pista (las dos duran 20 s):
+    /// la 1 con 7 s y la 2 con 12 s.
+    fn motor_que_separa_dos_voces_del_micro() -> MotorDiarizacion {
+        Box::new(|_: &[f32]| Ok(vec![seg(0, 7_000, 1), seg(7_000, 19_000, 2)]))
+    }
+
+    #[test]
+    fn con_altavoces_el_microfono_no_se_diariza_y_todo_queda_como_yo() {
+        // Medido: con retorno 0,709 aparecían 13 «Persona en sala» en un
+        // micrófono que solo recogía los altavoces y a una persona.
+        let (n, _d, s) = reunion_con_microfono(true);
+        assert!(Nucleo::microfono_con_altavoces(&n.dir_audio(&s.id)));
+
+        let (r, _) = diarizar(&n, &s, |_| Ok(motor_que_separa_dos_voces_del_micro()));
+
+        assert_eq!(
+            r,
+            ResultadoDiarizacion::Hecha {
+                voces_sistema: 1,
+                voces_microfono: 1
+            }
+        );
+        let h = hablantes(&n, &s);
+        assert!(h
+            .iter()
+            .filter(|(t, _)| *t == Track::Mic)
+            .all(|(_, q)| q == "Yo"));
+    }
+
+    #[test]
+    fn sin_altavoces_el_microfono_se_diariza_como_siempre() {
+        let (n, _d, s) = reunion_con_microfono(false);
+        assert!(!Nucleo::microfono_con_altavoces(&n.dir_audio(&s.id)));
+
+        let (r, _) = diarizar(&n, &s, |_| Ok(motor_que_separa_dos_voces_del_micro()));
+
+        assert_eq!(
+            r,
+            ResultadoDiarizacion::Hecha {
+                voces_sistema: 1,
+                voces_microfono: 2
+            }
+        );
+        let mic: Vec<String> = hablantes(&n, &s)
+            .into_iter()
+            .filter(|(t, _)| *t == Track::Mic)
+            .map(|(_, q)| q)
+            .collect();
+        assert_eq!(mic, ["Persona en sala 1", "Yo"]);
+    }
+
+    #[test]
+    fn diariza_este_tipo_solo_acepta_reuniones() {
+        assert!(diariza_este_tipo(SessionKind::ClientMeeting));
+        assert!(diariza_este_tipo(SessionKind::TeamMeeting));
+        assert!(!diariza_este_tipo(SessionKind::Class));
+        assert!(!diariza_este_tipo(SessionKind::VoiceNote));
+    }
+}
+
+#[cfg(test)]
+mod tests_regenerar {
+    use super::*;
+    use dictar_domain::notes::ClassNotes;
+    use dictar_domain::{NoteTemplate, Session, SessionSource};
+    use dictar_providers::config::ProvidersFile;
+    use dictar_storage::notes_store::NewNotes;
+    use std::sync::mpsc;
+
+    fn frase(track: Track, ini: i64, texto: &str, quien: &str) -> NewUtterance {
+        NewUtterance {
+            track,
+            speaker: Some(quien.to_owned()),
+            start_ms: ini,
+            end_ms: ini + 3_000,
+            text: texto.to_owned(),
+            confidence: Some(0.9),
+            is_final: true,
+        }
+    }
+
+    /// Un núcleo cuyo único proveedor apunta a un puerto donde no escucha nadie:
+    /// la generación falla enseguida y, sobre todo, la prueba no puede gastar
+    /// dinero aunque la máquina tenga claves de API configuradas.
+    fn nucleo_sin_modelo_de_lenguaje() -> (Nucleo, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut n = Nucleo::abrir(dir.path()).unwrap();
+        n.config = ProvidersFile::desde_toml(
+            r#"
+[[provider]]
+id = "sin_servidor"
+kind = "openai_compat"
+base_url = "http://127.0.0.1:9/v1"
+model = "ninguno"
+"#,
+        )
+        .unwrap();
+        (n, dir)
+    }
+
+    fn notas(tldr: &str, creada: i64) -> NewNotes {
+        let payload = NotesPayload::Class(ClassNotes {
+            tldr: tldr.to_owned(),
+            temas: vec![],
+            conceptos: vec![],
+            formulas: vec![],
+            avisos: vec![],
+            senales_examen: vec![],
+            dudas: vec![],
+            bibliografia: vec![],
+            glosario_nuevo: vec![],
+        });
+        NewNotes {
+            template: NoteTemplate::Class,
+            kind: "final".to_owned(),
+            seq: None,
+            provider: "p".to_owned(),
+            model: "m".to_owned(),
+            prompt_ver: "v".to_owned(),
+            payload: serde_json::to_string(&payload).unwrap(),
+            tokens_in: None,
+            tokens_out: None,
+            cost_usd: Some(0.01),
+            created_at: creada,
+        }
+    }
+
+    #[tokio::test]
+    async fn regenerar_las_notas_no_transcribe_no_diariza_y_no_toca_las_frases() {
+        let (n, _d) = nucleo_sin_modelo_de_lenguaje();
+        let s = Session::nueva(SessionKind::TeamMeeting, SessionSource::DesktopLoopback, 0);
+        n.con_db(|db| db.crear_sesion(&s)).unwrap();
+        n.con_db(|db| {
+            db.insertar_frases(
+                &s.id,
+                &[
+                    frase(Track::System, 0, "buenos días", "Carlos (socio)"),
+                    frase(Track::Mic, 4_000, "empezamos", "Yo"),
+                ],
+            )
+        })
+        .unwrap();
+        let antes: Vec<_> = n
+            .transcripcion(&s.id)
+            .unwrap()
+            .into_iter()
+            .map(|u| (u.text, u.speaker))
+            .collect();
+
+        let (tx, rx) = mpsc::channel();
+        let r = n.regenerar_notas(&s.id, 1_000, Some(tx)).await;
+
+        // Sin modelo de lenguaje la generación falla; lo que importa es lo que
+        // hizo antes de fallar, que es exactamente nada más que ir a las notas.
+        assert!(r.is_err());
+        let fases: Vec<FaseProceso> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                Evento::Progreso { fase, .. } => Some(fase),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fases, [FaseProceso::GenerandoNotas]);
+        let despues: Vec<_> = n
+            .transcripcion(&s.id)
+            .unwrap()
+            .into_iter()
+            .map(|u| (u.text, u.speaker))
+            .collect();
+        assert_eq!(despues, antes, "los nombres puestos a mano no se tocan");
+        assert!(!n.dir_audio(&s.id).join(MARCADOR_DIARIZACION).exists());
+    }
+
+    #[tokio::test]
+    async fn regenerar_sin_transcripcion_dice_por_que_no_puede() {
+        let (n, _d) = nucleo_sin_modelo_de_lenguaje();
+        let s = Session::nueva(SessionKind::TeamMeeting, SessionSource::DesktopLoopback, 0);
+        n.con_db(|db| db.crear_sesion(&s)).unwrap();
+
+        let e = n.regenerar_notas(&s.id, 1_000, None).await.unwrap_err();
+
+        assert!(e.to_string().contains("no tiene transcripción"), "{e}");
+    }
+
+    #[test]
+    fn las_notas_regeneradas_sustituyen_a_las_anteriores_al_leerlas() {
+        let (n, _d) = nucleo_sin_modelo_de_lenguaje();
+        let s = Session::nueva(SessionKind::Class, SessionSource::DesktopLoopback, 0);
+        n.con_db(|db| db.crear_sesion(&s)).unwrap();
+
+        n.con_db(|db| db.guardar_notas(&s.id, &notas("RESUMEN VIEJO", 1_000)))
+            .unwrap();
+        n.con_db(|db| db.guardar_notas(&s.id, &notas("RESUMEN NUEVO", 2_000)))
+            .unwrap();
+
+        let md = n.notas_markdown(&s.id).unwrap().unwrap();
+        assert!(md.contains("RESUMEN NUEVO"));
+        assert!(!md.contains("RESUMEN VIEJO"));
+        // Las dos generaciones cuestan dinero y las dos se cuentan.
+        assert_eq!(n.coste_sesion(&s.id).unwrap(), 0.02);
     }
 }

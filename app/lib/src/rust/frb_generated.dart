@@ -64,7 +64,7 @@ class Nucleo extends BaseEntrypoint<NucleoApi, NucleoApiImpl, NucleoWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 173081598;
+  int get rustContentHash => 344934960;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -159,6 +159,18 @@ abstract class NucleoApi extends BaseApi {
   Future<ProcesadaDto> cratePuenteProcesarSesion({
     required String sessionId,
     required PlatformInt64 ahoraMs,
+  });
+
+  Future<ProcesadaDto> cratePuenteRegenerarNotas({
+    required String sessionId,
+    required PlatformInt64 ahoraMs,
+  });
+
+  Future<PlatformInt64> cratePuenteRenombrarHablante({
+    required String sessionId,
+    required String pista,
+    required String de,
+    required String a,
   });
 
   Future<PlatformInt64> cratePuenteReproducir({
@@ -632,11 +644,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCratePuenteGuardarAjustesConstMeta,
-        argValues: [
-          carpetaApuntes,
-          modelo,
-          idiomaTranscripcion,
-        ],
+        argValues: [carpetaApuntes, modelo, idiomaTranscripcion],
         apiImpl: this,
       ),
     );
@@ -644,11 +652,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
 
   TaskConstMeta get kCratePuenteGuardarAjustesConstMeta => const TaskConstMeta(
     debugName: "guardar_ajustes",
-    argNames: [
-      "carpetaApuntes",
-      "modelo",
-      "idiomaTranscripcion",
-    ],
+    argNames: ["carpetaApuntes", "modelo", "idiomaTranscripcion"],
   );
 
   @override
@@ -772,14 +776,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCratePuenteIniciarGrabacionConstMeta,
-        argValues: [
-          tipo,
-          topicId,
-          titulo,
-          capturarSistema,
-          soloLocal,
-          ahoraMs,
-        ],
+        argValues: [tipo, topicId, titulo, capturarSistema, soloLocal, ahoraMs],
         apiImpl: this,
       ),
     );
@@ -1116,6 +1113,79 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
   );
 
   @override
+  Future<ProcesadaDto> cratePuenteRegenerarNotas({
+    required String sessionId,
+    required PlatformInt64 ahoraMs,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(sessionId, serializer);
+          sse_encode_i_64(ahoraMs, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 32,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_procesada_dto,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCratePuenteRegenerarNotasConstMeta,
+        argValues: [sessionId, ahoraMs],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCratePuenteRegenerarNotasConstMeta => const TaskConstMeta(
+    debugName: "regenerar_notas",
+    argNames: ["sessionId", "ahoraMs"],
+  );
+
+  @override
+  Future<PlatformInt64> cratePuenteRenombrarHablante({
+    required String sessionId,
+    required String pista,
+    required String de,
+    required String a,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(sessionId, serializer);
+          sse_encode_String(pista, serializer);
+          sse_encode_String(de, serializer);
+          sse_encode_String(a, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 33,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_i_64,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCratePuenteRenombrarHablanteConstMeta,
+        argValues: [sessionId, pista, de, a],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCratePuenteRenombrarHablanteConstMeta =>
+      const TaskConstMeta(
+        debugName: "renombrar_hablante",
+        argNames: ["sessionId", "pista", "de", "a"],
+      );
+
+  @override
   Future<PlatformInt64> cratePuenteReproducir({
     required String sessionId,
     required PlatformInt64 desdeMs,
@@ -1129,7 +1199,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 34,
             port: port_,
           );
         },
@@ -1159,7 +1229,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 35,
             port: port_,
           );
         },
@@ -1186,7 +1256,7 @@ class NucleoApiImpl extends NucleoApiImplPlatform implements NucleoApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 36,
             port: port_,
           );
         },

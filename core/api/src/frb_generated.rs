@@ -38,7 +38,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 173081598;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 344934960;
 
 // Section: executor
 
@@ -1079,6 +1079,81 @@ fn wire__crate__puente__procesar_sesion_impl(
         },
     )
 }
+fn wire__crate__puente__regenerar_notas_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "regenerar_notas",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_session_id = <String>::sse_decode(&mut deserializer);
+            let api_ahora_ms = <i64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::puente::regenerar_notas(api_session_id, api_ahora_ms)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__puente__renombrar_hablante_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "renombrar_hablante",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_session_id = <String>::sse_decode(&mut deserializer);
+            let api_pista = <String>::sse_decode(&mut deserializer);
+            let api_de = <String>::sse_decode(&mut deserializer);
+            let api_a = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::puente::renombrar_hablante(
+                        api_session_id,
+                        api_pista,
+                        api_de,
+                        api_a,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__puente__reproducir_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1645,9 +1720,11 @@ fn pde_ffi_dispatcher_primary_impl(
         29 => wire__crate__puente__pausar_reproduccion_impl(port, ptr, rust_vec_len, data_len),
         30 => wire__crate__puente__probar_proveedor_impl(port, ptr, rust_vec_len, data_len),
         31 => wire__crate__puente__procesar_sesion_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__puente__reproducir_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__puente__saltar_reproduccion_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__puente__sesiones_interrumpidas_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__puente__regenerar_notas_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__puente__renombrar_hablante_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__puente__reproducir_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__puente__saltar_reproduccion_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__puente__sesiones_interrumpidas_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
